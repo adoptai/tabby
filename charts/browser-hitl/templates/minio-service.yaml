@@ -1,0 +1,23 @@
+{{- if .Values.minio.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-minio
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.minio.port }}
+      targetPort: api
+      protocol: TCP
+      name: api
+    - port: {{ .Values.minio.consolePort }}
+      targetPort: console
+      protocol: TCP
+      name: console
+  selector:
+    {{- include "browser-hitl.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+{{- end }}

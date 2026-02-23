@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "browser-hitl.configmapName" . }}
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+{{- $defaultEgressProxyUrl := printf "http://%s-egress-proxy:%v" (include "browser-hitl.fullname" .) .Values.egressProxy.port }}
+{{- $defaultEgressProxyAllowlistUrl := printf "http://%s-egress-proxy:%v/allowlist" (include "browser-hitl.fullname" .) .Values.egressProxy.adminPort }}
+{{- $workerImage := include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.worker) }}
+{{- $novncImage := include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.novnc) }}
+data:
+  # Per spec section 15.4 - Runtime Configuration (Env Vars)
+  DATABASE_URL: {{ .Values.config.databaseUrl | quote }}
+  REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  NATS_URL: {{ .Values.config.natsUrl | quote }}
+  NATS_SYNC_INTERVAL: {{ .Values.config.natsSyncInterval | quote }}
+  MINIO_ENDPOINT: {{ .Values.config.minioEndpoint | quote }}
+  JWT_SIGNING_KEY_ID: {{ .Values.config.jwtSigningKeyId | quote }}
+  ADMIN_BOOTSTRAP_EMAIL: {{ .Values.config.adminBootstrapEmail | quote }}
+  BOOTSTRAP_TENANT_NAME: {{ .Values.config.bootstrapTenantName | quote }}
+  STREAM_TTL_SECONDS: {{ .Values.config.streamTtlSeconds | quote }}
+  DEFAULT_BACKOFF_SECONDS: {{ .Values.config.defaultBackoffSeconds | quote }}
+  DEFAULT_KEEPALIVE_SECONDS: {{ .Values.config.defaultKeepaliveSeconds | quote }}
+  RECONCILE_INTERVAL_SECONDS: {{ .Values.config.reconcileIntervalSeconds | quote }}
+  MAX_SESSION_AGE_HOURS: {{ .Values.config.maxSessionAgeHours | quote }}
+  PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
+  STREAM_HOST: {{ .Values.config.streamHost | quote }}
+  STREAM_PROTOCOL: {{ .Values.config.streamProtocol | quote }}
+  SERVICE_AUTH_ALLOWED_TENANT_IDS: {{ .Values.config.serviceAuthAllowedTenantIds | quote }}
+  SERVICE_AUTH_ALLOW_WILDCARD_TENANT_SCOPE: {{ .Values.config.serviceAuthAllowWildcardTenantScope | quote }}
+  SERVICE_AUTH_ALLOWED_ROLES: {{ .Values.config.serviceAuthAllowedRoles | quote }}
+  SERVICE_AUTH_DEFAULT_ROLE: {{ .Values.config.serviceAuthDefaultRole | quote }}
+  SERVICE_AUTH_TOKEN_TTL_SECONDS: {{ .Values.config.serviceAuthTokenTtlSeconds | quote }}
+  AGENT_DEFAULT_CREDENTIAL_REF: {{ .Values.config.agentDefaultCredentialRef | quote }}
+  AGENT_DEFAULT_SLACK_CHANNEL: {{ .Values.config.agentDefaultSlackChannel | quote }}
+  EGRESS_PROXY_URL: {{ default $defaultEgressProxyUrl .Values.config.egressProxyUrl | quote }}
+  EGRESS_PROXY_ALLOWLIST_URL: {{ default $defaultEgressProxyAllowlistUrl .Values.config.egressProxyAllowlistUrl | quote }}
+  EGRESS_PROXY_BYPASS_LIST: {{ .Values.config.egressProxyBypassList | quote }}
+  EGRESS_POLICY_FAIL_CLOSED: {{ .Values.config.egressPolicyFailClosed | quote }}
+  CIRCUIT_BREAKER_APP_FAILURE_THRESHOLD: {{ .Values.config.circuitBreakerAppFailureThreshold | quote }}
+  CIRCUIT_BREAKER_TENANT_FAILURE_THRESHOLD: {{ .Values.config.circuitBreakerTenantFailureThreshold | quote }}
+  CIRCUIT_BREAKER_WINDOW_SECONDS: {{ .Values.config.circuitBreakerWindowSeconds | quote }}
+  CIRCUIT_BREAKER_COOLDOWN_SECONDS: {{ .Values.config.circuitBreakerCooldownSeconds | quote }}
+  LIFECYCLE_ARTIFACT_RETENTION_DAYS: {{ .Values.config.lifecycleArtifactRetentionDays | quote }}
+  LIFECYCLE_INTERVENTION_RETENTION_DAYS: {{ .Values.config.lifecycleInterventionRetentionDays | quote }}
+  LIFECYCLE_SESSION_RETENTION_DAYS: {{ .Values.config.lifecycleSessionRetentionDays | quote }}
+  LIFECYCLE_APP_RETENTION_DAYS: {{ .Values.config.lifecycleAppRetentionDays | quote }}
+  WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK: {{ .Values.config.workerAllowEnvCredentialFallback | quote }}
+  WORKER_IMAGE: {{ $workerImage | quote }}
+  NOVNC_IMAGE: {{ $novncImage | quote }}
+  WORKER_NAMESPACE: {{ .Release.Namespace | quote }}
+  NOVNC_UPSTREAM_PATH: "/websockify"
+  # Service discovery
+  API_PORT: {{ .Values.api.port | quote }}
+  CONTROLLER_PORT: {{ .Values.controller.port | quote }}
+  WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}
+  NOVNC_PORT: {{ .Values.worker.novnc.port | quote }}

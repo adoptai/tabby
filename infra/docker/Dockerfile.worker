@@ -1,0 +1,54 @@
+# Browser Worker Dockerfile per spec section 15.6
+# Base: official Playwright Docker image (Ubuntu-based, includes Chromium)
+#
+# IMPORTANT: The base image tag (v1.58.2) MUST match the exact "playwright"
+# npm package version pinned in apps/worker/package.json.  The Playwright npm
+# package expects browser binaries that ship with the same release.  A mismatch
+# (e.g. base image v1.58.2 but npm package 1.59.x pulled via caret range) will
+# cause "browser revision not found" errors at runtime.  Both versions should be
+# updated together.
+FROM mcr.microsoft.com/playwright:v1.58.2-noble
+
+# Install Xvfb and x11vnc for headed browser + VNC streaming
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb x11vnc && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install pnpm
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+# Copy workspace manifests for deterministic dependency install
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nx.json tsconfig.base.json ./
+
+# Copy shared package first for layer caching
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
+
+# Copy worker package
+COPY apps/worker/package.json apps/worker/tsconfig.json ./apps/worker/
+COPY apps/worker/src ./apps/worker/src
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/worker build
+
+# Copy entrypoint script
+COPY infra/docker/worker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Resource baselines per spec section 15.7:
+# Request: 1 vCPU, 2 GB RAM
+# Limit: 2 vCPU, 3 GB RAM
+
+# Ports:
+# 8091 - Worker health HTTP server
+# 5900 - VNC (localhost only, accessed by noVNC sidecar)
+EXPOSE 8091
+
+# Run as non-root user (Playwright image provides 'pwuser')
+USER pwuser
+
+ENV DISPLAY=:99
+
+ENTRYPOINT ["/entrypoint.sh"]

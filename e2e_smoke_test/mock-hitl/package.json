@@ -1,0 +1,13 @@
+{
+  "name": "mock-hitl-responder",
+  "version": "1.0.0",
+  "description": "Mock HITL auto-responder for E2E smoke tests — subscribes to NATS OTP events and injects OTP via Redis",
+  "main": "auto-responder.js",
+  "scripts": {
+    "start": "node auto-responder.js"
+  },
+  "dependencies": {
+    "ioredis": "^5.0.0",
+    "nats": "^2.0.0"
+  }
+}

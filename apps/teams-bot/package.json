@@ -1,0 +1,20 @@
+{
+  "name": "@browser-hitl/teams-bot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "echo 'Testing teams-bot'",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@browser-hitl/shared": "workspace:*",
+    "botbuilder": "^4.23.3",
+    "nats": "^2.28.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3"
+  }
+}

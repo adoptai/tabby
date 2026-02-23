@@ -1,0 +1,12 @@
+# Admin UI Dockerfile (Phase 2 placeholder runtime)
+FROM node:20-slim
+
+WORKDIR /app
+
+COPY apps/admin-ui/server.js ./server.js
+
+EXPOSE 3000
+
+USER node
+
+CMD ["node", "server.js"]

@@ -1,0 +1,23 @@
+# Teams Bot Dockerfile
+FROM node:20-slim
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nx.json tsconfig.base.json ./
+
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
+
+COPY apps/teams-bot/package.json apps/teams-bot/tsconfig.json ./apps/teams-bot/
+COPY apps/teams-bot/src ./apps/teams-bot/src
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/teams-bot build
+
+EXPOSE 3978
+
+USER node
+
+CMD ["node", "apps/teams-bot/dist/main.js"]

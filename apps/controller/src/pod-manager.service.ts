@@ -1,0 +1,739 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { SessionEntity } from './entities/session.entity';
+import { ApplicationEntity } from './entities/application.entity';
+import * as k8s from '@kubernetes/client-node';
+import { createHmac } from 'node:crypto';
+import { CDP_PORTS, StreamingMode } from '@browser-hitl/shared';
+
+/**
+ * Pod Manager Service
+ * Manages browser worker pod lifecycle via Kubernetes API.
+ * Also manages NetworkPolicies per spec section 13.8.
+ */
+@Injectable()
+export class PodManagerService {
+  private readonly logger = new Logger(PodManagerService.name);
+  private readonly namespace: string;
+  private readonly coreApi: k8s.CoreV1Api;
+  private readonly networkingApi: k8s.NetworkingV1Api;
+
+  constructor() {
+    this.namespace = process.env.WORKER_NAMESPACE || 'browser-hitl';
+    const kubeConfig = new k8s.KubeConfig();
+
+    if (process.env.KUBERNETES_SERVICE_HOST) {
+      kubeConfig.loadFromCluster();
+    } else {
+      kubeConfig.loadFromDefault();
+    }
+
+    this.coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
+    this.networkingApi = kubeConfig.makeApiClient(k8s.NetworkingV1Api);
+  }
+
+  /**
+   * Create a browser worker pod for a session.
+   * Returns the pod name.
+   */
+  async createWorkerPod(session: SessionEntity, app: ApplicationEntity): Promise<string> {
+    const podName = this.buildPodName(session.id);
+
+    try {
+      const podSpec = this.buildPodSpec(podName, session, app);
+      this.logger.log(`Creating worker pod ${podName} for session ${session.id}`);
+      await this.createPod(podSpec);
+      this.logger.log(`Worker pod ${podName} created`);
+      return podName;
+    } catch (error) {
+      this.logger.error(`Failed to create pod ${podName}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a per-session ClusterIP service for the noVNC sidecar.
+   * Returns the created service name.
+   */
+  async createNoVncService(sessionId: string, podName: string): Promise<string> {
+    const serviceName = this.buildNoVncServiceName(podName);
+    try {
+      const serviceSpec = this.buildNoVncServiceSpec(serviceName, sessionId);
+      this.logger.log(`Creating noVNC service ${serviceName} for session ${sessionId}`);
+      await this.createService(serviceSpec);
+      this.logger.log(`noVNC service ${serviceName} created`);
+      return serviceName;
+    } catch (error) {
+      this.logger.error(`Failed to create noVNC service ${serviceName}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete the per-session noVNC service.
+   */
+  async deleteNoVncService(sessionId: string, podName?: string): Promise<void> {
+    const serviceName = podName
+      ? this.buildNoVncServiceName(podName)
+      : this.buildNoVncServiceName(this.buildPodName(sessionId));
+
+    try {
+      this.logger.log(`Deleting noVNC service ${serviceName}`);
+      await this.deleteService(serviceName);
+      this.logger.log(`noVNC service ${serviceName} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete noVNC service ${serviceName}: ${error}`);
+    }
+  }
+
+  /**
+   * Create a per-session ClusterIP service for the CDP relay.
+   * Returns the created service name.
+   */
+  async createCdpService(sessionId: string, podName: string): Promise<string> {
+    const serviceName = this.buildCdpServiceName(podName);
+    try {
+      const serviceSpec = this.buildCdpServiceSpec(serviceName, sessionId);
+      this.logger.log(`Creating CDP service ${serviceName} for session ${sessionId}`);
+      await this.createService(serviceSpec);
+      this.logger.log(`CDP service ${serviceName} created`);
+      return serviceName;
+    } catch (error) {
+      this.logger.error(`Failed to create CDP service ${serviceName}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete the per-session CDP service.
+   */
+  async deleteCdpService(sessionId: string, podName?: string): Promise<void> {
+    const serviceName = podName
+      ? this.buildCdpServiceName(podName)
+      : this.buildCdpServiceName(this.buildPodName(sessionId));
+
+    try {
+      this.logger.log(`Deleting CDP service ${serviceName}`);
+      await this.deleteService(serviceName);
+      this.logger.log(`CDP service ${serviceName} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete CDP service ${serviceName}: ${error}`);
+    }
+  }
+
+  /**
+   * Resolve the streaming mode for an app from its browser_policy.
+   */
+  resolveStreamingMode(app: ApplicationEntity): StreamingMode {
+    const policy = app.browser_policy as Record<string, unknown> | null | undefined;
+    const raw = typeof policy?.streaming_mode === 'string' ? policy.streaming_mode : '';
+    return raw.toLowerCase() === 'cdp' ? StreamingMode.CDP : StreamingMode.VNC;
+  }
+
+  /**
+   * Delete a browser worker pod.
+   */
+  async deleteWorkerPod(podName: string): Promise<void> {
+    try {
+      this.logger.log(`Deleting worker pod ${podName}`);
+      await this.deletePod(podName);
+      this.logger.log(`Worker pod ${podName} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete pod ${podName}: ${error}`);
+    }
+  }
+
+  /**
+   * Create a deny-all NetworkPolicy for a worker pod per spec section 13.8.
+   * Allow: DNS, internal services, egress proxy.
+   */
+  async createNetworkPolicy(
+    sessionId: string,
+    podName: string,
+    targetUrls: string[],
+    streamingMode: StreamingMode = StreamingMode.VNC,
+  ): Promise<void> {
+    const policyName = this.buildNetworkPolicyName(sessionId);
+
+    try {
+      const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode);
+      this.logger.log(`Creating NetworkPolicy ${policyName} for pod ${podName}`);
+      await this.createPolicy(policy);
+      await this.syncEgressAllowlist(sessionId, targetUrls);
+      this.logger.log(`NetworkPolicy ${policyName} created`);
+    } catch (error) {
+      this.logger.error(`Failed to create NetworkPolicy ${policyName}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a NetworkPolicy when pod is terminated.
+   */
+  async deleteNetworkPolicy(sessionId: string): Promise<void> {
+    const policyName = this.buildNetworkPolicyName(sessionId);
+
+    try {
+      this.logger.log(`Deleting NetworkPolicy ${policyName}`);
+      await this.deletePolicy(policyName);
+      await this.clearEgressAllowlist(sessionId);
+      this.logger.log(`NetworkPolicy ${policyName} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete NetworkPolicy ${policyName}: ${error}`);
+    }
+  }
+
+  /**
+   * Sync session-specific target URLs into the egress proxy allowlist control plane.
+   */
+  async syncEgressAllowlist(sessionId: string, targetUrls: string[]): Promise<void> {
+    const allowlistEndpoint = process.env.EGRESS_PROXY_ALLOWLIST_URL;
+    if (!allowlistEndpoint) {
+      if (this.egressFailClosed()) {
+        throw new Error('EGRESS_PROXY_ALLOWLIST_URL is not configured');
+      }
+      return;
+    }
+
+    const response = await fetch(allowlistEndpoint, {
+      method: 'PUT',
+      headers: this.buildAllowlistHeaders(),
+      body: JSON.stringify({
+        session_id: sessionId,
+        target_urls: targetUrls,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = new Error(
+        `Failed to update egress allowlist (status ${response.status}) for session ${sessionId}`,
+      );
+      if (this.egressFailClosed()) {
+        throw error;
+      }
+      this.logger.warn(error.message);
+    }
+  }
+
+  /**
+   * Remove session-specific allowlist entries when the session terminates.
+   */
+  async clearEgressAllowlist(sessionId: string): Promise<void> {
+    const allowlistEndpoint = process.env.EGRESS_PROXY_ALLOWLIST_URL;
+    if (!allowlistEndpoint) {
+      return;
+    }
+
+    const normalized = allowlistEndpoint.replace(/\/+$/, '');
+    const deleteUrl = `${normalized}/${encodeURIComponent(sessionId)}`;
+
+    try {
+      const response = await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: this.buildAllowlistHeaders(),
+      });
+
+      if (!response.ok) {
+        this.logger.warn(
+          `Failed to clear egress allowlist (status ${response.status}) for session ${sessionId}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to clear egress allowlist for session ${sessionId}: ${error}`);
+    }
+  }
+
+  async podExists(podName: string): Promise<boolean> {
+    const api: any = this.coreApi as any;
+    try {
+      try {
+        await api.readNamespacedPod(podName, this.namespace);
+      } catch {
+        await api.readNamespacedPod({ name: podName, namespace: this.namespace });
+      }
+      return true;
+    } catch (error: any) {
+      if (this.isNotFoundError(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async listWorkerPods(): Promise<Array<{ podName: string; sessionId: string | null }>> {
+    const api: any = this.coreApi as any;
+    let result: any;
+    try {
+      result = await api.listNamespacedPod(this.namespace, undefined, undefined, undefined, undefined, 'app=browser-worker');
+    } catch {
+      result = await api.listNamespacedPod({
+        namespace: this.namespace,
+        labelSelector: 'app=browser-worker',
+      });
+    }
+
+    const items = Array.isArray(result?.body?.items)
+      ? result.body.items
+      : Array.isArray(result?.items) ? result.items : [];
+    return items.map((item: any) => ({
+      podName: String(item?.metadata?.name || ''),
+      sessionId: item?.metadata?.labels?.['session-id'] || null,
+    })).filter((entry: { podName: string }) => entry.podName.length > 0);
+  }
+
+  /**
+   * Build pod spec per spec section 15.5.
+   * In CDP mode: single container (worker only, headless), no sidecar.
+   * In VNC mode: two containers (worker + noVNC sidecar).
+   */
+  private buildPodSpec(podName: string, session: SessionEntity, app: ApplicationEntity) {
+    const streamingMode = this.resolveStreamingMode(app);
+    const credentialSecretName = this.resolveCredentialSecretName(app);
+    const credentialMountRoot = '/var/run/secrets/browser-hitl';
+    const scopedEgressProxyUrl = this.buildSessionScopedProxyUrl(session.id);
+    const volumes: Array<Record<string, unknown>> = [{ name: 'tmp', emptyDir: {} }];
+    const workerVolumeMounts: Array<Record<string, unknown>> = [{ name: 'tmp', mountPath: '/tmp' }];
+
+    if (credentialSecretName) {
+      volumes.push({
+        name: 'credentials',
+        secret: { secretName: credentialSecretName },
+      });
+      workerVolumeMounts.push({
+        name: 'credentials',
+        mountPath: `${credentialMountRoot}/${credentialSecretName}`,
+        readOnly: true,
+      });
+    }
+
+    const workerEnv = [
+      { name: 'SESSION_ID', value: session.id },
+      { name: 'APP_ID', value: session.app_id },
+      { name: 'TENANT_ID', value: session.tenant_id },
+      { name: 'CREDENTIALS_MOUNT_PATH', value: credentialMountRoot },
+      { name: 'DATABASE_URL', value: process.env.DATABASE_URL },
+      { name: 'REDIS_URL', value: process.env.REDIS_URL },
+      { name: 'NATS_URL', value: process.env.NATS_URL },
+      { name: 'MINIO_ENDPOINT', value: process.env.MINIO_ENDPOINT },
+      { name: 'MINIO_ACCESS_KEY', value: process.env.MINIO_ACCESS_KEY || '' },
+      { name: 'MINIO_SECRET_KEY', value: process.env.MINIO_SECRET_KEY || '' },
+      { name: 'EGRESS_PROXY_URL', value: scopedEgressProxyUrl },
+      { name: 'EGRESS_PROXY_BYPASS_LIST', value: process.env.EGRESS_PROXY_BYPASS_LIST },
+      { name: 'WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK', value: process.env.WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK },
+      { name: 'TENANT_ENCRYPTION_KEY', value: process.env.TENANT_ENCRYPTION_KEY || '' },
+      { name: 'TENANT_KEY_VERSION', value: process.env.TENANT_KEY_VERSION || 'v1' },
+      { name: 'STREAMING_MODE', value: streamingMode },
+    ];
+
+    // VNC mode needs DISPLAY for Xvfb; CDP mode does not
+    if (streamingMode === StreamingMode.VNC) {
+      workerEnv.push({ name: 'DISPLAY', value: ':99' });
+    }
+
+    const workerPorts: Array<Record<string, unknown>> = [
+      { containerPort: 8091, name: 'health' },
+    ];
+
+    // CDP mode exposes the relay port
+    if (streamingMode === StreamingMode.CDP) {
+      workerPorts.push({ containerPort: CDP_PORTS.CDP_RELAY, name: 'cdp-relay' });
+    }
+
+    const workerContainer = {
+      name: 'worker',
+      image: process.env.WORKER_IMAGE || 'browser-hitl/worker:latest',
+      ports: workerPorts,
+      env: workerEnv,
+      resources: {
+        requests: { cpu: '1', memory: '2Gi' },
+        limits: { cpu: '2', memory: '3Gi' },
+      },
+      livenessProbe: {
+        httpGet: { path: '/health', port: 8091 },
+        initialDelaySeconds: 30,
+        periodSeconds: 10,
+      },
+      readinessProbe: {
+        httpGet: { path: '/health', port: 8091 },
+        initialDelaySeconds: 15,
+        periodSeconds: 5,
+      },
+      volumeMounts: workerVolumeMounts,
+      securityContext: {
+        runAsUser: 1000,
+        readOnlyRootFilesystem: false,
+      },
+    };
+
+    const containers: Array<Record<string, unknown>> = [workerContainer];
+
+    // VNC mode: add noVNC sidecar
+    if (streamingMode === StreamingMode.VNC) {
+      containers.push({
+        name: 'novnc',
+        image: process.env.NOVNC_IMAGE || 'browser-hitl/novnc:latest',
+        ports: [{ containerPort: 6080, name: 'novnc' }],
+        command: ['websockify', '--web', '/usr/share/novnc', '6080', 'localhost:5900'],
+        resources: {
+          requests: { cpu: '0.1', memory: '128Mi' },
+          limits: { cpu: '0.5', memory: '256Mi' },
+        },
+        securityContext: {
+          runAsNonRoot: true,
+          runAsUser: 65534,
+        },
+      });
+    }
+
+    return {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: {
+        name: podName,
+        namespace: this.namespace,
+        labels: {
+          app: 'browser-worker',
+          'session-id': session.id,
+          'app-id': session.app_id,
+          'tenant-id': session.tenant_id,
+          'streaming-mode': streamingMode,
+        },
+      },
+      spec: {
+        restartPolicy: 'Never',
+        securityContext: {
+          runAsNonRoot: true,
+        },
+        containers,
+        volumes,
+      },
+    };
+  }
+
+  private resolveCredentialSecretName(app: ApplicationEntity): string | null {
+    const loginConfig = app.login_config as { credential_ref?: unknown } | null | undefined;
+    const rawRef = typeof loginConfig?.credential_ref === 'string' ? loginConfig.credential_ref : '';
+    const prefix = 'k8s:secret/';
+    if (!rawRef.startsWith(prefix)) {
+      return null;
+    }
+    const secretName = rawRef.slice(prefix.length).trim();
+    return secretName.length > 0 ? secretName : null;
+  }
+
+  private buildSessionScopedProxyUrl(sessionId: string): string {
+    const configuredProxyUrl = (process.env.EGRESS_PROXY_URL || '').trim();
+    if (!configuredProxyUrl) {
+      return '';
+    }
+
+    const sessionKey = (process.env.EGRESS_PROXY_SESSION_KEY || '').trim();
+    if (!sessionKey) {
+      throw new Error(
+        'EGRESS_PROXY_SESSION_KEY must be configured when EGRESS_PROXY_URL is enabled',
+      );
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(configuredProxyUrl);
+    } catch {
+      throw new Error(`Invalid EGRESS_PROXY_URL: ${configuredProxyUrl}`);
+    }
+
+    const sessionSecret = createHmac('sha256', sessionKey).update(sessionId).digest('hex');
+    parsed.username = sessionId;
+    parsed.password = sessionSecret;
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  }
+
+  private buildNoVncServiceSpec(serviceName: string, sessionId: string) {
+    return {
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          app: 'browser-worker-novnc',
+          'session-id': sessionId,
+        },
+      },
+      spec: {
+        type: 'ClusterIP',
+        selector: {
+          'session-id': sessionId,
+        },
+        ports: [
+          {
+            name: 'novnc',
+            port: 6080,
+            targetPort: 'novnc',
+            protocol: 'TCP',
+          },
+        ],
+      },
+    };
+  }
+
+  /**
+   * Build NetworkPolicy per spec section 13.8.
+   * Deny-all egress except DNS, internal services, egress proxy.
+   * Supports both VNC (port 6080) and CDP (port 9223) ingress from API.
+   */
+  private buildNetworkPolicy(policyName: string, sessionId: string, streamingMode: StreamingMode = StreamingMode.VNC) {
+    const streamPort = streamingMode === StreamingMode.CDP ? CDP_PORTS.CDP_RELAY : 6080;
+    return {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata: {
+        name: policyName,
+        namespace: this.namespace,
+      },
+      spec: {
+        podSelector: {
+          matchLabels: { 'session-id': sessionId },
+        },
+        policyTypes: ['Ingress', 'Egress'],
+        egress: [
+          // Allow DNS
+          {
+            ports: [
+              { port: 53, protocol: 'UDP' },
+              { port: 53, protocol: 'TCP' },
+            ],
+          },
+          // Allow egress proxy
+          {
+            to: [{
+              podSelector: { matchLabels: { 'app.kubernetes.io/component': 'egress-proxy' } },
+            }],
+          },
+          // Allow internal services (explicit component selectors only).
+          {
+            to: [{
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': this.namespace },
+              },
+              podSelector: {
+                matchExpressions: [
+                  {
+                    key: 'app.kubernetes.io/component',
+                    operator: 'In',
+                    values: ['postgres', 'redis', 'nats', 'minio', 'api'],
+                  },
+                ],
+              },
+            }],
+            ports: [
+              { port: 5432 },  // Postgres
+              { port: 6379 },  // Redis
+              { port: 4222 },  // NATS
+              { port: 9000 },  // MinIO
+            ],
+          },
+          // Allow test harness endpoint used in UAT flows.
+          {
+            to: [{
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': this.namespace },
+              },
+              podSelector: {
+                matchExpressions: [
+                  { key: 'app', operator: 'In', values: ['test-harness', 'browser-hitl-test-harness'] },
+                ],
+              },
+            }],
+            ports: [{ port: 8000 }],
+          },
+        ],
+        ingress: [
+          // Allow API service to proxy WebSocket traffic (noVNC:6080 or CDP:9223).
+          {
+            from: [{
+              podSelector: { matchLabels: { 'app.kubernetes.io/component': 'api' } },
+            }],
+            ports: [{ port: streamPort, protocol: 'TCP' }],
+          },
+          // Allow NGINX ingress to stream port
+          {
+            from: [{
+              namespaceSelector: {},
+              podSelector: { matchLabels: { 'app.kubernetes.io/name': 'ingress-nginx' } },
+            }],
+            ports: [{ port: streamPort, protocol: 'TCP' }],
+          },
+          // Allow kubelet probes to health port
+          {
+            ports: [{ port: 8091, protocol: 'TCP' }],
+          },
+        ],
+      },
+    };
+  }
+
+  private buildPodName(sessionId: string): string {
+    return `worker-${sessionId.toLowerCase()}`;
+  }
+
+  private buildNoVncServiceName(podName: string): string {
+    return `${podName}-novnc`;
+  }
+
+  private buildCdpServiceName(podName: string): string {
+    return `${podName}-cdp`;
+  }
+
+  private buildCdpServiceSpec(serviceName: string, sessionId: string) {
+    return {
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          app: 'browser-worker-cdp',
+          'session-id': sessionId,
+        },
+      },
+      spec: {
+        type: 'ClusterIP',
+        selector: {
+          'session-id': sessionId,
+        },
+        ports: [
+          {
+            name: 'cdp-relay',
+            port: CDP_PORTS.CDP_RELAY,
+            targetPort: 'cdp-relay',
+            protocol: 'TCP',
+          },
+        ],
+      },
+    };
+  }
+
+  private buildNetworkPolicyName(sessionId: string): string {
+    return `np-${sessionId.toLowerCase()}`;
+  }
+
+  private async createPod(podSpec: unknown): Promise<void> {
+    const api: any = this.coreApi as any;
+    try {
+      await api.createNamespacedPod(this.namespace, podSpec);
+    } catch {
+      await api.createNamespacedPod({ namespace: this.namespace, body: podSpec });
+    }
+  }
+
+  private async deletePod(podName: string): Promise<void> {
+    const api: any = this.coreApi as any;
+    try {
+      await api.deleteNamespacedPod(podName, this.namespace);
+    } catch (error: any) {
+      if (this.isNotFoundError(error)) {
+        return;
+      }
+      try {
+        await api.deleteNamespacedPod({ name: podName, namespace: this.namespace });
+      } catch (error2: any) {
+        if (!this.isNotFoundError(error2)) {
+          throw error2;
+        }
+      }
+    }
+  }
+
+  private async createPolicy(policySpec: unknown): Promise<void> {
+    const api: any = this.networkingApi as any;
+    try {
+      await api.createNamespacedNetworkPolicy(this.namespace, policySpec);
+    } catch {
+      await api.createNamespacedNetworkPolicy({ namespace: this.namespace, body: policySpec });
+    }
+  }
+
+  private async createService(serviceSpec: unknown): Promise<void> {
+    const api: any = this.coreApi as any;
+    try {
+      await api.createNamespacedService(this.namespace, serviceSpec);
+    } catch {
+      await api.createNamespacedService({ namespace: this.namespace, body: serviceSpec });
+    }
+  }
+
+  private async deletePolicy(policyName: string): Promise<void> {
+    const api: any = this.networkingApi as any;
+    try {
+      await api.deleteNamespacedNetworkPolicy(policyName, this.namespace);
+    } catch (error: any) {
+      if (this.isNotFoundError(error)) {
+        return;
+      }
+      try {
+        await api.deleteNamespacedNetworkPolicy({ name: policyName, namespace: this.namespace });
+      } catch (error2: any) {
+        if (!this.isNotFoundError(error2)) {
+          throw error2;
+        }
+      }
+    }
+  }
+
+  private async deleteService(serviceName: string): Promise<void> {
+    const api: any = this.coreApi as any;
+    try {
+      await api.deleteNamespacedService(serviceName, this.namespace);
+    } catch (error: any) {
+      if (this.isNotFoundError(error)) {
+        return;
+      }
+      try {
+        await api.deleteNamespacedService({ name: serviceName, namespace: this.namespace });
+      } catch (error2: any) {
+        if (!this.isNotFoundError(error2)) {
+          throw error2;
+        }
+      }
+    }
+  }
+
+  private isNotFoundError(error: any): boolean {
+    const candidates = [
+      error?.response?.statusCode,
+      error?.statusCode,
+      error?.code,
+      error?.body?.code,
+      error?.response?.body?.code,
+    ];
+    if (candidates.some((value) => Number(value) === 404)) {
+      return true;
+    }
+
+    const bodyText = typeof error?.body === 'string' ? error.body : '';
+    const responseBodyText = typeof error?.response?.body === 'string' ? error.response.body : '';
+    const messageText = String(error?.message || '');
+    const combined = `${messageText} ${bodyText} ${responseBodyText}`.toLowerCase();
+
+    return combined.includes('notfound')
+      || combined.includes('not found')
+      || combined.includes('"code":404');
+  }
+
+  private buildAllowlistHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    const token = process.env.EGRESS_PROXY_ALLOWLIST_TOKEN;
+    if (token) {
+      headers['x-egress-admin-token'] = token;
+    }
+    return headers;
+  }
+
+  private egressFailClosed(): boolean {
+    return (process.env.EGRESS_POLICY_FAIL_CLOSED || 'true').trim().toLowerCase() !== 'false';
+  }
+}

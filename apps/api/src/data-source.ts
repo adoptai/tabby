@@ -1,0 +1,27 @@
+import { DataSource, DataSourceOptions } from 'typeorm';
+import { requireEnv } from '@browser-hitl/shared';
+import * as entities from './entities';
+import { InitialSchema1708300000000 } from './migrations/1708300000000-InitialSchema';
+import { WorkerRLS1708300000001 } from './migrations/1708300000001-WorkerRLS';
+import { AgentClients1708300000002 } from './migrations/1708300000002-AgentClients';
+import { AuthRequests1708300000003 } from './migrations/1708300000003-AuthRequests';
+import { LoginQueue1708300000004 } from './migrations/1708300000004-LoginQueue';
+import { AccountLockout1708300000005 } from './migrations/1708300000005-AccountLockout';
+import { ArtifactCascadeDelete1708300000006 } from './migrations/1708300000006-ArtifactCascadeDelete';
+import { ServiceProfiles1708300000007 } from './migrations/1708300000007-ServiceProfiles';
+import { ProfileAppLink1708300000008 } from './migrations/1708300000008-ProfileAppLink';
+
+export const dataSourceOptions: DataSourceOptions = {
+  type: 'postgres',
+  url: requireEnv('DATABASE_URL', {
+    testDefault: 'postgresql://postgres:postgres@localhost:5432/browser_hitl',
+  }),
+  entities: Object.values(entities),
+  migrations: [InitialSchema1708300000000, WorkerRLS1708300000001, AgentClients1708300000002, AuthRequests1708300000003, LoginQueue1708300000004, AccountLockout1708300000005, ArtifactCascadeDelete1708300000006, ServiceProfiles1708300000007, ProfileAppLink1708300000008],
+  migrationsRun: true, // Run migrations on startup per spec section 15.13
+  synchronize: false,   // Never auto-sync; use migrations only
+  logging: process.env.NODE_ENV === 'development' ? ['error', 'warn', 'migration'] : ['error'],
+};
+
+// Standalone DataSource for CLI usage
+export const AppDataSource = new DataSource(dataSourceOptions);

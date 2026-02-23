@@ -1,0 +1,93 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-pg-backup
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.historyLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.backup.timeoutSeconds | default 1800 }}
+      template:
+        metadata:
+          labels:
+            {{- include "browser-hitl.labels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: OnFailure
+          {{- include "browser-hitl.imagePullSecrets" . | nindent 10 }}
+          containers:
+            - name: pg-backup
+              image: {{ .Values.backup.image | default "postgres:16-alpine" }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_FILE="/tmp/browser-hitl-${TIMESTAMP}.sql.gz"
+
+                  echo "Starting PostgreSQL backup at ${TIMESTAMP}..."
+                  pg_dump "${DATABASE_URL}" | gzip > "${BACKUP_FILE}"
+
+                  BACKUP_SIZE=$(stat -c%s "${BACKUP_FILE}" 2>/dev/null || stat -f%z "${BACKUP_FILE}")
+                  echo "Backup created: ${BACKUP_FILE} (${BACKUP_SIZE} bytes)"
+
+                  if [ -n "${MINIO_ENDPOINT:-}" ]; then
+                    # Upload to MinIO/S3 using mc (MinIO Client)
+                    mc alias set backup "http://${MINIO_ENDPOINT}:9000" "${MINIO_ACCESS_KEY}" "${MINIO_SECRET_KEY}" --api S3v4
+                    mc mb --ignore-existing backup/${BACKUP_BUCKET}
+                    mc cp "${BACKUP_FILE}" "backup/${BACKUP_BUCKET}/pg-backups/${TIMESTAMP}.sql.gz"
+                    echo "Backup uploaded to ${BACKUP_BUCKET}/pg-backups/${TIMESTAMP}.sql.gz"
+
+                    # Prune old backups (keep last N)
+                    mc ls "backup/${BACKUP_BUCKET}/pg-backups/" --json | \
+                      jq -r '.key' | sort -r | tail -n +$((RETENTION_COUNT + 1)) | \
+                      xargs -I {} mc rm "backup/${BACKUP_BUCKET}/pg-backups/{}" || true
+                    echo "Pruned backups older than last ${RETENTION_COUNT}"
+                  fi
+
+                  rm -f "${BACKUP_FILE}"
+                  echo "Backup completed successfully"
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "browser-hitl.secretName" . }}
+                      key: database-url
+                      optional: true
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "browser-hitl.secretName" . }}
+                      key: postgres-password
+                - name: MINIO_ENDPOINT
+                  value: {{ printf "%s-minio" (include "browser-hitl.fullname" .) | quote }}
+                - name: MINIO_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "browser-hitl.secretName" . }}
+                      key: minio-access-key
+                - name: MINIO_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "browser-hitl.secretName" . }}
+                      key: minio-secret-key
+                - name: BACKUP_BUCKET
+                  value: {{ .Values.backup.bucket | default "browser-hitl-backups" | quote }}
+                - name: RETENTION_COUNT
+                  value: {{ .Values.backup.retentionCount | default 30 | quote }}
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+{{- end }}

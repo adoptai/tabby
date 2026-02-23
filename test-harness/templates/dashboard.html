@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Enterprise Auth Portal</title>
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <style>
+        :root {
+            --bg: #f1f5f9;
+            --ink: #0f172a;
+            --muted: #475569;
+            --card: #ffffff;
+            --line: #dbe2ea;
+            --accent: #1d4ed8;
+            --ok: #166534;
+            --ok-bg: #dcfce7;
+            --shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            color: var(--ink);
+            background: linear-gradient(180deg, #eef2ff 0%, var(--bg) 32%);
+        }
+        .shell {
+            width: min(980px, calc(100% - 32px));
+            margin: 24px auto 36px;
+        }
+        #user-menu {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 12px 16px;
+            background: var(--card);
+            box-shadow: var(--shadow);
+        }
+        .menu-user {
+            font-size: 14px;
+            color: var(--muted);
+        }
+        #logout-link {
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .hero {
+            margin-top: 16px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 22px 20px;
+            background: var(--card);
+            box-shadow: var(--shadow);
+        }
+        .hero h1 {
+            margin: 0 0 6px;
+            font-size: 30px;
+            line-height: 1.1;
+        }
+        .hero p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 15px;
+        }
+        .status-grid {
+            margin-top: 16px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+        }
+        .status-card {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 16px;
+            background: var(--card);
+            box-shadow: var(--shadow);
+        }
+        .status-label {
+            margin: 0 0 8px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+        .status-value {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .badge-ok {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--ok);
+            background: var(--ok-bg);
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <div id="user-menu">
+            <span class="menu-user">Logged in as: {{ user.email }}</span>
+            <a href="/logout" id="logout-link">Logout</a>
+        </div>
+        <section class="hero">
+            <h1>Dashboard</h1>
+            <p>Welcome, {{ user.email }}. You are authenticated and the protected flow is active.</p>
+        </section>
+        <section class="status-grid">
+            <article class="status-card">
+                <p class="status-label">Session Health</p>
+                <p class="status-value"><span class="badge-ok">HEALTHY</span></p>
+            </article>
+            <article class="status-card">
+                <p class="status-label">Session TTL</p>
+                <p class="status-value">{{ ttl_remaining }}s remaining</p>
+            </article>
+            <article class="status-card">
+                <p class="status-label">Environment</p>
+                <p class="status-value">Enterprise Test</p>
+            </article>
+        </section>
+    </main>
+    <script>
+        // Set localStorage and sessionStorage values for ArtifactExtractor to capture
+        localStorage.setItem("sf_access_token", "mock_access_token_{{ access_token }}");
+        localStorage.setItem("sf_instance_url", "https://testharness.example.com");
+        sessionStorage.setItem("sf_csrf_token", "{{ csrf_token }}");
+        sessionStorage.setItem("sf_session_id", "{{ session_id }}");
+    </script>
+</body>
+</html>

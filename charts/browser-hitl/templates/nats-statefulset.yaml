@@ -1,0 +1,131 @@
+{{- if .Values.nats.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-nats
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  serviceName: {{ include "browser-hitl.fullname" . }}-nats
+  replicas: {{ .Values.nats.replicas }}
+  selector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  template:
+    metadata:
+      labels:
+        {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nats
+    spec:
+      containers:
+        - name: nats
+          image: "{{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}"
+          imagePullPolicy: {{ .Values.nats.image.pullPolicy }}
+          ports:
+            - name: client
+              containerPort: {{ .Values.nats.port }}
+              protocol: TCP
+            - name: monitor
+              containerPort: {{ .Values.nats.monitorPort }}
+              protocol: TCP
+          args:
+            - "--config"
+            - "/etc/nats/nats.conf"
+          {{- if and .Values.nats.auth .Values.nats.auth.enabled }}
+          env:
+            - name: NATS_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.fullname" . }}-secrets
+                  key: nats-auth-token
+          {{- end }}
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/nats
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz?js-enabled-only=true
+              port: monitor
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "browser-hitl.fullname" . }}-nats-config
+      {{- with .Values.nats.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nats.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nats.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.nats.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "browser-hitl.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: nats
+      spec:
+        accessModes:
+          - {{ .Values.nats.persistence.accessMode }}
+        {{- include "browser-hitl.storageClass" (dict "storageClass" .Values.nats.persistence.storageClass "global" .Values.global) | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.nats.persistence.size }}
+  {{- end }}
+---
+# NATS configuration with JetStream enabled
+# MANDATORY: sync_interval: always (Jepsen-validated durability per spec)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-nats-config
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+data:
+  nats.conf: |
+    # NATS Server Configuration for Browser HITL
+    # Per spec: sync_interval MUST be "always" (Jepsen-validated durability)
+
+    listen: 0.0.0.0:{{ .Values.nats.port }}
+
+    http_port: {{ .Values.nats.monitorPort }}
+
+    jetstream {
+      store_dir: /data/jetstream
+      max_mem: {{ .Values.nats.jetstream.maxMemory }}
+      max_file: {{ .Values.nats.jetstream.maxStorage }}
+      sync_interval: {{ .Values.nats.jetstream.syncInterval }}
+    }
+
+    {{- if and .Values.nats.auth .Values.nats.auth.enabled }}
+    # Authentication (C7 remediation)
+    authorization {
+      token: "$NATS_AUTH_TOKEN"
+    }
+    {{- end }}
+
+    # Logging
+    debug: false
+    trace: false
+    logtime: true
+{{- end }}

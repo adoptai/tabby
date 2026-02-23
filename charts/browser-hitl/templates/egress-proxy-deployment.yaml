@@ -1,0 +1,95 @@
+{{- if .Values.egressProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-egress-proxy
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: egress-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: egress-proxy
+    spec:
+      {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: egress-proxy
+          image: "{{ .Values.egressProxy.image.repository }}:{{ .Values.egressProxy.image.tag }}"
+          imagePullPolicy: {{ .Values.egressProxy.image.pullPolicy }}
+          command:
+            - node
+            - /app/server.js
+          env:
+            - name: EGRESS_PROXY_PORT
+              value: {{ .Values.egressProxy.port | quote }}
+            - name: EGRESS_PROXY_ADMIN_PORT
+              value: {{ .Values.egressProxy.adminPort | quote }}
+            - name: EGRESS_PROXY_DEFAULT_ALLOWLIST
+              value: {{ join "," .Values.egressProxy.defaultAllowlist | quote }}
+            - name: EGRESS_PROXY_ALLOW_INSECURE_ADMIN
+              value: {{ ternary "true" "false" .Values.egressProxy.allowInsecureAdmin | quote }}
+            - name: EGRESS_PROXY_ALLOW_INSECURE_SESSION_ALLOWLIST
+              value: {{ ternary "true" "false" .Values.egressProxy.allowInsecureSessionAllowlist | quote }}
+            {{- if .Values.secrets.egressProxyAdminToken }}
+            - name: EGRESS_PROXY_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: EGRESS_PROXY_ADMIN_TOKEN
+            {{- end }}
+            {{- if .Values.secrets.egressProxySessionKey }}
+            - name: EGRESS_PROXY_SESSION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: EGRESS_PROXY_SESSION_KEY
+            {{- end }}
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.egressProxy.port }}
+              protocol: TCP
+            - name: admin
+              containerPort: {{ .Values.egressProxy.adminPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.egressProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: egress-proxy-config
+              mountPath: /app/server.js
+              subPath: server.js
+      volumes:
+        - name: egress-proxy-config
+          configMap:
+            name: {{ include "browser-hitl.fullname" . }}-egress-proxy-config
+      {{- with .Values.egressProxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.egressProxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.egressProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

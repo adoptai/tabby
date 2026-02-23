@@ -1,0 +1,90 @@
+{{- if and .Values.alerting .Values.alerting.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-alerts
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    prometheus: {{ .Values.alerting.prometheusInstance | default "kube-prometheus" }}
+spec:
+  groups:
+    # =========================================================================
+    # Session Health
+    # =========================================================================
+    - name: browser-hitl-sessions
+      rules:
+        - alert: HighSessionFailureRate
+          expr: |
+            rate(sessions_failed_total[5m])
+            / (rate(sessions_started_total[5m]) + 1e-10)
+            > {{ .Values.alerting.thresholds.sessionFailureRate | default 0.1 }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High session failure rate (> {{ .Values.alerting.thresholds.sessionFailureRate | default 0.1 | mul 100 }}%)"
+            description: "Session failure rate is {{ "{{ $value | humanizePercentage }}" }} over the last 5 minutes."
+
+        - alert: NoActiveSessions
+          expr: sessions_active == 0
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "No active browser sessions for 15 minutes"
+            description: "Zero active sessions detected — may indicate upstream issue or expected quiet period."
+
+    # =========================================================================
+    # HITL Intervention SLA
+    # =========================================================================
+    - name: browser-hitl-hitl
+      rules:
+        - alert: HitlLatencyHigh
+          expr: |
+            histogram_quantile(0.95, rate(hitl_latency_ms_bucket[5m]))
+            > {{ .Values.alerting.thresholds.hitlLatencyP95Ms | default 30000 }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HITL p95 latency exceeds {{ .Values.alerting.thresholds.hitlLatencyP95Ms | default 30000 }}ms"
+            description: "95th percentile HITL intervention latency is {{ "{{ $value | humanizeDuration }}" }}."
+
+        - alert: HitlTimeoutRate
+          expr: |
+            rate(hitl_intervention_timeout_total[10m])
+            / (rate(hitl_intervention_requested_total[10m]) + 1e-10)
+            > {{ .Values.alerting.thresholds.hitlTimeoutRate | default 0.05 }}
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "HITL timeout rate exceeds {{ .Values.alerting.thresholds.hitlTimeoutRate | default 0.05 | mul 100 }}%"
+            description: "{{ "{{ $value | humanizePercentage }}" }} of HITL interventions are timing out."
+
+    # =========================================================================
+    # Infrastructure Health
+    # =========================================================================
+    - name: browser-hitl-infra
+      rules:
+        - alert: ApiPodNotReady
+          expr: |
+            kube_deployment_status_replicas_available{deployment="{{ include "browser-hitl.fullname" . }}-api"}
+            < kube_deployment_spec_replicas{deployment="{{ include "browser-hitl.fullname" . }}-api"}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API pods not fully available"
+            description: "Expected {{ "{{ $labels.deployment }}" }} replicas are not all ready."
+
+        - alert: HighRestartCount
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod restarting frequently"
+            description: "Container {{ "{{ $labels.container }}" }} in pod {{ "{{ $labels.pod }}" }} restarted {{ "{{ $value }}" }} times in the last hour."
+{{- end }}

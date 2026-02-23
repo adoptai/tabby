@@ -1,0 +1,77 @@
+{{- if .Values.slackBot.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-slack-bot
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: slack-bot
+spec:
+  replicas: {{ .Values.slackBot.replicas }}
+  selector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: slack-bot
+  template:
+    metadata:
+      labels:
+        {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: slack-bot
+    spec:
+      {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: slack-bot
+          image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.slackBot) }}
+          imagePullPolicy: {{ .Values.images.slackBot.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "browser-hitl.configmapName" . }}
+          env:
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SLACK_BOT_TOKEN
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SLACK_SIGNING_SECRET
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SLACK_APP_TOKEN
+            - name: SLACK_DEFAULT_CHANNEL
+              value: {{ .Values.slackBot.slackDefaultChannel | quote }}
+            - name: NATS_URL
+              value: {{ .Values.config.natsUrl | quote }}
+            - name: API_BASE_URL
+              value: {{ printf "http://%s-api:%v" (include "browser-hitl.fullname" .) .Values.api.port | quote }}
+            - name: SERVICE_AUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SERVICE_AUTH_CLIENT_ID
+                  optional: true
+            - name: SERVICE_AUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SERVICE_AUTH_CLIENT_SECRET
+                  optional: true
+          resources:
+            {{- toYaml .Values.slackBot.resources | nindent 12 }}
+      {{- with .Values.slackBot.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.slackBot.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.slackBot.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

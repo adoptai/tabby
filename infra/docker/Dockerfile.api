@@ -1,0 +1,26 @@
+# API Service Dockerfile per spec section 15.6
+FROM node:20-slim
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+# Copy workspace manifests for deterministic dependency install
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nx.json tsconfig.base.json ./
+
+# Copy shared package first for layer caching
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
+
+# Copy API package
+COPY apps/api/package.json apps/api/tsconfig.json apps/api/nest-cli.json ./apps/api/
+COPY apps/api/src ./apps/api/src
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/api build
+
+EXPOSE 8080
+
+USER node
+
+CMD ["node", "--max-old-space-size=1024", "apps/api/dist/main.js"]
