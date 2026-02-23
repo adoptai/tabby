@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "lib": ["ES2022", "DOM"],
+    "strictPropertyInitialization": false,
+    "paths": {
+      "@browser-hitl/shared": ["../../packages/shared/dist/index.d.ts"],
+      "@browser-hitl/shared/*": ["../../packages/shared/dist/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
+}

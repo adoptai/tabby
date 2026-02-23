@@ -1,0 +1,90 @@
+{{- if .Values.teamsBot.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-teams-bot
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: teams-bot
+spec:
+  replicas: {{ .Values.teamsBot.replicas }}
+  selector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: teams-bot
+  template:
+    metadata:
+      labels:
+        {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: teams-bot
+    spec:
+      {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: teams-bot
+          image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.teamsBot) }}
+          imagePullPolicy: {{ .Values.images.teamsBot.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.teamsBot.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "browser-hitl.configmapName" . }}
+          env:
+            - name: MICROSOFT_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: MICROSOFT_APP_ID
+            - name: MICROSOFT_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: MICROSOFT_APP_PASSWORD
+            - name: TEAMS_DEFAULT_CHANNEL
+              value: {{ .Values.teamsBot.teamsDefaultChannel | quote }}
+            - name: NATS_URL
+              value: {{ .Values.config.natsUrl | quote }}
+            - name: API_BASE_URL
+              value: {{ printf "http://%s-api:%v" (include "browser-hitl.fullname" .) .Values.api.port | quote }}
+            - name: SERVICE_AUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SERVICE_AUTH_CLIENT_ID
+                  optional: true
+            - name: SERVICE_AUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: SERVICE_AUTH_CLIENT_SECRET
+                  optional: true
+            - name: PORT
+              value: {{ .Values.teamsBot.port | quote }}
+          resources:
+            {{- toYaml .Values.teamsBot.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      {{- with .Values.teamsBot.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.teamsBot.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.teamsBot.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

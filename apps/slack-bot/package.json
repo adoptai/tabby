@@ -1,0 +1,21 @@
+{
+  "name": "@browser-hitl/slack-bot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "start:soft": "node dist/soft-hitl-bridge.js",
+    "test": "echo 'Testing slack-bot'",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@browser-hitl/shared": "workspace:*",
+    "@slack/bolt": "^3.18.0",
+    "nats": "^2.28.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3"
+  }
+}

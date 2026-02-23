@@ -1,0 +1,23 @@
+# Session Controller Dockerfile
+FROM node:20-slim
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nx.json tsconfig.base.json ./
+
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
+
+COPY apps/controller/package.json apps/controller/tsconfig.json apps/controller/nest-cli.json ./apps/controller/
+COPY apps/controller/src ./apps/controller/src
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/controller build
+
+EXPOSE 8090
+
+USER node
+
+CMD ["node", "apps/controller/dist/main.js"]

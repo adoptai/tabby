@@ -1,0 +1,93 @@
+{{- if .Values.minio.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-minio
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  serviceName: {{ include "browser-hitl.fullname" . }}-minio
+  replicas: {{ .Values.minio.replicas }}
+  selector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minio
+  template:
+    metadata:
+      labels:
+        {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio
+    spec:
+      containers:
+        - name: minio
+          image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
+          imagePullPolicy: {{ .Values.minio.image.pullPolicy }}
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":{{ .Values.minio.consolePort }}"
+          ports:
+            - name: api
+              containerPort: {{ .Values.minio.port }}
+              protocol: TCP
+            - name: console
+              containerPort: {{ .Values.minio.consolePort }}
+              protocol: TCP
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: MINIO_SECRET_KEY
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      {{- with .Values.minio.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.minio.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.minio.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.minio.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "browser-hitl.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: minio
+      spec:
+        accessModes:
+          - {{ .Values.minio.persistence.accessMode }}
+        {{- include "browser-hitl.storageClass" (dict "storageClass" .Values.minio.persistence.storageClass "global" .Values.global) | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.minio.persistence.size }}
+  {{- end }}
+{{- end }}

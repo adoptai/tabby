@@ -1,0 +1,36 @@
+{
+  "name": "browser-hitl",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser HITL MVP - Headless browser sessions with human-in-the-loop takeover",
+  "scripts": {
+    "build": "nx run-many --target=build --all",
+    "test": "nx run-many --target=test --all",
+    "lint": "nx run-many --target=lint --all",
+    "build:affected": "nx affected --target=build",
+    "test:affected": "nx affected --target=test",
+    "lint:affected": "nx affected --target=lint",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "nx": "^21.1.3",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.12.1",
+  "pnpm": {
+    "overrides": {
+      "fast-xml-parser": ">=5.3.6"
+    }
+  },
+  "lint-staged": {
+    "*.ts": [
+      "bash -c 'pnpm -r run lint'"
+    ]
+  }
+}

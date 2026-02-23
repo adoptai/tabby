@@ -1,0 +1,15 @@
+# noVNC Sidecar Dockerfile per spec section 15.5
+# Runs alongside the worker container in the same pod (shared network namespace)
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    novnc websockify && \
+    rm -rf /var/lib/apt/lists/*
+
+# noVNC connects to x11vnc via localhost:5900 (shared pod network)
+# Serves noVNC web client on 0.0.0.0:6080
+EXPOSE 6080
+
+USER nobody
+
+CMD ["websockify", "--web", "/usr/share/novnc", "6080", "localhost:5900"]

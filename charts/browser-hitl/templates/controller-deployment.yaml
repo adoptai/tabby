@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-controller
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "browser-hitl.fullname" . }}-controller
+      containers:
+        - name: controller
+          image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.controller) }}
+          imagePullPolicy: {{ .Values.images.controller.pullPolicy }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.controller.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "browser-hitl.configmapName" . }}
+          env:
+            - name: JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: JWT_SIGNING_KEY
+            {{- if .Values.secrets.egressProxyAdminToken }}
+            - name: EGRESS_PROXY_ALLOWLIST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: EGRESS_PROXY_ADMIN_TOKEN
+            {{- end }}
+            {{- if .Values.secrets.egressProxySessionKey }}
+            - name: EGRESS_PROXY_SESSION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: EGRESS_PROXY_SESSION_KEY
+            {{- end }}
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: MINIO_SECRET_KEY
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# ServiceAccount for controller to manage worker pods dynamically
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-controller
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+---
+# RBAC: Allow controller to create/delete/list worker runtime resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-controller
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "update", "delete", "get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "update", "delete", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-controller
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "browser-hitl.fullname" . }}-controller
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "browser-hitl.fullname" . }}-controller
+  apiGroup: rbac.authorization.k8s.io

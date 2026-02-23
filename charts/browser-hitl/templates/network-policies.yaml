@@ -1,0 +1,222 @@
+{{- if and .Values.networkPolicies .Values.networkPolicies.enabled }}
+# =============================================================================
+# Network Policies (H12 remediation)
+# Restrict traffic to only what's needed between services.
+# =============================================================================
+
+# --- API: allow ingress from ingress controller and bots, egress to DB/Redis/NATS/MinIO
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-api
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: slack-bot
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: teams-bot
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: admin-ui
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+      ports:
+        - port: {{ .Values.api.port }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: {{ .Values.postgres.port }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: redis
+      ports:
+        - port: {{ .Values.redis.port }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: nats
+      ports:
+        - port: {{ .Values.nats.port }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: minio
+      ports:
+        - port: {{ .Values.minio.port }}
+          protocol: TCP
+    # DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# --- Controller: allow egress to K8s API, DB, Redis, NATS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-controller
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []  # Controller has no inbound traffic
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: {{ .Values.postgres.port }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: redis
+      ports:
+        - port: {{ .Values.redis.port }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: nats
+      ports:
+        - port: {{ .Values.nats.port }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+      ports:
+        - port: {{ .Values.api.port }}
+          protocol: TCP
+    # K8s API access (for managing worker pods)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# --- PostgreSQL: only accept connections from API and Controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-postgres
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+      ports:
+        - port: {{ .Values.postgres.port }}
+          protocol: TCP
+---
+# --- Redis: only accept connections from API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-redis
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+      ports:
+        - port: {{ .Values.redis.port }}
+          protocol: TCP
+---
+# --- NATS: accept from API, Controller, bots
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-nats
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "browser-hitl.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: slack-bot
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: teams-bot
+      ports:
+        - port: {{ .Values.nats.port }}
+          protocol: TCP
+{{- end }}

@@ -1,0 +1,19 @@
+{{- if .Values.adminUi.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-admin-ui
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-ui
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.adminUi.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "browser-hitl.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-ui
+{{- end }}

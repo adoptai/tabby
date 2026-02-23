@@ -1,0 +1,22 @@
+{
+  "name": "@browser-hitl/admin-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'Building admin-ui'",
+    "start": "node server.js",
+    "test": "echo 'Testing admin-ui'",
+    "lint": "echo 'Linting admin-ui'"
+  },
+  "dependencies": {
+    "@browser-hitl/shared": "workspace:*",
+    "next": "^15.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
+  }
+}

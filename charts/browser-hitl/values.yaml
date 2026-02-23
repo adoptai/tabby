@@ -1,0 +1,454 @@
+# =============================================================================
+# Browser HITL Helm Chart - Default Values
+# Per spec sections 15.4, 15.7, 15.10, 15.11
+# =============================================================================
+
+# -- Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""  # Default: use cluster default (local-path for k3s, standard otherwise)
+
+# =============================================================================
+# Image Tags
+# =============================================================================
+images:
+  api:
+    repository: browser-hitl/api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  controller:
+    repository: browser-hitl/controller
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  worker:
+    repository: browser-hitl/worker
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  novnc:
+    repository: browser-hitl/novnc
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  slackBot:
+    repository: browser-hitl/slack-bot
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  teamsBot:
+    repository: browser-hitl/teams-bot
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  adminUi:
+    repository: browser-hitl/admin-ui
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+# =============================================================================
+# API Service (NestJS) - Port 8080
+# Per spec section 15.7: request 0.5 vCPU, 512 MB RAM
+# =============================================================================
+api:
+  replicas: 1
+  port: 8080
+  health:
+    liveness: /health/live
+    readiness: /health/ready
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Session Controller (NestJS standalone) - Port 8090
+# Per spec section 15.7: request 0.5 vCPU, 512 MB RAM
+# =============================================================================
+controller:
+  replicas: 1
+  port: 8090
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Browser Worker (Dynamic pods created by controller)
+# Per spec section 15.7: request 1 vCPU / 2 GB, limit 2 vCPU / 3 GB
+# =============================================================================
+worker:
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "3Gi"
+  novnc:
+    port: 6080
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "250m"
+        memory: "256Mi"
+  healthPort: 8091
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Slack Bot - Per spec section 15.7: request 0.25 vCPU, 256 MB RAM
+# =============================================================================
+slackBot:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Slack-specific env vars
+  slackBotToken: ""
+  slackSigningSecret: ""
+  slackAppToken: ""
+  slackDefaultChannel: ""
+
+# =============================================================================
+# Teams Bot - Per spec section 15.7: request 0.25 vCPU, 256 MB RAM
+# =============================================================================
+teamsBot:
+  enabled: true
+  replicas: 1
+  port: 3978
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Teams-specific env vars
+  microsoftAppId: ""
+  microsoftAppPassword: ""
+  teamsDefaultChannel: ""
+
+# =============================================================================
+# Admin UI (Next.js) - Port 3000
+# =============================================================================
+adminUi:
+  enabled: true
+  replicas: 1
+  port: 3000
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# PostgreSQL - Per spec section 15.10: single replica, 20Gi PVC
+# =============================================================================
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 5432
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""  # Uses global.storageClass if empty
+    accessMode: ReadWriteOnce
+  auth:
+    database: browser_hitl
+    username: browser_hitl
+    password: ""  # Set via secrets
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Redis - Per spec section 15.10: single replica, 5Gi PVC
+# =============================================================================
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 6379
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# NATS JetStream - Per spec section 15.10: single replica, 10Gi PVC
+# MANDATORY: sync_interval: always (Jepsen-validated durability)
+# =============================================================================
+nats:
+  enabled: true
+  image:
+    repository: nats
+    tag: "2.10-alpine"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 4222
+  monitorPort: 8222
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  jetstream:
+    enabled: true
+    syncInterval: always  # MANDATORY per spec - Jepsen-validated durability
+    maxMemory: 256Mi
+    maxStorage: 10Gi
+  # NATS authentication (C7 remediation)
+  auth:
+    enabled: false  # Enable in production
+    token: ""       # Set via secrets; or use nkey/accounts for multi-tenant
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# MinIO - Per spec section 15.10: single replica, 50Gi PVC
+# =============================================================================
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 9000
+  consolePort: 9001
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  auth:
+    accessKey: ""  # Set via secrets
+    secretKey: ""  # Set via secrets
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Egress Proxy - Required for FQDN allowlisting enforcement
+# =============================================================================
+egressProxy:
+  enabled: true
+  image:
+    repository: node
+    tag: "20-alpine"
+    pullPolicy: IfNotPresent
+  port: 3128
+  adminPort: 8095
+  allowInsecureAdmin: false
+  allowInsecureSessionAllowlist: false
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  # Baseline allowlist (controller sync should extend this set).
+  defaultAllowlist:
+    - ".example.com"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Ingress - Per spec section 15.11: NGINX ingress controller
+# =============================================================================
+# =============================================================================
+# Network Policies (H12 remediation) — restrict inter-service traffic
+# =============================================================================
+networkPolicies:
+  enabled: false  # Enable in production
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # TLS scaffolding (C6 remediation) — uncomment in production:
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  host: browser-hitl.local
+  tls:
+    enabled: false  # Enable in production with cert-manager
+    secretName: browser-hitl-tls
+
+# =============================================================================
+# Runtime Configuration (Env Vars) - Per spec section 15.4
+# =============================================================================
+config:
+  # Database
+  databaseUrl: "postgresql://browser_hitl:changeme@browser-hitl-postgres:5432/browser_hitl"
+  # Redis
+  redisUrl: "redis://browser-hitl-redis:6379"
+  # NATS
+  natsUrl: "nats://browser-hitl-nats:4222"
+  natsSyncInterval: "always"  # MANDATORY
+  # MinIO
+  minioEndpoint: "browser-hitl-minio"
+  minioAccessKey: ""
+  minioSecretKey: ""
+  # JWT
+  jwtSigningKey: ""
+  jwtSigningKeyId: "key-1"
+  # Bootstrap
+  adminBootstrapEmail: "admin@browser-hitl.local"
+  adminBootstrapPassword: ""
+  bootstrapTenantName: "default"
+  # Tuning defaults (per spec section 15.4)
+  streamTtlSeconds: "600"
+  defaultBackoffSeconds: "30"
+  defaultKeepaliveSeconds: "300"
+  reconcileIntervalSeconds: "15"
+  maxSessionAgeHours: "24"
+  publicBaseUrl: ""
+  streamHost: ""
+  streamProtocol: ""
+  # Service-to-service auth defaults (bots -> API)
+  serviceAuthAllowedTenantIds: ""
+  serviceAuthAllowWildcardTenantScope: "true"
+  serviceAuthAllowedRoles: "Operator"
+  serviceAuthDefaultRole: "Operator"
+  serviceAuthTokenTtlSeconds: "3600"
+  # Agent wrapper defaults (POST /agent/run-url)
+  agentDefaultCredentialRef: ""
+  agentDefaultSlackChannel: ""
+  # Bypass proxy for in-cluster/local endpoints while keeping external egress on proxy.
+  egressProxyBypassList: "localhost;127.0.0.1;::1;*.svc;*.svc.cluster.local;*.cluster.local;test-harness;browser-hitl-test-harness"
+  # Egress proxy
+  egressProxyUrl: ""
+  egressProxyAllowlistUrl: ""
+  egressPolicyFailClosed: "true"
+  circuitBreakerAppFailureThreshold: "5"
+  circuitBreakerTenantFailureThreshold: "15"
+  circuitBreakerWindowSeconds: "900"
+  circuitBreakerCooldownSeconds: "300"
+  lifecycleArtifactRetentionDays: "7"
+  lifecycleInterventionRetentionDays: "30"
+  lifecycleSessionRetentionDays: "14"
+  lifecycleAppRetentionDays: "30"
+  workerAllowEnvCredentialFallback: "false"
+
+# =============================================================================
+# Secrets (sensitive values - override in production)
+# =============================================================================
+secrets:
+  postgresPassword: "changeme"
+  redisPassword: ""
+  jwtSigningKey: "changeme-jwt-signing-key-minimum-32-chars"
+  minioAccessKey: "minioadmin"
+  minioSecretKey: "minioadmin"
+  adminBootstrapPassword: "changeme-admin-password"
+  egressProxyAdminToken: "changeme-egress-proxy-admin-token"
+  egressProxySessionKey: "changeme-egress-proxy-session-key"
+  slackBotToken: ""
+  slackSigningSecret: ""
+  slackAppToken: ""
+  serviceAuthClientId: ""
+  serviceAuthClientSecret: ""
+  microsoftAppId: ""
+  microsoftAppPassword: ""
+  # NATS auth token (C7 remediation) — set in production
+  natsAuthToken: ""
+  # Metrics auth token (C4 remediation) — set in production
+  metricsAuthToken: ""
+  # 64-char hex string (32 bytes) for AES-256-GCM artifact encryption
+  # Generate with: openssl rand -hex 32
+  tenantEncryptionKey: ""
+
+# =============================================================================
+# Alerting (C8 remediation) — PrometheusRule CRDs for kube-prometheus-stack
+# =============================================================================
+# =============================================================================
+# Backup CronJobs (C5 remediation) — pg_dump to MinIO/S3
+# =============================================================================
+backup:
+  enabled: false  # Enable in production
+  schedule: "0 2 * * *"  # Daily at 2am UTC
+  bucket: "browser-hitl-backups"
+  retentionCount: 30  # Keep last 30 backups
+  timeoutSeconds: 1800  # 30 min max
+  historyLimit: 3
+  failedHistoryLimit: 3
+  image: "postgres:16-alpine"
+
+alerting:
+  enabled: false  # Enable in production with kube-prometheus-stack
+  prometheusInstance: "kube-prometheus"
+  thresholds:
+    sessionFailureRate: 0.1       # Alert if >10% sessions fail (5m window)
+    hitlLatencyP95Ms: 30000       # Alert if p95 HITL latency >30s
+    hitlTimeoutRate: 0.05         # Alert if >5% HITL timeouts (10m window)

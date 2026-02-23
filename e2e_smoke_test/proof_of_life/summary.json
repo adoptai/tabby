@@ -1,0 +1,191 @@
+{
+  "all_checks": {
+    "cdp.app_created": true,
+    "cdp.correct_service": true,
+    "cdp.mode_label": true,
+    "cdp.no_sidecar": true,
+    "cdp.scaled": true,
+    "cdp.session_healthy": true,
+    "cdp.session_started": true,
+    "cdp.single_container": true,
+    "vnc.app_created": true,
+    "vnc.correct_service": true,
+    "vnc.has_sidecar": true,
+    "vnc.mode_label": true,
+    "vnc.scaled": true,
+    "vnc.session_healthy": true,
+    "vnc.session_started": true,
+    "vnc.two_containers": true
+  },
+  "cdp": {
+    "app_id": "ebd5afb2-5716-4f68-b6bf-0bf9de6696a8",
+    "checks": {
+      "app_created": true,
+      "correct_service": true,
+      "mode_label": true,
+      "no_sidecar": true,
+      "scaled": true,
+      "session_healthy": true,
+      "session_started": true,
+      "single_container": true
+    },
+    "mode": "cdp",
+    "resources": {
+      "container_count": 1,
+      "container_names": [
+        "worker"
+      ],
+      "containers": [
+        {
+          "limits": {
+            "cpu": "2",
+            "memory": "3Gi"
+          },
+          "name": "worker",
+          "requests": {
+            "cpu": "1",
+            "memory": "2Gi"
+          }
+        }
+      ],
+      "pod_name": "worker-46c84c24-88b8-4ac1-a24c-bd0a77670877",
+      "streaming_mode_label": "cdp",
+      "total_requested_cpu_milli": 1000,
+      "total_requested_memory_mib": 2048
+    },
+    "screenshots": [
+      "/home/juancho/projects/adoptbrowserstack/e2e_smoke_test/proof_of_life/cdp_01_starting.png",
+      "/home/juancho/projects/adoptbrowserstack/e2e_smoke_test/proof_of_life/cdp_03_authenticated.png"
+    ],
+    "session_id": "46c84c24-88b8-4ac1-a24c-bd0a77670877"
+  },
+  "completed_at": "2026-02-22T16:09:45.930778+00:00",
+  "failures": [],
+  "resource_comparison": {
+    "cdp": {
+      "container_count": 1,
+      "container_names": [
+        "worker"
+      ],
+      "containers": [
+        {
+          "limits": {
+            "cpu": "2",
+            "memory": "3Gi"
+          },
+          "name": "worker",
+          "requests": {
+            "cpu": "1",
+            "memory": "2Gi"
+          }
+        }
+      ],
+      "pod_name": "worker-46c84c24-88b8-4ac1-a24c-bd0a77670877",
+      "streaming_mode_label": "cdp",
+      "total_requested_cpu_milli": 1000,
+      "total_requested_memory_mib": 2048
+    },
+    "savings": {
+      "containers": 1,
+      "cpu_milli": 100,
+      "memory_mib": 128,
+      "processes_eliminated": [
+        "Xvfb",
+        "x11vnc",
+        "websockify"
+      ]
+    },
+    "vnc": {
+      "container_count": 2,
+      "container_names": [
+        "worker",
+        "novnc"
+      ],
+      "containers": [
+        {
+          "limits": {
+            "cpu": "2",
+            "memory": "3Gi"
+          },
+          "name": "worker",
+          "requests": {
+            "cpu": "1",
+            "memory": "2Gi"
+          }
+        },
+        {
+          "limits": {
+            "cpu": "500m",
+            "memory": "256Mi"
+          },
+          "name": "novnc",
+          "requests": {
+            "cpu": "100m",
+            "memory": "128Mi"
+          }
+        }
+      ],
+      "pod_name": "worker-b446bfe8-6ae2-4b40-8ae0-321ca09a8f2f",
+      "streaming_mode_label": "vnc",
+      "total_requested_cpu_milli": 1100,
+      "total_requested_memory_mib": 2176
+    }
+  },
+  "result": "PASS",
+  "started_at": "2026-02-22T16:07:17.638173+00:00",
+  "total_checks": 16,
+  "vnc": {
+    "app_id": "9568619d-5a31-4f53-92c0-ac862a591c5a",
+    "checks": {
+      "app_created": true,
+      "correct_service": true,
+      "has_sidecar": true,
+      "mode_label": true,
+      "scaled": true,
+      "session_healthy": true,
+      "session_started": true,
+      "two_containers": true
+    },
+    "mode": "vnc",
+    "resources": {
+      "container_count": 2,
+      "container_names": [
+        "worker",
+        "novnc"
+      ],
+      "containers": [
+        {
+          "limits": {
+            "cpu": "2",
+            "memory": "3Gi"
+          },
+          "name": "worker",
+          "requests": {
+            "cpu": "1",
+            "memory": "2Gi"
+          }
+        },
+        {
+          "limits": {
+            "cpu": "500m",
+            "memory": "256Mi"
+          },
+          "name": "novnc",
+          "requests": {
+            "cpu": "100m",
+            "memory": "128Mi"
+          }
+        }
+      ],
+      "pod_name": "worker-b446bfe8-6ae2-4b40-8ae0-321ca09a8f2f",
+      "streaming_mode_label": "vnc",
+      "total_requested_cpu_milli": 1100,
+      "total_requested_memory_mib": 2176
+    },
+    "screenshots": [
+      "/home/juancho/projects/adoptbrowserstack/e2e_smoke_test/proof_of_life/vnc_01_starting.png",
+      "/home/juancho/projects/adoptbrowserstack/e2e_smoke_test/proof_of_life/vnc_03_authenticated.png"
+    ],
+    "session_id": "b446bfe8-6ae2-4b40-8ae0-321ca09a8f2f"
+  }
+}

@@ -1,0 +1,21 @@
+# Slack Bot Dockerfile
+FROM node:20-slim
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nx.json tsconfig.base.json ./
+
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
+
+COPY apps/slack-bot/package.json apps/slack-bot/tsconfig.json ./apps/slack-bot/
+COPY apps/slack-bot/src ./apps/slack-bot/src
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/slack-bot build
+
+USER node
+
+CMD ["node", "apps/slack-bot/dist/main.js"]

@@ -1,0 +1,86 @@
+# =============================================================================
+# Browser HITL - LOCAL (Kind/minikube) Overrides
+# =============================================================================
+# Usage:
+#   helm upgrade --install browser-hitl charts/browser-hitl \
+#     -f charts/browser-hitl/values-local.yaml \
+#     --namespace browser-hitl --create-namespace
+# =============================================================================
+
+# Single replicas — no HA needed locally
+api:
+  replicas: 1
+controller:
+  replicas: 1
+slackBot:
+  replicas: 1
+teamsBot:
+  replicas: 1
+adminUi:
+  replicas: 1
+
+# Infrastructure: single replica, relaxed resources
+postgres:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+redis:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+nats:
+  replicas: 1
+  auth:
+    enabled: false  # No auth needed locally
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+minio:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+# No TLS locally
+ingress:
+  enabled: true
+  tls:
+    enabled: false
+
+# No network policies locally
+networkPolicies:
+  enabled: false
+
+# Development secrets (NEVER use in production)
+secrets:
+  postgresPassword: "localdev"
+  jwtSigningKey: "localdev-jwt-key-at-least-32-characters-long"
+  minioAccessKey: "minioadmin"
+  minioSecretKey: "minioadmin"
+  adminBootstrapPassword: "LocalDev123!@#"
+  egressProxyAdminToken: "localdev-egress-token"
+  egressProxySessionKey: "localdev-egress-session-key"
+  metricsAuthToken: ""  # Open access locally
+  natsAuthToken: ""
+  tenantEncryptionKey: ""  # Generate with: openssl rand -hex 32

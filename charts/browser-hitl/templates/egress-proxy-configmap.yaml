@@ -1,0 +1,12 @@
+{{- if .Values.egressProxy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-egress-proxy-config
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+data:
+  server.js: |
+{{ .Files.Get "files/egress-proxy/server.js" | indent 4 }}
+{{- end }}

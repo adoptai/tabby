@@ -1,0 +1,23 @@
+{{- if .Values.egressProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "browser-hitl.fullname" . }}-egress-proxy
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "browser-hitl.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+  ports:
+    - name: proxy
+      port: {{ .Values.egressProxy.port }}
+      targetPort: proxy
+      protocol: TCP
+    - name: admin
+      port: {{ .Values.egressProxy.adminPort }}
+      targetPort: admin
+      protocol: TCP
+{{- end }}
