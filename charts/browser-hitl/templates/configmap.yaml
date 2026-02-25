@@ -10,7 +10,8 @@ metadata:
 {{- $novncImage := include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.novnc) }}
 data:
   # Per spec section 15.4 - Runtime Configuration (Env Vars)
-  DATABASE_URL: {{ .Values.config.databaseUrl | quote }}
+  {{- $dbPassword := .Values.secrets.postgresPassword | default "changeme" }}
+  DATABASE_URL: {{ printf "postgresql://%s:%s@%s-postgres:%v/%s" .Values.postgres.auth.username $dbPassword (include "browser-hitl.fullname" .) (.Values.postgres.port | int) .Values.postgres.auth.database | quote }}
   REDIS_URL: {{ .Values.config.redisUrl | quote }}
   NATS_URL: {{ .Values.config.natsUrl | quote }}
   NATS_SYNC_INTERVAL: {{ .Values.config.natsSyncInterval | quote }}

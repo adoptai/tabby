@@ -13,8 +13,10 @@ api:
 controller:
   replicas: 1
 slackBot:
+  enabled: false  # No Slack credentials locally — disable to avoid secret errors
   replicas: 1
 teamsBot:
+  enabled: false  # No Teams credentials locally — disable to avoid secret errors
   replicas: 1
 adminUi:
   replicas: 1
