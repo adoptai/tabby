@@ -350,8 +350,10 @@ ingress:
 # Runtime Configuration (Env Vars) - Per spec section 15.4
 # =============================================================================
 config:
-  # Database
-  databaseUrl: "postgresql://browser_hitl:changeme@browser-hitl-postgres:5432/browser_hitl"
+  # Database — NOTE: DATABASE_URL is now constructed in configmap.yaml from
+  # postgres.auth.username, secrets.postgresPassword, postgres.auth.database, and postgres.port.
+  # The value below is kept only as documentation / fallback reference.
+  databaseUrl: ""  # constructed from postgres.auth + secrets.postgresPassword
   # Redis
   redisUrl: "redis://browser-hitl-redis:6379"
   # NATS

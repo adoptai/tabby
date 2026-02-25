@@ -172,8 +172,14 @@ k8s-deploy: ## Deploy to Kubernetes via Helm (creates namespace if needed)
 	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
 		--namespace $(HELM_NAMESPACE) \
-		--set global.image.tag=$(IMAGE_TAG) \
-		--set global.image.registry=$(REGISTRY) \
+		--set global.imageRegistry=$(REGISTRY) \
+		--set images.api.tag=$(IMAGE_TAG) \
+		--set images.controller.tag=$(IMAGE_TAG) \
+		--set images.worker.tag=$(IMAGE_TAG) \
+		--set images.novnc.tag=$(IMAGE_TAG) \
+		--set images.slackBot.tag=$(IMAGE_TAG) \
+		--set images.teamsBot.tag=$(IMAGE_TAG) \
+		--set images.adminUi.tag=$(IMAGE_TAG) \
 		--wait --timeout 5m
 
 .PHONY: k8s-delete
@@ -202,6 +208,42 @@ k8s-port-forward: ## Port-forward API (8080), test-harness (9000)
 	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 8080:8080 &
 	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-test-harness 9000:8000 &
 	@wait
+
+# ============================================================
+# KIND (local Kubernetes)
+# ============================================================
+
+KIND_CLUSTER ?= tabby-dev
+
+.PHONY: kind-create
+kind-create: ## Create a Kind cluster for local development
+	kind create cluster --name $(KIND_CLUSTER)
+	@echo "Kind cluster '$(KIND_CLUSTER)' created. Context: kind-$(KIND_CLUSTER)"
+
+.PHONY: kind-load-images
+kind-load-images: ## Load all Docker images into the Kind cluster
+	kind load docker-image \
+		browser-hitl/api:0.1.0 \
+		browser-hitl/controller:0.1.0 \
+		browser-hitl/worker:0.1.0 \
+		browser-hitl/novnc:0.1.0 \
+		browser-hitl/admin-ui:0.1.0 \
+		--name $(KIND_CLUSTER)
+	@echo "Images loaded into Kind cluster '$(KIND_CLUSTER)'"
+
+.PHONY: kind-deploy
+kind-deploy: ## Full local deploy: load images + helm install with local values
+	$(MAKE) kind-load-images
+	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
+		-f charts/browser-hitl/values-local.yaml \
+		--namespace $(HELM_NAMESPACE) \
+		--wait --timeout 5m
+	@echo "Stack deployed. Run: kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8080"
+
+.PHONY: kind-delete
+kind-delete: ## Delete the Kind cluster
+	kind delete cluster --name $(KIND_CLUSTER)
 
 # ============================================================
 # TEST HARNESS (local Python dev)
