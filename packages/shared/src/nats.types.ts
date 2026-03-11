@@ -52,6 +52,7 @@ export interface HitlStartedEvent {
     session_id: string;
     tenant_id: string;
     app_id: string;
+    app_name: string;
     reason: string;
     intervention_id: string;
   };

@@ -108,7 +108,20 @@ async function main() {
         }
       }
     }
-    browser = await chromium.launch(launchOptions);
+    // Try CloakBrowser (stealth Chromium) first, fall back to stock Playwright.
+    // CloakBrowser is ESM-only ("exports" only has "import", no "require").
+    // TypeScript "module":"commonjs" transpiles `await import()` into require(),
+    // which fails with ERR_PACKAGE_PATH_NOT_EXPORTED. We hide the import() from
+    // the transpiler using Function() so Node executes a real ESM dynamic import.
+    try {
+      const esmImport = new Function('specifier', 'return import(specifier)') as (s: string) => Promise<any>;
+      const { launch: cloakLaunch } = await esmImport('cloakbrowser');
+      browser = await cloakLaunch(launchOptions) as Browser;
+      console.log('Browser launched via CloakBrowser (stealth mode)');
+    } catch (cloakErr) {
+      console.warn(`CloakBrowser unavailable, falling back to stock Playwright: ${cloakErr}`);
+      browser = await chromium.launch(launchOptions);
+    }
 
     context = await browser.newContext({
       viewport: { width: 1920, height: 1080 },

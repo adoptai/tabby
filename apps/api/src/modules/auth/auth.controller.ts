@@ -2,7 +2,7 @@ import {
   Controller, Post, Get, Delete, Body, Param, HttpCode,
   UseGuards, Req, ParseUUIDPipe,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiProperty } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { TokenBlacklistService } from './token-blacklist.service';
@@ -20,9 +20,11 @@ import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard
 // =====================================================================
 
 class LoginDto {
+  @ApiProperty({ example: 'admin@browser-hitl.local' })
   @IsEmail()
   email: string;
 
+  @ApiProperty({ example: 'LocalDev123!@#' })
   @IsString()
   @MinLength(1)
   password: string;
@@ -91,6 +93,7 @@ class RegisterAgentClientDto {
 // =====================================================================
 
 @ApiTags('Authentication')
+@ApiBearerAuth()
 @Controller()
 export class AuthController {
   constructor(

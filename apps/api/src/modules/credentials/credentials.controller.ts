@@ -1,7 +1,7 @@
 import {
   Controller, Post, Body, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsString, IsOptional, IsBoolean } from 'class-validator';
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -25,6 +25,7 @@ class RequestCredentialsDto {
 }
 
 @ApiTags('Credentials')
+@ApiBearerAuth()
 @Controller('credentials')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class CredentialsController {

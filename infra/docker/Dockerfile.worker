@@ -33,6 +33,13 @@ COPY apps/worker/src ./apps/worker/src
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/worker build
 
+# Pre-download CloakBrowser's stealth Chromium binary so worker pods don't need
+# internet access at runtime (egress proxy blocks non-allowlisted domains).
+# Cache goes to /home/pwuser/.cloakbrowser so it's available when running as pwuser.
+ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
+RUN cd /app/apps/worker && node --input-type=module -e "import { ensureBinary } from 'cloakbrowser'; await ensureBinary();"
+RUN chmod -R 755 /opt/cloakbrowser
+
 # Copy entrypoint script
 COPY infra/docker/worker-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

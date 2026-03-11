@@ -253,6 +253,7 @@ export class StateMachineService {
       session.id,
       session.app_id,
       savedIntervention.id,
+      appName,
     );
 
     // Publish deterministic OTP-requested event for operator channels/bots.
