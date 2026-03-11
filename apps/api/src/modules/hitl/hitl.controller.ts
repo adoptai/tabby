@@ -2,7 +2,7 @@ import {
   Controller, Post, Body, Param, Req, UseGuards, HttpCode, Headers,
   BadRequestException,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import {
   IsOptional,
   IsString,
@@ -34,6 +34,7 @@ class AcknowledgeDto {
 }
 
 @ApiTags('HITL')
+@ApiBearerAuth()
 @Controller('sessions')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class HitlController {

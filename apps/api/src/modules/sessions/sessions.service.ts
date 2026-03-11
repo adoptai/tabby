@@ -69,6 +69,7 @@ export class SessionsService {
   ): Promise<{ data: SessionEntity[]; total: number; limit: number; offset: number }> {
     const [data, total] = await this.sessionRepo.findAndCount({
       where: { tenant_id: tenantId },
+      relations: ['application'],
       take: limit,
       skip: offset,
       order: { started_at: 'DESC' },

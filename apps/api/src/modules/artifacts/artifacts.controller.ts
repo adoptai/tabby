@@ -1,12 +1,13 @@
 import {
   Controller, Get, Param, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { ArtifactsService } from './artifacts.service';
 import { Response } from 'express';
 
 @ApiTags('Artifacts')
+@ApiBearerAuth()
 @Controller('artifacts')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ArtifactsController {

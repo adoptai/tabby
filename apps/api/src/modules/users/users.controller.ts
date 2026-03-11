@@ -1,7 +1,7 @@
 import {
   Controller, Post, Get, Body, Query, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsEmail, IsString, MinLength, IsIn, IsUUID, Matches } from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -25,6 +25,7 @@ class CreateUserDto {
 }
 
 @ApiTags('Users')
+@ApiBearerAuth()
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class UsersController {
