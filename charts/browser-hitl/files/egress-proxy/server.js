@@ -247,10 +247,24 @@ function proxyHttpRequest(req, res) {
   req.pipe(upstream);
 }
 
+function requireProxyAuth(socket) {
+  const body = JSON.stringify({ error: 'proxy_auth_required', reason: 'Session-scoped proxy credentials are required' });
+  socket.write(
+    'HTTP/1.1 407 Proxy Authentication Required\r\n' +
+      'Proxy-Authenticate: Basic realm="browser-hitl"\r\n' +
+      'Connection: close\r\n' +
+      'Content-Type: application/json; charset=utf-8\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      '\r\n' +
+      body,
+  );
+  socket.destroy();
+}
+
 function proxyConnect(req, clientSocket, head) {
   const sessionId = resolveSessionId(req);
   if (!sessionId && !ALLOW_INSECURE_SESSION_ALLOWLIST) {
-    denyConnect(clientSocket, 'unknown', 'Session-scoped proxy credentials are required');
+    requireProxyAuth(clientSocket);
     return;
   }
 
@@ -268,6 +282,10 @@ function proxyConnect(req, clientSocket, head) {
     return;
   }
 
+  clientSocket.on('error', () => {
+    upstreamSocket?.destroy();
+  });
+
   const upstreamSocket = net.connect(port, hostname, () => {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     if (head && head.length > 0) {
@@ -277,15 +295,7 @@ function proxyConnect(req, clientSocket, head) {
     clientSocket.pipe(upstreamSocket);
   });
 
-  upstreamSocket.on('error', (error) => {
-    clientSocket.write(
-      'HTTP/1.1 502 Bad Gateway\r\n' +
-        'Connection: close\r\n' +
-        'Content-Type: text/plain; charset=utf-8\r\n' +
-        `Content-Length: ${Buffer.byteLength(String(error.message || 'upstream error'))}\r\n` +
-        '\r\n' +
-        String(error.message || 'upstream error'),
-    );
+  upstreamSocket.on('error', () => {
     clientSocket.destroy();
   });
 }
