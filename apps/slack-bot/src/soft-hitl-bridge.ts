@@ -4,6 +4,7 @@ import {
   consumerOpts, AckPolicy, DeliverPolicy,
   RetentionPolicy, StorageType,
 } from 'nats';
+import { execSync } from 'child_process';
 import {
   HitlCompletedEvent,
   HitlStartedEvent,
@@ -95,6 +96,93 @@ async function postSlackMessage(
   }
   const result = await slackApi('chat.postMessage', params);
   return { channel: result.channel, ts: result.ts };
+}
+
+const k8sNamespace = process.env.K8S_NAMESPACE || 'browser-hitl';
+
+/**
+ * Capture the latest screenshot from the worker pod.
+ * The DSL runner saves screenshots to /tmp/screenshot-*.png in the worker container.
+ */
+function captureWorkerScreenshot(sessionId: string): Buffer | null {
+  const podName = `worker-${sessionId}`;
+  try {
+    // Find the latest screenshot file in the worker pod
+    const latestFile = execSync(
+      `kubectl exec -n ${k8sNamespace} ${podName} -c worker -- sh -c "ls -t /tmp/screenshot-*.png 2>/dev/null | head -1"`,
+      { timeout: 10000 },
+    ).toString('utf8').trim();
+
+    if (!latestFile) {
+      console.warn(`[soft-hitl] no screenshot files found in ${podName}`);
+      return null;
+    }
+
+    // Read the file as base64 and decode
+    const b64 = execSync(
+      `kubectl exec -n ${k8sNamespace} ${podName} -c worker -- base64 ${latestFile}`,
+      { timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
+    ).toString('utf8').replace(/\s/g, '');
+
+    return Buffer.from(b64, 'base64');
+  } catch (error) {
+    console.error(`[soft-hitl] screenshot capture failed for ${sessionId}: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Upload a screenshot image to Slack and share it in the active channel.
+ */
+async function uploadScreenshotToSlack(
+  image: Buffer,
+  sessionId: string,
+  threadTs?: string,
+): Promise<void> {
+  const channel = activeChannelId || slackChannelTarget;
+
+  // Step 1: Get an upload URL
+  const getUrlResult = await slackApi('files.getUploadURLExternal', {
+    filename: `post-auth-${sessionId}.png`,
+    length: String(image.length),
+  });
+  if (!getUrlResult.ok || !getUrlResult.upload_url) {
+    console.error(`[soft-hitl] files.getUploadURLExternal failed:`, getUrlResult);
+    return;
+  }
+
+  // Step 2: Upload the file content to the URL
+  const uploadResp = await fetch(getUrlResult.upload_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: image,
+  });
+  if (!uploadResp.ok) {
+    console.error(`[soft-hitl] file upload failed: ${uploadResp.status}`);
+    return;
+  }
+
+  // Step 3: Complete the upload and share to the channel
+  const channelStr = channel.replace(/^#/, '');
+  const completeBody: Record<string, any> = {
+    files: [{ id: getUrlResult.file_id, title: `Post-auth screenshot (${sessionId})` }],
+    channel_id: channelStr,
+  };
+  if (threadTs) {
+    completeBody.thread_ts = threadTs;
+  }
+  const completeResp = await fetch('https://slack.com/api/files.completeUploadExternal', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${slackToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(completeBody),
+  });
+  const completeResult = await completeResp.json() as any;
+  if (!completeResult.ok) {
+    console.error(`[soft-hitl] files.completeUploadExternal failed:`, completeResult);
+  }
 }
 
 async function getServiceToken(tenantId: string): Promise<string> {
@@ -198,7 +286,7 @@ function cleanupPendingSessions(): void {
 }
 
 async function handleHitlStarted(data: HitlStartedEvent): Promise<void> {
-  const { session_id: sessionId, tenant_id: tenantId, app_id: appId } = data.payload;
+  const { session_id: sessionId, tenant_id: tenantId, app_id: appId, app_name: appName } = data.payload;
   pendingSessions.set(sessionId, {
     tenantId,
     appId,
@@ -213,11 +301,12 @@ async function handleHitlStarted(data: HitlStartedEvent): Promise<void> {
     streamError = error instanceof Error ? error.message : String(error);
   }
 
+  const headerTitle = appName ? `Action Required: ${appName} 🔒` : 'Action Required: Website Authentication 🔒';
   const command = `OTP ${sessionId} <one-time-code>`;
   const blocks: SlackBlock[] = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: 'Action Required: Salesforce Authentication 🔒', emoji: true },
+      text: { type: 'plain_text', text: headerTitle, emoji: true },
     },
     {
       type: 'section',
@@ -263,10 +352,7 @@ async function handleHitlStarted(data: HitlStartedEvent): Promise<void> {
     });
   }
 
-  await postSlackMessage(
-    'Action Required: Salesforce Authentication 🔒',
-    blocks,
-  );
+  await postSlackMessage(headerTitle, blocks);
 }
 
 async function handleStateChanged(data: SessionStateChangedEvent): Promise<void> {
@@ -297,10 +383,21 @@ async function handleStateChanged(data: SessionStateChangedEvent): Promise<void>
           },
         },
       ];
-      await postSlackMessage(
+      const sent = await postSlackMessage(
         'Thank You: Verification Complete ✅',
         blocks,
       );
+
+      // Capture and upload post-auth screenshot
+      try {
+        const screenshot = captureWorkerScreenshot(sessionId);
+        if (screenshot) {
+          await uploadScreenshotToSlack(screenshot, sessionId, sent.ts);
+          console.log(`[soft-hitl] post-auth screenshot uploaded for ${sessionId}`);
+        }
+      } catch (err) {
+        console.error(`[soft-hitl] post-auth screenshot error: ${err}`);
+      }
     } else {
       const blocks: SlackBlock[] = [
         {
@@ -459,6 +556,9 @@ async function pollSlackCommands(): Promise<void> {
     try {
       cleanupPendingSessions();
       const messages = await fetchNewChannelMessages(latestSeenTs);
+      if (messages.length > 0) {
+        console.log(`[soft-hitl] poll: ${messages.length} new message(s) since ts=${latestSeenTs}`);
+      }
       messages.sort((a: any, b: any) => Number(a.ts) - Number(b.ts));
 
       for (const message of messages) {
@@ -486,10 +586,12 @@ async function pollSlackCommands(): Promise<void> {
           continue;
         }
 
+        console.log(`[soft-hitl] poll: processing message from ${senderId}: "${text.slice(0, 60)}"`);
         const otpMatch = text.match(/^OTP\s+([A-Za-z0-9-]+)\s+([^\s]+)$/i);
         if (otpMatch) {
           const sessionId = otpMatch[1];
           const otp = otpMatch[2];
+          console.log(`[soft-hitl] OTP match: session=${sessionId}, otp=***`);
           if (!/^[A-Za-z0-9]{4,10}$/.test(otp)) {
             await postSlackMessage(
               `Invalid OTP format for ${sessionId}. Use alphanumeric characters (4-10 chars): OTP ${sessionId} <one-time-code>`,
