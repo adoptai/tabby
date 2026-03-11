@@ -1,7 +1,7 @@
 import {
   Body, Controller, Headers, HttpCode, Post, Req, UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import {
   IsArray,
   IsBoolean,
@@ -75,6 +75,7 @@ export class RunUrlDto {
 }
 
 @ApiTags('Agent')
+@ApiBearerAuth()
 @Controller('agent')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class AgentController {

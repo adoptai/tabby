@@ -1,7 +1,7 @@
 import {
   Controller, Post, Get, Body, Param, Query, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import {
   IsString, IsObject, IsArray, IsOptional, IsInt, IsUUID, Min, Matches,
 } from 'class-validator';
@@ -47,6 +47,7 @@ class CreateProfileDto {
 }
 
 @ApiTags('Profiles')
+@ApiBearerAuth()
 @Controller('admin/profiles')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ProfilesController {
