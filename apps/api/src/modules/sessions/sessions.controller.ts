@@ -1,7 +1,7 @@
 import {
   Controller, Post, Get, Body, Param, Query, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsInt, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -16,6 +16,7 @@ class ScaleSessionsDto {
 }
 
 @ApiTags('Sessions')
+@ApiBearerAuth()
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class SessionsController {

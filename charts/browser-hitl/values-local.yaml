@@ -86,3 +86,118 @@ secrets:
   metricsAuthToken: ""  # Open access locally
   natsAuthToken: ""
   tenantEncryptionKey: ""  # Generate with: openssl rand -hex 32
+
+egressProxy:
+  defaultAllowlist:
+    # --- Apollo ---
+    - ".apollo.io"
+    - ".transcend-cdn.com"
+    - ".wowscale.com"
+    - ".sentry.io"
+    - ".fullview.io"
+    - ".intercom.io"
+    - ".customer.io"
+    # --- 6Sense ---
+    - ".6sense.com"
+    - ".6si.com"
+    - ".6sc.co"
+    - ".pendo.io"
+    - ".pendo-static-5698236162899968.storage.googleapis.com"
+    # 6Sense Auth (Descope)
+    - ".descope.com"
+    - ".descopecdn.com"
+    # 6Sense Analytics / Monitoring
+    - ".ingest-lr.com"
+    - ".logrocket.io"
+    - ".lr-in-prod.com"
+    - ".lr-ingest.com"
+    - ".lr-in.com"
+    - ".lr-ingest.io"
+    - ".datadoghq.com"
+    - ".rollbar.com"
+    - ".mxpnl.com"
+    - ".marketo.net"
+    # 6Sense UI / Fonts / Widgets
+    - ".fontawesome.com"
+    - ".commandbar.com"
+    - ".wistia.com"
+    - ".wistia.net"
+    # --- Hapag-Lloyd ---
+    - ".hapag-lloyd.com"
+    - ".hlag.cloud"
+    - ".hlag.com"
+    - ".hlagwebprod.onmicrosoft.com"
+    - ".microsoftonline.com"
+    - ".login.live.com"
+    - ".windows.net"
+    - ".cookielaw.org"
+    - ".onetrust.com"
+    - ".dynatrace.com"
+    - ".bat.bing.com"
+    # --- CMA-CGM ---
+    - ".cma-cgm.com"
+    - ".auth.cma-cgm.com"
+    - ".captcha-delivery.com"
+    # --- ONE LINE ---
+    - ".one-line.com"
+    - ".typekit.net"
+    - ".go-mpulse.net"
+    - ".akamaihd.net"
+    - ".akamaized.net"
+    - ".aar.org"
+    # ONE LINE Auth (Auth0)
+    - ".auth0.com"
+    - ".cdn.auth0.com"
+    # ONE LINE Analytics
+    - ".heap-api.com"
+    # ONE LINE CDN
+    - ".tailwindcss.com"
+    - ".object-assign.min.js"
+    # --- MSC ---
+    - ".msc.com"
+    - ".mymsc.com"
+    - ".b2clogin.com"
+    - ".mscciam.b2clogin.com"
+    - ".identityserver.msc.com"
+    - ".onmicrosoft.com"
+    # --- GreenX Trade ---
+    - ".greenxtrade.com"
+    - ".bluextrade.com"
+    - ".cookiehub.eu"
+    - ".bootstrapcdn.com"
+    - ".carrierxtrade.com"
+    - ".recaptcha.net"
+    # --- HubSpot (shared tracking/analytics) ---
+    - ".hubspot.com"
+    - ".hubspot.net"
+    - ".hsappstatic.net"
+    - ".hs-scripts.com"
+    - ".hs-analytics.net"
+    - ".hs-banner.com"
+    - ".hsforms.com"
+    - ".hscollectedforms.net"
+    - ".hsadspixel.net"
+    - ".hsstatic.net"
+    # --- Google (shared auth/CDN/analytics) ---
+    - ".googleapis.com"
+    - ".gstatic.com"
+    - ".google.com"
+    - ".google-analytics.com"
+    - ".googletagmanager.com"
+    - ".googlesyndication.com"
+    # --- Cloudflare ---
+    - ".cloudflare.com"
+    - ".challenges.cloudflare.com"
+    - ".cloudflareinsights.com"
+    # --- Microsoft (shared auth) ---
+    - ".microsoft.com"
+    - ".msauth.net"
+    - ".msftauth.net"
+    # --- Common CDNs ---
+    - ".cloudfront.net"
+    - ".jsdelivr.net"
+    - ".unpkg.com"
+    - ".amazonaws.com"
+    # --- Dev/test ---
+    - ".dontpad.com"
+    - ".api.dontpad.com"

@@ -111,6 +111,7 @@ export class NatsPublisherService implements OnModuleInit, OnModuleDestroy {
     sessionId: string,
     appId: string,
     interventionId: string,
+    appName: string,
   ): Promise<void> {
     const subject = NATS_SUBJECTS.hitlStarted(tenantId, sessionId);
     const payload = {
@@ -120,6 +121,7 @@ export class NatsPublisherService implements OnModuleInit, OnModuleDestroy {
         session_id: sessionId,
         tenant_id: tenantId,
         app_id: appId,
+        app_name: appName,
         reason: 'login_needed',
         intervention_id: interventionId,
       },
