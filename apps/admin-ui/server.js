@@ -12,12 +12,48 @@ const html = `<!doctype html>
     <style>
       :root {
         color-scheme: light;
+        --bg-color: #f5f7fb;
+        --text-color: #111827;
+        --card-bg: #fff;
+        --card-border: #dbe3f0;
+        --code-bg: #edf2ff;
+        --label-color: #374151;
+        --input-bg: #fff;
+        --input-border: #c7d2e5;
+        --border-color: #e5e7eb;
+        --btn-primary: #2563eb;
+        --btn-secondary: #475569;
+        --log-bg: #0f172a;
+        --log-text: #e2e8f0;
+      }
+      :root.dark {
+        color-scheme: dark;
+        --bg-color: #0f172a;
+        --text-color: #f8fafc;
+        --card-bg: #1e293b;
+        --card-border: #334155;
+        --code-bg: #334155;
+        --label-color: #cbd5e1;
+        --input-bg: #0f172a;
+        --input-border: #475569;
+        --border-color: #334155;
+        --btn-primary: #3b82f6;
+        --btn-secondary: #64748b;
+        --log-bg: #020617;
+        --log-text: #e2e8f0;
       }
       body {
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         margin: 0;
-        background: #f5f7fb;
-        color: #111827;
+        background: var(--bg-color);
+        color: var(--text-color);
+        transition: background-color 0.3s, color 0.3s;
+      }
+      .header-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
       }
       .layout {
         max-width: 1100px;
@@ -30,14 +66,14 @@ const html = `<!doctype html>
         gap: 16px;
       }
       .card {
-        background: #fff;
-        border: 1px solid #dbe3f0;
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
         border-radius: 12px;
         padding: 16px;
         box-shadow: 0 6px 24px rgba(16, 24, 40, 0.05);
       }
       h1 {
-        margin: 0 0 8px;
+        margin: 0;
         font-size: 22px;
       }
       h2 {
@@ -48,7 +84,7 @@ const html = `<!doctype html>
         margin: 0 0 10px;
       }
       code {
-        background: #edf2ff;
+        background: var(--code-bg);
         padding: 0.1rem 0.35rem;
         border-radius: 6px;
       }
@@ -56,12 +92,14 @@ const html = `<!doctype html>
         display: block;
         font-size: 13px;
         margin: 10px 0 4px;
-        color: #374151;
+        color: var(--label-color);
       }
       input {
         width: 100%;
         padding: 9px 10px;
-        border: 1px solid #c7d2e5;
+        border: 1px solid var(--input-border);
+        background: var(--input-bg);
+        color: var(--text-color);
         border-radius: 8px;
         box-sizing: border-box;
       }
@@ -72,11 +110,17 @@ const html = `<!doctype html>
         padding: 10px 12px;
         font-weight: 600;
         cursor: pointer;
-        background: #2563eb;
+        background: var(--btn-primary);
         color: #fff;
       }
       button.secondary {
-        background: #475569;
+        background: var(--btn-secondary);
+      }
+      button.theme-toggle {
+        margin-top: 0;
+        padding: 6px 12px;
+        font-size: 12px;
+        background: var(--btn-secondary);
       }
       button:disabled {
         background: #9ca3af;
@@ -85,7 +129,7 @@ const html = `<!doctype html>
       .status {
         font-size: 13px;
         min-height: 20px;
-        color: #1d4ed8;
+        color: #3b82f6;
       }
       table {
         width: 100%;
@@ -94,7 +138,7 @@ const html = `<!doctype html>
       th, td {
         text-align: left;
         padding: 8px;
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--border-color);
         font-size: 13px;
       }
       .actions button {
@@ -102,12 +146,25 @@ const html = `<!doctype html>
         padding: 6px 8px;
         font-size: 12px;
       }
+      .pagination {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 16px;
+        font-size: 13px;
+      }
+      .pagination-controls button {
+        margin-top: 0;
+        margin-left: 8px;
+        padding: 6px 12px;
+        font-size: 12px;
+      }
       .mono {
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       .log {
-        background: #0f172a;
-        color: #e2e8f0;
+        background: var(--log-bg);
+        color: var(--log-text);
         padding: 12px;
         border-radius: 8px;
         min-height: 130px;
@@ -125,7 +182,10 @@ const html = `<!doctype html>
   </head>
   <body>
     <div class="layout">
-      <h1>Browser HITL Admin UI</h1>
+      <div class="header-container">
+        <h1>Browser HITL Admin UI</h1>
+        <button id="themeToggle" class="theme-toggle">Toggle Dark Mode</button>
+      </div>
       <p>Phase 2 functional baseline console. API base: <code>${apiBase}</code></p>
       <div class="grid">
         <section class="card">
@@ -145,6 +205,7 @@ const html = `<!doctype html>
           <table>
             <thead>
               <tr>
+                <th>App</th>
                 <th>ID</th>
                 <th>State</th>
                 <th>Health</th>
@@ -152,9 +213,16 @@ const html = `<!doctype html>
               </tr>
             </thead>
             <tbody id="sessionRows">
-              <tr><td colspan="4">No session data loaded.</td></tr>
+              <tr><td colspan="5">No session data loaded.</td></tr>
             </tbody>
           </table>
+          <div class="pagination" id="pagination" style="display: none;">
+            <div id="pageInfo">Showing 0-0 of 0</div>
+            <div class="pagination-controls">
+              <button id="prevBtn" class="secondary" disabled>Previous</button>
+              <button id="nextBtn" class="secondary" disabled>Next</button>
+            </div>
+          </div>
         </section>
       </div>
       <section class="card" style="margin-top: 16px;">
@@ -165,6 +233,28 @@ const html = `<!doctype html>
 
     <script>
       (function () {
+        const themeToggleBtn = document.getElementById('themeToggle');
+        const root = document.documentElement;
+        
+        function setTheme(isDark) {
+          if (isDark) {
+            root.classList.add('dark');
+            localStorage.setItem('theme', 'dark');
+          } else {
+            root.classList.remove('dark');
+            localStorage.setItem('theme', 'light');
+          }
+        }
+        
+        // Initialize theme
+        const savedTheme = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        setTheme(savedTheme === 'dark' || (!savedTheme && prefersDark));
+        
+        themeToggleBtn.addEventListener('click', () => {
+          setTheme(!root.classList.contains('dark'));
+        });
+
         const apiBase = ${JSON.stringify(apiBase)};
         let token = '';
 
@@ -176,6 +266,14 @@ const html = `<!doctype html>
         const passwordEl = document.getElementById('password');
         const loginBtn = document.getElementById('loginBtn');
         const loadBtn = document.getElementById('loadBtn');
+        const paginationEl = document.getElementById('pagination');
+        const pageInfoEl = document.getElementById('pageInfo');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+
+        let currentPage = 1;
+        const pageSize = 10;
+        let totalSessions = 0;
 
         function log(line) {
           const ts = new Date().toISOString();
@@ -215,15 +313,17 @@ const html = `<!doctype html>
         function renderSessions(sessions) {
           rowsEl.innerHTML = '';
           if (!Array.isArray(sessions) || sessions.length === 0) {
-            rowsEl.innerHTML = '<tr><td colspan="4">No sessions found.</td></tr>';
+            rowsEl.innerHTML = '<tr><td colspan="5">No sessions found.</td></tr>';
             return;
           }
 
           for (const s of sessions) {
             const tr = document.createElement('tr');
-            const shortId = String(s.id || '').slice(0, 8);
+            const appName = (s.application && s.application.name) ? s.application.name : '-';
+            const fullId = String(s.id || '');
             tr.innerHTML = ''
-              + '<td class="mono">' + shortId + '</td>'
+              + '<td>' + appName + '</td>'
+              + '<td class="mono" title="' + fullId + '">' + fullId + '</td>'
               + '<td>' + (s.state || '-') + '</td>'
               + '<td>' + (s.health_result_type || '-') + '</td>'
               + '<td class="actions">'
@@ -234,12 +334,14 @@ const html = `<!doctype html>
           }
         }
 
-        async function loadSessions() {
+        async function loadSessions(page = 1) {
           if (!token) {
             throw new Error('Log in first');
           }
           setStatus('Loading sessions...', false);
-          const res = await fetch(apiBase + '/sessions?limit=50&offset=0', {
+          currentPage = page;
+          const offset = (currentPage - 1) * pageSize;
+          const res = await fetch(apiBase + '/sessions?limit=' + pageSize + '&offset=' + offset, {
             headers: authHeaders(),
           });
           if (!res.ok) {
@@ -247,9 +349,19 @@ const html = `<!doctype html>
           }
           const json = await res.json();
           const sessions = Array.isArray(json.data) ? json.data : [];
+          totalSessions = typeof json.total === 'number' ? json.total : sessions.length;
+          
           renderSessions(sessions);
+          
+          paginationEl.style.display = 'flex';
+          const start = sessions.length > 0 ? offset + 1 : 0;
+          const end = offset + sessions.length;
+          pageInfoEl.textContent = 'Showing ' + start + '-' + end + ' of ' + totalSessions;
+          prevBtn.disabled = currentPage === 1;
+          nextBtn.disabled = end >= totalSessions;
+
           setStatus('Loaded ' + sessions.length + ' sessions', false);
-          log('Loaded session list');
+          log('Loaded session list page ' + currentPage);
         }
 
         async function requestStream(sessionId) {
@@ -293,12 +405,36 @@ const html = `<!doctype html>
         loadBtn.addEventListener('click', async function () {
           try {
             loadBtn.disabled = true;
-            await loadSessions();
+            await loadSessions(1);
           } catch (err) {
             setStatus(String(err.message || err), true);
             log('ERROR: ' + String(err.message || err));
           } finally {
             loadBtn.disabled = false;
+          }
+        });
+
+        prevBtn.addEventListener('click', async function () {
+          if (prevBtn.disabled) return;
+          try {
+            prevBtn.disabled = true;
+            nextBtn.disabled = true;
+            await loadSessions(currentPage - 1);
+          } catch (err) {
+            setStatus(String(err.message || err), true);
+            log('ERROR: ' + String(err.message || err));
+          }
+        });
+
+        nextBtn.addEventListener('click', async function () {
+          if (nextBtn.disabled) return;
+          try {
+            prevBtn.disabled = true;
+            nextBtn.disabled = true;
+            await loadSessions(currentPage + 1);
+          } catch (err) {
+            setStatus(String(err.message || err), true);
+            log('ERROR: ' + String(err.message || err));
           }
         });
 
