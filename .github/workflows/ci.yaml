@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  lint:
+    name: Lint & Type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: browser_hitl
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: browser_hitl
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://browser_hitl:testpass@localhost:5432/browser_hitl
+      REDIS_URL: redis://localhost:6379
+      NATS_URL: nats://localhost:4222
+      JWT_SIGNING_KEY: ci-test-jwt-key-minimum-32-characters-long
+      TENANT_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      AGENT_SECRET_HMAC_KEY: ci-test-hmac-key
+      MINIO_ENDPOINT: localhost
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      ADMIN_BOOTSTRAP_EMAIL: admin@test.local
+      ADMIN_BOOTSTRAP_PASSWORD: TestPass123
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run test
+
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Audit dependencies (high/critical)
+        run: pnpm audit --audit-level=high
+        continue-on-error: true
+
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - run: helm lint charts/browser-hitl/
+      - run: helm lint charts/browser-hitl/ -f charts/browser-hitl/values-production.yaml

@@ -1,0 +1,207 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [dev]
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io/adoptai/tabby
+  TFY_HOST: https://adoptai.truefoundry.cloud
+  TFY_API_KEY: ${{ secrets.TFY_API_KEY }}
+
+jobs:
+  # ── Quality Gates ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: browser_hitl
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: browser_hitl
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://browser_hitl:testpass@localhost:5432/browser_hitl
+      REDIS_URL: redis://localhost:6379
+      NATS_URL: nats://localhost:4222
+      JWT_SIGNING_KEY: ci-test-jwt-key-minimum-32-characters-long
+      TENANT_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      AGENT_SECRET_HMAC_KEY: ci-test-hmac-key
+      MINIO_ENDPOINT: localhost
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      ADMIN_BOOTSTRAP_EMAIL: admin@test.local
+      ADMIN_BOOTSTRAP_PASSWORD: TestPass123
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run test
+
+  # ── Build & Push Docker Images ────────────────────────────────────────────────
+  build-images:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, test]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            dockerfile: infra/docker/Dockerfile.api
+          - service: controller
+            dockerfile: infra/docker/Dockerfile.controller
+          - service: worker
+            dockerfile: infra/docker/Dockerfile.worker
+          - service: novnc
+            dockerfile: infra/docker/Dockerfile.novnc
+          - service: slack-bot
+            dockerfile: infra/docker/Dockerfile.slack-bot
+          - service: teams-bot
+            dockerfile: infra/docker/Dockerfile.teams-bot
+          - service: admin-ui
+            dockerfile: infra/docker/Dockerfile.admin-ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=staging-
+            type=raw,value=staging-latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy to TrueFoundry Staging ─────────────────────────────────────────────
+  deploy:
+    name: Deploy ${{ matrix.service }} to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-images]
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          # ── Update these FQNs to match your TrueFoundry workspace ──
+          - service: api
+            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-api-staging
+          - service: controller
+            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-controller-staging
+          - service: worker
+            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-worker-staging
+          - service: slack-bot
+            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-slack-bot-staging
+          - service: admin-ui
+            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-admin-ui-staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install "truefoundry<1.0.0"
+
+      - name: Deploy ${{ matrix.service }}
+        run: |
+          tfy patch-application \
+            --application-fqn ${{ matrix.fqn }} \
+            --patch '{"image": {"build_source": {"ref": "${{ github.sha }}", "branch_name": "${{ github.ref_name }}"}}}'
+
+  # ── Post-Deploy Health Check ──────────────────────────────────────────────────
+  health-check:
+    name: Staging Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy]
+    steps:
+      - name: Wait for rollout
+        run: sleep 60
+
+      - name: Check API health
+        run: |
+          STAGING_URL="${{ secrets.STAGING_API_URL }}"
+          if [ -z "$STAGING_URL" ]; then
+            echo "::warning::STAGING_API_URL secret not set — skipping health check"
+            exit 0
+          fi
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${STAGING_URL}/health/live" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "API healthy (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::API health check failed after 5 attempts"
+          exit 1

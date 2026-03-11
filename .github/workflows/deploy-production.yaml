@@ -1,0 +1,277 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'deploy' to confirm production deployment"
+        required: true
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io/adoptai/tabby
+  TFY_HOST: https://adoptai.truefoundry.cloud
+  TFY_API_KEY: ${{ secrets.TFY_API_KEY }}
+
+jobs:
+  # ── Manual trigger guard ──────────────────────────────────────────────────────
+  guard:
+    name: Deployment Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
+            echo "::error::You must type 'deploy' to confirm. Got: '${{ github.event.inputs.confirm }}'"
+            exit 1
+          fi
+
+  # ── Quality Gates ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: browser_hitl
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: browser_hitl
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://browser_hitl:testpass@localhost:5432/browser_hitl
+      REDIS_URL: redis://localhost:6379
+      NATS_URL: nats://localhost:4222
+      JWT_SIGNING_KEY: ci-test-jwt-key-minimum-32-characters-long
+      TENANT_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      AGENT_SECRET_HMAC_KEY: ci-test-hmac-key
+      MINIO_ENDPOINT: localhost
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      ADMIN_BOOTSTRAP_EMAIL: admin@test.local
+      ADMIN_BOOTSTRAP_PASSWORD: TestPass123
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run test
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Audit dependencies (high/critical must pass)
+        run: pnpm audit --audit-level=high
+
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+      - run: helm lint charts/browser-hitl/ -f charts/browser-hitl/values-production.yaml
+
+  # ── Build & Push Docker Images ────────────────────────────────────────────────
+  build-images:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, test, security-audit, helm-lint]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - service: api
+            dockerfile: infra/docker/Dockerfile.api
+          - service: controller
+            dockerfile: infra/docker/Dockerfile.controller
+          - service: worker
+            dockerfile: infra/docker/Dockerfile.worker
+          - service: novnc
+            dockerfile: infra/docker/Dockerfile.novnc
+          - service: slack-bot
+            dockerfile: infra/docker/Dockerfile.slack-bot
+          - service: teams-bot
+            dockerfile: infra/docker/Dockerfile.teams-bot
+          - service: admin-ui
+            dockerfile: infra/docker/Dockerfile.admin-ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=prod-
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy to TrueFoundry Production ──────────────────────────────────────────
+  deploy:
+    name: Deploy ${{ matrix.service }} to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-images]
+    environment: production
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          # ── Update these FQNs to match your TrueFoundry workspace ──
+          - service: api
+            fqn: tfy-dev-cluster:adopt-prod-ws:tabby-api-prod
+          - service: controller
+            fqn: tfy-dev-cluster:adopt-prod-ws:tabby-controller-prod
+          - service: worker
+            fqn: tfy-dev-cluster:adopt-prod-ws:tabby-worker-prod
+          - service: slack-bot
+            fqn: tfy-dev-cluster:adopt-prod-ws:tabby-slack-bot-prod
+          - service: admin-ui
+            fqn: tfy-dev-cluster:adopt-prod-ws:tabby-admin-ui-prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install "truefoundry<1.0.0"
+
+      - name: Deploy ${{ matrix.service }}
+        run: |
+          tfy patch-application \
+            --application-fqn ${{ matrix.fqn }} \
+            --patch '{"image": {"build_source": {"ref": "${{ github.sha }}", "branch_name": "${{ github.ref_name }}"}}}'
+
+  # ── Post-Deploy Health Check ──────────────────────────────────────────────────
+  health-check:
+    name: Production Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy]
+    steps:
+      - name: Wait for rollout
+        run: sleep 90
+
+      - name: Check API health
+        run: |
+          PROD_URL="${{ secrets.PRODUCTION_API_URL }}"
+          if [ -z "$PROD_URL" ]; then
+            echo "::warning::PRODUCTION_API_URL secret not set — skipping health check"
+            exit 0
+          fi
+          for i in 1 2 3 4 5 6; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${PROD_URL}/health/live" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Production API healthy (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 20s..."
+            sleep 20
+          done
+          echo "::error::Production API health check failed after 6 attempts"
+          exit 1
+
+  # ── Notify ────────────────────────────────────────────────────────────────────
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [health-check]
+    if: always()
+    steps:
+      - name: Deployment summary
+        run: |
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          if [ "${{ needs.health-check.result }}" = "success" ]; then
+            echo "## Production deployment successful" >> $GITHUB_STEP_SUMMARY
+            echo "Commit: \`${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "Deployed by: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Production deployment FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "Commit: \`${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "Check the workflow run for details." >> $GITHUB_STEP_SUMMARY
+          fi
