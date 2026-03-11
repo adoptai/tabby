@@ -79,3 +79,6 @@ implementation_tracker/**/sbom/
 .DS_Store
 .Spotlight-V100
 .Trashes
+
+# --- Claude ---
+.claude
