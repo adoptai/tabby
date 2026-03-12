@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-API_URL="${API_URL:-http://localhost:8080}"
+API_URL="${API_URL:-http://localhost:8000}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@browser-hitl.local}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-e2e-admin-password}"
 

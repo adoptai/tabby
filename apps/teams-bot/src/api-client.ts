@@ -13,7 +13,7 @@ export class ApiClient {
   private readonly tokenCache = new Map<string, { token: string; expiresAtMs: number }>();
 
   constructor(baseUrl?: string, serviceToken?: string) {
-    this.baseUrl = baseUrl || process.env.API_BASE_URL || 'http://localhost:8080';
+    this.baseUrl = baseUrl || process.env.API_BASE_URL || 'http://localhost:8000';
     this.staticServiceToken = serviceToken || process.env.API_SERVICE_TOKEN || '';
     this.serviceClientId = process.env.SERVICE_AUTH_CLIENT_ID || '';
     this.serviceClientSecret = process.env.SERVICE_AUTH_CLIENT_SECRET || '';

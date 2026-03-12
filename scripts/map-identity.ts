@@ -6,7 +6,7 @@
  * Usage: npx ts-node scripts/map-identity.ts --user-id <uuid> --provider slack --external-id U12345 --workspace-id T12345
  */
 
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:8080';
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:8000';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 
 interface MapIdentityArgs {
