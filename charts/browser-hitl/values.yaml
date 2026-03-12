@@ -18,40 +18,40 @@ extraObjects: []
 images:
   api:
     repository: ghcr.io/adoptai/tabby/api
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
   controller:
     repository: ghcr.io/adoptai/tabby/controller
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
   worker:
     repository: ghcr.io/adoptai/tabby/worker
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
   novnc:
     repository: ghcr.io/adoptai/tabby/novnc
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
   slackBot:
     repository: ghcr.io/adoptai/tabby/slack-bot
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
   teamsBot:
     repository: ghcr.io/adoptai/tabby/teams-bot
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
   adminUi:
     repository: ghcr.io/adoptai/tabby/admin-ui
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
 
 # =============================================================================
-# API Service (NestJS) - Port 8080
+# API Service (NestJS) - Port 8000
 # Per spec section 15.7: request 0.5 vCPU, 512 MB RAM
 # =============================================================================
 api:
   replicas: 1
-  port: 8080
+  port: 8000
   health:
     liveness: /health/live
     readiness: /health/ready
@@ -155,12 +155,12 @@ teamsBot:
   teamsDefaultChannel: ""
 
 # =============================================================================
-# Admin UI (Next.js) - Port 3000
+# Admin UI (Next.js) - Port 8000
 # =============================================================================
 adminUi:
   enabled: true
   replicas: 1
-  port: 3000
+  port: 8000
   resources:
     requests:
       cpu: "250m"
