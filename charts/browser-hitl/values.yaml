@@ -9,36 +9,39 @@ global:
   imagePullSecrets: []
   storageClass: ""  # Default: use cluster default (local-path for k3s, standard otherwise)
 
+# -- Extra Kubernetes objects (VirtualServices, etc.)
+extraObjects: []
+
 # =============================================================================
 # Image Tags
 # =============================================================================
 images:
   api:
-    repository: browser-hitl/api
+    repository: ghcr.io/adoptai/tabby/api
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   controller:
-    repository: browser-hitl/controller
+    repository: ghcr.io/adoptai/tabby/controller
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   worker:
-    repository: browser-hitl/worker
+    repository: ghcr.io/adoptai/tabby/worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   novnc:
-    repository: browser-hitl/novnc
+    repository: ghcr.io/adoptai/tabby/novnc
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   slackBot:
-    repository: browser-hitl/slack-bot
+    repository: ghcr.io/adoptai/tabby/slack-bot
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   teamsBot:
-    repository: browser-hitl/teams-bot
+    repository: ghcr.io/adoptai/tabby/teams-bot
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   adminUi:
-    repository: browser-hitl/admin-ui
+    repository: ghcr.io/adoptai/tabby/admin-ui
     tag: "0.1.0"
     pullPolicy: IfNotPresent
 
@@ -354,13 +357,13 @@ config:
   # postgres.auth.username, secrets.postgresPassword, postgres.auth.database, and postgres.port.
   # The value below is kept only as documentation / fallback reference.
   databaseUrl: ""  # constructed from postgres.auth + secrets.postgresPassword
-  # Redis
-  redisUrl: "redis://browser-hitl-redis:6379"
-  # NATS
-  natsUrl: "nats://browser-hitl-nats:4222"
+  # Redis — leave empty to auto-resolve from release name
+  redisUrl: ""
+  # NATS — leave empty to auto-resolve from release name
+  natsUrl: ""
   natsSyncInterval: "always"  # MANDATORY
-  # MinIO
-  minioEndpoint: "browser-hitl-minio"
+  # MinIO — leave empty to auto-resolve from release name
+  minioEndpoint: ""
   minioAccessKey: ""
   minioSecretKey: ""
   # JWT

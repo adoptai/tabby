@@ -1,6 +1,6 @@
 const http = require('http');
 
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 8000);
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
 const html = `<!doctype html>
