@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY apps/admin-ui/server.js ./server.js
 
-EXPOSE 3000
+EXPOSE 8000
 
 USER node
 
