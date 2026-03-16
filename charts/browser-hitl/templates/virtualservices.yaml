@@ -1,0 +1,69 @@
+{{- if .Values.virtualServices }}
+{{- $fullname := include "browser-hitl.fullname" . -}}
+
+{{- if .Values.virtualServices.api }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ $fullname }}-api-vs
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  hosts:
+    - {{ .Values.virtualServices.api.host }}
+  gateways:
+    - {{ .Values.virtualServices.api.gateway }}
+  http:
+    - route:
+        - destination:
+            host: {{ $fullname }}-api
+            port:
+              number: {{ .Values.virtualServices.api.port | int }}
+{{- end }}
+
+{{- if .Values.virtualServices.adminUi }}
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ $fullname }}-admin-ui-vs
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-ui
+spec:
+  hosts:
+    - {{ .Values.virtualServices.adminUi.host }}
+  gateways:
+    - {{ .Values.virtualServices.adminUi.gateway }}
+  http:
+    - route:
+        - destination:
+            host: {{ $fullname }}-admin-ui
+            port:
+              number: {{ .Values.virtualServices.adminUi.port | int }}
+{{- end }}
+
+{{- if .Values.virtualServices.teamsBot }}
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ $fullname }}-teams-bot-vs
+  labels:
+    {{- include "browser-hitl.labels" . | nindent 4 }}
+    app.kubernetes.io/component: teams-bot
+spec:
+  hosts:
+    - {{ .Values.virtualServices.teamsBot.host }}
+  gateways:
+    - {{ .Values.virtualServices.teamsBot.gateway }}
+  http:
+    - route:
+        - destination:
+            host: {{ $fullname }}-teams-bot
+            port:
+              number: {{ .Values.virtualServices.teamsBot.port | int }}
+{{- end }}
+
+{{- end }}
