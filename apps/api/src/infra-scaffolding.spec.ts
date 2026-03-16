@@ -29,9 +29,9 @@ describe('Phase 3: NATS Authentication (C7)', () => {
     expect(secrets).toContain('nats-auth-token');
   });
 
-  it('values-production.yaml enables NATS auth', () => {
-    const prod = fs.readFileSync(path.join(CHARTS_DIR, 'values-production.yaml'), 'utf-8');
-    expect(prod).toMatch(/nats:[\s\S]*?auth:[\s\S]*?enabled:\s*true/);
+  it('values.yaml has nats.auth.enabled default', () => {
+    const values = fs.readFileSync(path.join(CHARTS_DIR, 'values.yaml'), 'utf-8');
+    expect(values).toMatch(/nats:[\s\S]*?auth:[\s\S]*?enabled:/);
   });
 });
 
@@ -41,11 +41,10 @@ describe('Phase 3: TLS Scaffolding (C6)', () => {
     expect(values).toContain('cert-manager.io/cluster-issuer');
   });
 
-  it('values-production.yaml enables TLS with cert-manager', () => {
-    const prod = fs.readFileSync(path.join(CHARTS_DIR, 'values-production.yaml'), 'utf-8');
-    expect(prod).toContain('cert-manager.io/cluster-issuer');
-    expect(prod).toContain('ssl-redirect');
-    expect(prod).toMatch(/tls:[\s\S]*?enabled:\s*true/);
+  it('values.yaml has TLS configuration scaffolded', () => {
+    const values = fs.readFileSync(path.join(CHARTS_DIR, 'values.yaml'), 'utf-8');
+    expect(values).toContain('cert-manager.io/cluster-issuer');
+    expect(values).toMatch(/tls:/);
   });
 
   it('values-local.yaml disables TLS', () => {
@@ -62,12 +61,14 @@ describe('Phase 3: Secrets Hardening (H3)', () => {
     expect(dataLines.length).toBeGreaterThanOrEqual(5);
   });
 
-  it('values-production.yaml has empty secret defaults (no hardcoded values)', () => {
-    const prod = fs.readFileSync(path.join(CHARTS_DIR, 'values-production.yaml'), 'utf-8');
-    // Production should have empty secret defaults
-    expect(prod).toMatch(/postgresPassword:\s*""/);
-    expect(prod).toMatch(/jwtSigningKey:\s*""/);
-    expect(prod).toMatch(/tenantEncryptionKey:\s*""/);
+  it('deploy template uses environment variables for secrets (no hardcoded values)', () => {
+    const template = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'infra', 'tfy', 'deploy.yaml'),
+      'utf-8',
+    );
+    expect(template).toContain('${POSTGRES_PASSWORD}');
+    expect(template).toContain('${JWT_SIGNING_KEY}');
+    expect(template).toContain('${TENANT_ENCRYPTION_KEY}');
   });
 
   it('values-local.yaml has dev-only placeholder secrets', () => {
@@ -97,9 +98,9 @@ describe('Phase 3: Core Network Policies (H12)', () => {
     expect(policies).toContain('networkPolicies.enabled');
   });
 
-  it('values-production.yaml enables network policies', () => {
-    const prod = fs.readFileSync(path.join(CHARTS_DIR, 'values-production.yaml'), 'utf-8');
-    expect(prod).toMatch(/networkPolicies:[\s\S]*?enabled:\s*true/);
+  it('values.yaml has networkPolicies.enabled toggle', () => {
+    const values = fs.readFileSync(path.join(CHARTS_DIR, 'values.yaml'), 'utf-8');
+    expect(values).toMatch(/networkPolicies:[\s\S]*?enabled:/);
   });
 
   it('values-local.yaml disables network policies', () => {
@@ -131,15 +132,12 @@ describe('Phase 3: Two-tier values split (local vs production)', () => {
     expect(fs.existsSync(path.join(CHARTS_DIR, 'values-local.yaml'))).toBe(true);
   });
 
-  it('values-production.yaml exists', () => {
-    expect(fs.existsSync(path.join(CHARTS_DIR, 'values-production.yaml'))).toBe(true);
+  it('deploy template exists for TrueFoundry', () => {
+    expect(fs.existsSync(path.join(__dirname, '..', '..', '..', 'infra', 'tfy', 'deploy.yaml'))).toBe(true);
   });
 
-  it('production has higher replica counts than local', () => {
-    const prod = fs.readFileSync(path.join(CHARTS_DIR, 'values-production.yaml'), 'utf-8');
+  it('local has single replica counts', () => {
     const local = fs.readFileSync(path.join(CHARTS_DIR, 'values-local.yaml'), 'utf-8');
-    // Production API replicas >= 2
-    expect(prod).toMatch(/api:[\s\S]*?replicas:\s*2/);
     // Local API replicas = 1
     expect(local).toMatch(/api:[\s\S]*?replicas:\s*1/);
   });

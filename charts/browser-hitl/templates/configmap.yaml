@@ -12,10 +12,13 @@ data:
   # Per spec section 15.4 - Runtime Configuration (Env Vars)
   {{- $dbPassword := .Values.secrets.postgresPassword | default "changeme" }}
   DATABASE_URL: {{ printf "postgresql://%s:%s@%s-postgres:%v/%s" .Values.postgres.auth.username $dbPassword (include "browser-hitl.fullname" .) (.Values.postgres.port | int) .Values.postgres.auth.database | quote }}
-  REDIS_URL: {{ .Values.config.redisUrl | quote }}
-  NATS_URL: {{ .Values.config.natsUrl | quote }}
+  {{- $defaultRedisUrl := printf "redis://%s-redis:%v" (include "browser-hitl.fullname" .) (.Values.redis.port | int) }}
+  REDIS_URL: {{ default $defaultRedisUrl .Values.config.redisUrl | quote }}
+  {{- $defaultNatsUrl := printf "nats://%s-nats:%v" (include "browser-hitl.fullname" .) (.Values.nats.port | int) }}
+  NATS_URL: {{ default $defaultNatsUrl .Values.config.natsUrl | quote }}
   NATS_SYNC_INTERVAL: {{ .Values.config.natsSyncInterval | quote }}
-  MINIO_ENDPOINT: {{ .Values.config.minioEndpoint | quote }}
+  {{- $defaultMinioEndpoint := printf "%s-minio" (include "browser-hitl.fullname" .) }}
+  MINIO_ENDPOINT: {{ default $defaultMinioEndpoint .Values.config.minioEndpoint | quote }}
   JWT_SIGNING_KEY_ID: {{ .Values.config.jwtSigningKeyId | quote }}
   ADMIN_BOOTSTRAP_EMAIL: {{ .Values.config.adminBootstrapEmail | quote }}
   BOOTSTRAP_TENANT_NAME: {{ .Values.config.bootstrapTenantName | quote }}
