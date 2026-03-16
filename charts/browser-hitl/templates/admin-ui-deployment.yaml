@@ -29,7 +29,7 @@ spec:
               protocol: TCP
           env:
             - name: NEXT_PUBLIC_API_URL
-              value: "http://{{ include "browser-hitl.fullname" . }}-api:{{ .Values.api.port }}"
+              value: {{ (.Values.config.publicBaseUrl | default (printf "http://%s-api:%v" (include "browser-hitl.fullname" .) .Values.api.port)) | quote }}
             - name: PORT
               value: {{ .Values.adminUi.port | quote }}
           resources:

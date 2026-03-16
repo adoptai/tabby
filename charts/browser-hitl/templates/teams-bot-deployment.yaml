@@ -44,7 +44,8 @@ spec:
             - name: TEAMS_DEFAULT_CHANNEL
               value: {{ .Values.teamsBot.teamsDefaultChannel | quote }}
             - name: NATS_URL
-              value: {{ .Values.config.natsUrl | quote }}
+              {{- $defaultNatsUrl := printf "nats://%s-nats:%v" (include "browser-hitl.fullname" .) (.Values.nats.port | int) }}
+              value: {{ default $defaultNatsUrl .Values.config.natsUrl | quote }}
             - name: API_BASE_URL
               value: {{ printf "http://%s-api:%v" (include "browser-hitl.fullname" .) .Values.api.port | quote }}
             - name: SERVICE_AUTH_CLIENT_ID

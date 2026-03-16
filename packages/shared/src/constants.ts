@@ -27,8 +27,8 @@ export const CHROMIUM_FLAGS = [
 // ============================================================
 
 export const PORTS = {
-  API: 8080,
-  API_WS: 8080,           // Same server, upgraded connection at /events
+  API: Number(process.env.API_PORT || 8000),
+  API_WS: Number(process.env.API_PORT || 8000),  // Same server, upgraded connection at /events
   CONTROLLER_HEALTH: 8090,
   WORKER_HEALTH: 8091,
   NOVNC: 6080,
