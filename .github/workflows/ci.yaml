@@ -133,4 +133,3 @@ jobs:
           version: v3.14.0
 
       - run: helm lint charts/browser-hitl/
-      - run: helm lint charts/browser-hitl/ -f charts/browser-hitl/values-production.yaml

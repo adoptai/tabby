@@ -12,8 +12,8 @@ concurrency:
 env:
   NODE_VERSION: "20"
   REGISTRY: ghcr.io/adoptai/tabby
+  CHART_REGISTRY: ghcr.io/adoptai/charts
   TFY_HOST: https://adoptai.truefoundry.cloud
-  TFY_API_KEY: ${{ secrets.TFY_API_KEY }}
 
 jobs:
   # ── Quality Gates ─────────────────────────────────────────────────────────────
@@ -140,29 +140,73 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Deploy to TrueFoundry Staging ─────────────────────────────────────────────
-  deploy:
-    name: Deploy ${{ matrix.service }} to Staging
+  # ── Package & Push Helm Chart ────────────────────────────────────────────────
+  push-chart:
+    name: Push Helm Chart
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [build-images]
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        include:
-          # ── Update these FQNs to match your TrueFoundry workspace ──
-          - service: api
-            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-api-staging
-          - service: controller
-            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-controller-staging
-          - service: worker
-            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-worker-staging
-          - service: slack-bot
-            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-slack-bot-staging
-          - service: admin-ui
-            fqn: tfy-dev-cluster:adopt-dev-ws:tabby-admin-ui-staging
+    permissions:
+      packages: write
+    outputs:
+      chart_version: ${{ steps.version.outputs.version }}
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
 
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Get chart version
+        id: version
+        run: echo "version=$(grep '^version:' charts/browser-hitl/Chart.yaml | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Get image tag
+        id: tag
+        run: echo "tag=staging-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push chart
+        run: |
+          helm package charts/browser-hitl/
+          helm push browser-hitl-${{ steps.version.outputs.version }}.tgz oci://${{ env.CHART_REGISTRY }}
+
+  # ── Deploy to TrueFoundry Staging ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [push-chart]
+    environment: staging
+    env:
+      # Dynamic values
+      IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
+      CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
+      # TrueFoundry config (from environment secrets)
+      TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
+      TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}
+      # App config (from environment secrets)
+      API_HOST: ${{ secrets.API_HOST }}
+      ADMIN_HOST: ${{ secrets.ADMIN_HOST }}
+      # App secrets (from environment secrets)
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      JWT_SIGNING_KEY: ${{ secrets.JWT_SIGNING_KEY }}
+      TENANT_ENCRYPTION_KEY: ${{ secrets.TENANT_ENCRYPTION_KEY }}
+      MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+      MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+      ADMIN_BOOTSTRAP_PASSWORD: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
+      EGRESS_PROXY_ADMIN_TOKEN: ${{ secrets.EGRESS_PROXY_ADMIN_TOKEN }}
+      EGRESS_PROXY_SESSION_KEY: ${{ secrets.EGRESS_PROXY_SESSION_KEY }}
+      SERVICE_AUTH_CLIENT_ID: ${{ secrets.SERVICE_AUTH_CLIENT_ID }}
+      SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+      SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+      METRICS_AUTH_TOKEN: ${{ secrets.METRICS_AUTH_TOKEN }}
+      NATS_AUTH_TOKEN: ${{ secrets.NATS_AUTH_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -172,11 +216,14 @@ jobs:
 
       - run: pip install "truefoundry<1.0.0"
 
-      - name: Deploy ${{ matrix.service }}
-        run: |
-          tfy patch-application \
-            --application-fqn ${{ matrix.fqn }} \
-            --patch '{"image": {"build_source": {"ref": "${{ github.sha }}", "branch_name": "${{ github.ref_name }}"}}}'
+      - name: Login to TrueFoundry
+        run: tfy login --host ${{ env.TFY_HOST }} --api-key ${{ secrets.TFY_API_KEY }}
+
+      - name: Generate manifest from template
+        run: envsubst < infra/tfy/deploy.yaml > /tmp/tfy-manifest.yaml
+
+      - name: Deploy to TrueFoundry
+        run: tfy apply -f /tmp/tfy-manifest.yaml
 
   # ── Post-Deploy Health Check ──────────────────────────────────────────────────
   health-check:
@@ -184,19 +231,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [deploy]
+    environment: staging
     steps:
       - name: Wait for rollout
         run: sleep 60
 
       - name: Check API health
         run: |
-          STAGING_URL="${{ secrets.STAGING_API_URL }}"
-          if [ -z "$STAGING_URL" ]; then
-            echo "::warning::STAGING_API_URL secret not set — skipping health check"
+          API_HOST="${{ secrets.API_HOST }}"
+          if [ -z "$API_HOST" ]; then
+            echo "::warning::API_HOST secret not set — skipping health check"
             exit 0
           fi
           for i in 1 2 3 4 5; do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${STAGING_URL}/health/live" || echo "000")
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "https://${API_HOST}/health/live" || echo "000")
             if [ "$STATUS" = "200" ]; then
               echo "API healthy (attempt $i)"
               exit 0

@@ -12,6 +12,9 @@ global:
 # -- Extra Kubernetes objects (VirtualServices, etc.)
 extraObjects: []
 
+# -- VirtualServices (Istio) — set gateway + hosts to enable
+virtualServices: {}
+
 # =============================================================================
 # Image Tags
 # =============================================================================
