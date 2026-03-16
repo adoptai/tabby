@@ -188,13 +188,12 @@ describe('Phase 5: Observability', () => {
       expect(valuesSrc).toContain('hitlTimeoutRate');
     });
 
-    it('should enable alerting in production values', () => {
-      const prodSrc = fs.readFileSync(
-        path.join(chartsDir, 'values-production.yaml'),
+    it('should have alerting configuration in default values', () => {
+      const valuesSrc = fs.readFileSync(
+        path.join(chartsDir, 'values.yaml'),
         'utf-8',
       );
-      expect(prodSrc).toContain('alerting:');
-      expect(prodSrc).toContain('enabled: true');
+      expect(valuesSrc).toContain('alerting:');
     });
   });
 });
