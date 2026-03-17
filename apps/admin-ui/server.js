@@ -182,6 +182,7 @@ const html = `<!doctype html>
   </head>
   <body>
     <div class="layout">
+      <h1 style="text-align:center;font-size:32px;margin-bottom:24px;">Hi, I'm Tabby 🤖</h1>
       <div class="header-container">
         <h1>Browser HITL Admin UI</h1>
         <button id="themeToggle" class="theme-toggle">Toggle Dark Mode</button>
