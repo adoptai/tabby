@@ -193,6 +193,7 @@ jobs:
       # Dynamic values
       IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
       CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
+      COMMIT_SHA: ${{ github.sha }}
       # TrueFoundry config (from environment secrets)
       TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
       TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}
@@ -246,21 +247,33 @@ jobs:
       - name: Wait for rollout
         run: sleep 60
 
-      - name: Check API health
+      - name: Check API health and version
         run: |
           API_HOST="${{ secrets.API_HOST }}"
+          EXPECTED_COMMIT="${{ github.sha }}"
           if [ -z "$API_HOST" ]; then
             echo "::warning::API_HOST secret not set — skipping health check"
             exit 0
           fi
           for i in 1 2 3 4 5; do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "https://${API_HOST}/health/live" || echo "000")
-            if [ "$STATUS" = "200" ]; then
+            RESPONSE=$(curl -sf "https://${API_HOST}/health/live" || echo "")
+            STATUS=$(echo "$RESPONSE" | jq -r '.status // empty' 2>/dev/null || echo "")
+            COMMIT=$(echo "$RESPONSE" | jq -r '.commit // empty' 2>/dev/null || echo "")
+            VERSION=$(echo "$RESPONSE" | jq -r '.version // empty' 2>/dev/null || echo "")
+            if [ "$STATUS" = "ok" ]; then
               echo "API healthy (attempt $i)"
-              exit 0
+              echo "  Version: $VERSION"
+              echo "  Commit:  $COMMIT"
+              if [ "$COMMIT" = "$EXPECTED_COMMIT" ]; then
+                echo "Commit SHA matches — deploy verified!"
+                exit 0
+              else
+                echo "::warning::API is healthy but running commit $COMMIT (expected $EXPECTED_COMMIT). Waiting for rollout..."
+              fi
+            else
+              echo "Attempt $i: not ready, retrying in 15s..."
             fi
-            echo "Attempt $i: got $STATUS, retrying in 15s..."
             sleep 15
           done
-          echo "::error::API health check failed after 5 attempts"
+          echo "::error::API did not roll out with expected commit after 5 attempts"
           exit 1

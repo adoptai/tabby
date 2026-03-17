@@ -24,8 +24,12 @@ export class HealthController {
   ) {}
 
   @Get('live')
-  liveness(): { status: string } {
-    return { status: 'ok' };
+  liveness(): { status: string; version: string; commit: string } {
+    return {
+      status: 'ok',
+      version: process.env.CHART_VERSION || 'unknown',
+      commit: process.env.COMMIT_SHA || 'unknown',
+    };
   }
 
   @Get('ready')

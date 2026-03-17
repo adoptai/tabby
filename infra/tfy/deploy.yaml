@@ -55,9 +55,10 @@ values:
     port: 8000
 
   config:
-    publicBaseUrl: "https://tabby-api.adoptai.dev"
-    streamHost: "tabby-api.adoptai.dev"
+    publicBaseUrl: "https://${API_HOST}"
+    streamHost: "${API_HOST}"
     streamProtocol: "wss"
+    commitSha: "${COMMIT_SHA}"
 
   postgres:
     enabled: true
