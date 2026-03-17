@@ -59,3 +59,6 @@ data:
   CONTROLLER_PORT: {{ .Values.controller.port | quote }}
   WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}
   NOVNC_PORT: {{ .Values.worker.novnc.port | quote }}
+  # Version info (injected by CI)
+  CHART_VERSION: {{ .Chart.Version | quote }}
+  COMMIT_SHA: {{ .Values.config.commitSha | default "unknown" | quote }}
