@@ -59,24 +59,30 @@ values:
     streamHost: "${API_HOST}"
     streamProtocol: "wss"
     commitSha: "${COMMIT_SHA}"
+    # Managed service overrides — when set, Helm uses these instead of constructing
+    # URLs from in-cluster service names. Leave empty to use in-cluster defaults.
+    databaseUrl: "${DATABASE_URL}"
+    redisUrl: "${REDIS_URL}"
+    natsUrl: "${NATS_URL}"
+    minioEndpoint: "${MINIO_ENDPOINT}"
 
   postgres:
-    enabled: true
+    enabled: ${POSTGRES_ENABLED}
     persistence:
       size: 20Gi
 
   redis:
-    enabled: true
+    enabled: ${REDIS_ENABLED}
     persistence:
       size: 5Gi
 
   nats:
-    enabled: true
+    enabled: ${NATS_ENABLED}
     persistence:
       size: 10Gi
 
   minio:
-    enabled: true
+    enabled: ${MINIO_ENABLED}
     persistence:
       size: 50Gi
 

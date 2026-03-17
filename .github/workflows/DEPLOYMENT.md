@@ -1,6 +1,6 @@
 # Tabby Deployment Guide
 
-How the CI/CD pipelines work, what they deploy, and what you need to configure manually.
+How the CI/CD pipelines work, what they deploy, and what you need to configure.
 
 ---
 
@@ -11,13 +11,13 @@ Tabby is a monorepo with 7 services. Each service has its own Dockerfile and run
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          EXTERNAL TRAFFIC                               │
-│                         (Ingress / TLS)                                 │
+│                  (Istio VirtualService / TLS)                           │
 └──────────┬──────────────────────┬───────────────────────┬───────────────┘
            │                      │                       │
     ┌──────▼──────┐       ┌───────▼──────┐       ┌───────▼──────┐
     │  Admin UI   │       │   API        │       │ Egress Proxy │
-    │  :3000      │──────▶│   :8080      │       │ :3128        │
-    │  Express    │ calls │   NestJS     │       │ FQDN filter  │
+    │  :8000      │──────▶│   :8000      │       │ :3128        │
+    │  Next.js    │ calls │   NestJS     │       │ FQDN filter  │
     └─────────────┘       └──┬───┬───┬───┘       └──────┬───────┘
                              │   │   │                   │
               ┌──────────────┘   │   └──────────┐       │
@@ -35,24 +35,11 @@ Tabby is a monorepo with 7 services. Each service has its own Dockerfile and run
     └──────────────────────────────────────────────┘ through proxy
 ```
 
-### Service Roles
+### Service Ports
 
+All services use port **8000** (API, Admin UI). Controller: **8090**, Worker health: **8091**. Do NOT use 3000 or 8080.
 
-| Service          | Image                        | Port | What it does                                                                                                                                                                  |
-| ---------------- | ---------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **API**          | `Dockerfile.api`             | 8080 | Central REST API — auth, CRUD, HITL operations, streaming, metrics. All clients talk to this.                                                                                 |
-| **Controller**   | `Dockerfile.controller`      | 8090 | Watches session state in DB, creates/destroys Worker pods in K8s. Calls egress proxy admin API to set per-session allowlists.                                                 |
-| **Worker**       | `Dockerfile.worker`          | 8091 | Ephemeral pod (1 per session). Runs Playwright + CloakBrowser, executes Login DSL, extracts artifacts. Heaviest resource consumer.                                            |
-| **Slack Bot**    | `Dockerfile.slack-bot`       | —    | Subscribes to NATS events, posts HITL notifications to Slack, relays OTP codes from operators.                                                                                |
-| **Teams Bot**    | `Dockerfile.teams-bot`       | 3978 | Same as Slack Bot but for Microsoft Teams via Bot Framework.                                                                                                                  |
-| **Admin UI**     | `Dockerfile.admin-ui`        | 3000 | Express server rendering the admin dashboard. Proxies API calls to the API service internally.                                                                                |
-| **Egress Proxy** | ConfigMap + `node:20-alpine` | 3128 | FQDN allowlist enforcement. All browser traffic from Worker pods routes through this. No custom Docker image — it's `node:20-alpine` running a ConfigMap-mounted `server.js`. |
-
-
-### Infrastructure (not built by CI)
-
-These are off-the-shelf images deployed by the Helm chart:
-
+### Infrastructure (deployed by Helm chart)
 
 | Service       | Image                | Purpose                                                            |
 | ------------- | -------------------- | ------------------------------------------------------------------ |
@@ -61,191 +48,204 @@ These are off-the-shelf images deployed by the Helm chart:
 | NATS 2.10     | `nats:2.10-alpine`   | Durable event bus (JetStream) — HITL events, session state changes |
 | MinIO         | `minio/minio`        | S3-compatible object storage for encrypted artifact bundles        |
 
-
-> **Production:** Replace PostgreSQL, Redis, and MinIO with managed services (RDS, ElastiCache, S3). Only NATS runs in-cluster.
-
----
-
-## What the Workflows Build vs. What You Configure
-
-### What CI/CD handles automatically
-
-- Lint, test, security audit on every PR
-- Docker image builds for all 7 services (parallel, cached)
-- Push to GHCR (`ghcr.io/adoptai/tabby/<service>`)
-- TrueFoundry `patch-application` to trigger deployment
-- Post-deploy health checks
-
-### What you must configure manually
-
-The workflows build and deploy the containers, but they **do not** manage secrets, environment variables, or infrastructure. You need to set these up in your deployment platform (TrueFoundry, Helm, or whatever orchestrates the pods).
+> **Production:** Replace with managed services (RDS, ElastiCache, S3). See [Managed Services](#managed-services).
 
 ---
 
-## Required Secrets (GitHub Actions)
+## Workflows
 
-Set these in **Settings → Secrets and variables → Actions**:
+| File                     | Trigger               | What it does                                                              |
+| ------------------------ | --------------------- | ------------------------------------------------------------------------- |
+| `ci.yaml`                | PR to dev/main        | Commitlint → Lint → Test → Build check → Security audit → Helm lint      |
+| `deploy-staging.yaml`    | Push to dev           | CI gates → Build images → Auto-bump chart → Push chart → tfy apply → Health check |
+| `deploy-production.yaml` | Push to main / manual | CI gates → Build images → Push chart → tfy apply (with approval) → Health check   |
 
+### Image Tag Convention
 
-| Secret               | Required | Purpose                                                                  |
-| -------------------- | -------- | ------------------------------------------------------------------------ |
-| `TFY_API_KEY`        | Yes      | TrueFoundry API key for deployments                                      |
-| `STAGING_API_URL`    | No       | e.g. `https://tabby-staging.example.com` — for post-deploy health checks |
-| `PRODUCTION_API_URL` | No       | e.g. `https://tabby.example.com` — for post-deploy health checks         |
-
-
-`GITHUB_TOKEN` is provided automatically (used for GHCR push).
+- **Staging:** `staging-{sha7}` (e.g., `staging-abc1234`), plus `staging-latest`
+- **Production:** `prod-{sha7}` (e.g., `prod-abc1234`), plus `latest`
 
 ---
 
-## Required Environment Variables (per service)
+## GH_PAT (GitHub Personal Access Token)
 
-These must be configured in your deployment platform (TrueFoundry app settings, Helm values, or K8s ConfigMaps/Secrets).
+The workflows use `GH_PAT` instead of the default `GITHUB_TOKEN` because:
+- `GITHUB_TOKEN` cannot push commits that trigger other workflows (the version bump commit needs `[skip ci]`)
+- `GITHUB_TOKEN` cannot push to GHCR with write access to packages in some org configurations
 
-### All services need
+### Required permissions
 
+- `repo` (full control of private repositories)
+- `write:packages` (push Docker images and Helm charts to GHCR)
 
-| Variable                | Example                                         | Notes                                         |
-| ----------------------- | ----------------------------------------------- | --------------------------------------------- |
-| `DATABASE_URL`          | `postgresql://user:pass@host:5432/browser_hitl` | Managed DB in prod                            |
-| `REDIS_URL`             | `redis://host:6379`                             | Managed Redis in prod                         |
-| `NATS_URL`              | `nats://browser-hitl-nats:4222`                 | In-cluster NATS                               |
-| `JWT_SIGNING_KEY`       | 48+ char random string                          | **Must be identical** across API and all bots |
-| `TENANT_ENCRYPTION_KEY` | 64-char hex (`openssl rand -hex 32`)            | Per-tenant AES-256-GCM key for artifacts      |
-| `NODE_ENV`              | `production`                                    | Enables production optimizations              |
+### How to create
 
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**
+2. Select the repository scope
+3. Grant `Contents: Read and write` and `Packages: Read and write`
+4. Set expiration (recommend 90 days) and add to your rotation calendar
 
-### API-specific
+### Where to set it
 
+**Settings → Secrets and variables → Actions → Repository secrets** → `GH_PAT`
 
-| Variable                                                   | Example                     | Notes                                             |
-| ---------------------------------------------------------- | --------------------------- | ------------------------------------------------- |
-| `ADMIN_BOOTSTRAP_EMAIL`                                    | `admin@yourdomain.com`      | First admin account (created on first startup)    |
-| `ADMIN_BOOTSTRAP_PASSWORD`                                 | strong random               | Change after first login                          |
-| `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | —                           | Or S3 credentials in prod                         |
-| `CORS_ORIGIN`                                              | `https://tabby.example.com` | **Not** `*` in production                         |
-| `METRICS_AUTH_TOKEN`                                       | random hex                  | Protects `/metrics` endpoint                      |
-| `STREAM_HOST`                                              | `tabby.example.com`         | Used to build VNC stream URLs returned to clients |
-| `SERVICE_AUTH_CLIENT_ID` / `SERVICE_AUTH_CLIENT_SECRET`    | —                           | For bot → API service token auth                  |
+---
 
+## GitHub Environments
 
-### Slack Bot
+Create two environments: `staging` and `production`.
 
+**Settings → Environments → New environment**
 
-| Variable               | Example                        | Notes                        |
-| ---------------------- | ------------------------------ | ---------------------------- |
-| `SLACK_BOT_TOKEN`      | `xoxb-...`                     | Bot User OAuth Token         |
-| `SLACK_SIGNING_SECRET` | from Slack app                 | For request verification     |
-| `SLACK_APP_TOKEN`      | `xapp-...`                     | For Socket Mode              |
-| `SLACK_CHANNEL`        | `tabby-alerts`                 | Default notification channel |
-| `API_BASE_URL`         | `http://browser-hitl-api:8080` | Internal API address         |
+- **staging**: No protection rules needed
+- **production**: Add required reviewers (at least 1 team member must approve deploys)
 
+### Secrets by scope
 
-### Teams Bot
+#### Repository-level secrets (Settings → Secrets → Actions)
 
+| Secret    | Required | Purpose                                    |
+| --------- | -------- | ------------------------------------------ |
+| `GH_PAT`  | Yes      | GitHub PAT for checkout + push (see above) |
 
-| Variable                 | Example        | Notes                |
-| ------------------------ | -------------- | -------------------- |
-| `MICROSOFT_APP_ID`       | from Azure Bot | Bot Framework app ID |
-| `MICROSOFT_APP_PASSWORD` | from Azure Bot | Bot Framework secret |
+#### Environment-level secrets (per environment)
 
+| Secret                      | Required | Env     | Purpose                                               |
+| --------------------------- | -------- | ------- | ----------------------------------------------------- |
+| `TFY_API_KEY`               | Yes      | Both    | TrueFoundry API key for `tfy apply`                   |
+| `TFY_APP_NAME`              | Yes      | Both    | TrueFoundry application name                          |
+| `TFY_WORKSPACE_FQN`         | Yes      | Both    | TrueFoundry workspace FQN                             |
+| `API_HOST`                  | Yes      | Both    | Public hostname (e.g., `tabby-api.adoptai.dev`)       |
+| `ADMIN_HOST`                | Yes      | Both    | Admin UI hostname (e.g., `tabby-admin.adoptai.dev`)   |
+| `POSTGRES_PASSWORD`         | Yes      | Both    | PostgreSQL password                                   |
+| `JWT_SIGNING_KEY`           | Yes      | Both    | JWT signing key (48+ chars, same across all services) |
+| `TENANT_ENCRYPTION_KEY`     | Yes      | Both    | 64-char hex for AES-256-GCM (`openssl rand -hex 32`) |
+| `MINIO_ACCESS_KEY`          | Yes      | Both    | MinIO / S3 access key                                 |
+| `MINIO_SECRET_KEY`          | Yes      | Both    | MinIO / S3 secret key                                 |
+| `ADMIN_BOOTSTRAP_PASSWORD`  | Yes      | Both    | First admin account password                          |
+| `EGRESS_PROXY_ADMIN_TOKEN`  | Yes      | Both    | Auth for controller → proxy admin API                 |
+| `EGRESS_PROXY_SESSION_KEY`  | Yes      | Both    | Signs per-session proxy credentials                   |
+| `SERVICE_AUTH_CLIENT_ID`    | Yes      | Both    | Bot → API service auth client ID                      |
+| `SERVICE_AUTH_CLIENT_SECRET`| Yes      | Both    | Bot → API service auth client secret                  |
+| `SLACK_BOT_TOKEN`           | Yes      | Both    | Slack Bot User OAuth Token (`xoxb-...`)               |
+| `SLACK_SIGNING_SECRET`      | Yes      | Both    | Slack request verification                            |
+| `SLACK_APP_TOKEN`           | Yes      | Both    | Slack Socket Mode token (`xapp-...`)                  |
+| `METRICS_AUTH_TOKEN`        | Yes      | Both    | Protects `/metrics` endpoint                          |
+| `NATS_AUTH_TOKEN`           | Yes      | Both    | NATS authentication token                             |
 
-### Admin UI
+#### Optional managed service overrides
 
+| Secret             | Default    | Purpose                                          |
+| ------------------ | ---------- | ------------------------------------------------ |
+| `DATABASE_URL`     | (in-cluster) | External PostgreSQL URL (e.g., RDS)            |
+| `REDIS_URL`        | (in-cluster) | External Redis URL (e.g., ElastiCache)         |
+| `NATS_URL`         | (in-cluster) | External NATS URL                              |
+| `MINIO_ENDPOINT`   | (in-cluster) | External S3-compatible endpoint                |
+| `POSTGRES_ENABLED` | `true`     | Set to `false` when using managed PostgreSQL     |
+| `REDIS_ENABLED`    | `true`     | Set to `false` when using managed Redis          |
+| `NATS_ENABLED`     | `true`     | Set to `false` when using managed NATS           |
+| `MINIO_ENABLED`    | `true`     | Set to `false` when using managed object storage |
 
-| Variable              | Example                     | Notes                                                  |
-| --------------------- | --------------------------- | ------------------------------------------------------ |
-| `NEXT_PUBLIC_API_URL` | `https://tabby.example.com` | **Browser-facing** API URL (not internal service name) |
+When a secret is not set, it defaults to empty string → Helm `default` function falls back to the in-cluster service URL. No changes needed for staging.
 
+---
 
-### Controller
+## Managed Services
 
-No extra env vars beyond the shared ones. It discovers other services via K8s DNS:
+For production, replace in-cluster StatefulSets with managed services:
 
-- API: `http://browser-hitl-api:8080`
-- Egress proxy admin: `http://browser-hitl-egress-proxy:8095`
+| In-cluster | Managed replacement | Config override   | Disable flag          |
+| ---------- | ------------------- | ----------------- | --------------------- |
+| PostgreSQL | AWS RDS / Azure DB  | `DATABASE_URL`    | `POSTGRES_ENABLED=false` |
+| Redis      | ElastiCache / Azure Cache | `REDIS_URL` | `REDIS_ENABLED=false`    |
+| NATS       | (usually in-cluster) | `NATS_URL`       | `NATS_ENABLED=false`     |
+| MinIO      | S3 / Azure Blob     | `MINIO_ENDPOINT`  | `MINIO_ENABLED=false`    |
+
+**How it works:**
+1. Set `DATABASE_URL=postgresql://...` in the production environment secrets
+2. Set `POSTGRES_ENABLED=false` to skip deploying the in-cluster PostgreSQL StatefulSet
+3. The Helm configmap template uses `default $constructedUrl .Values.config.databaseUrl` — when the override is set, it wins
 
 ### Egress Proxy
 
-
-| Variable                         | Example                 | Notes                                      |
-| -------------------------------- | ----------------------- | ------------------------------------------ |
-| `EGRESS_PROXY_ADMIN_TOKEN`       | random hex              | Authenticates controller → proxy admin API |
-| `EGRESS_PROXY_SESSION_KEY`       | random hex              | Signs per-session proxy credentials        |
-| `EGRESS_PROXY_DEFAULT_ALLOWLIST` | comma-separated domains | Baseline domains allowed for all sessions  |
-
+The egress proxy allowlist is hardcoded in `infra/tfy/deploy.yaml` (~95 domains). This is intentional:
+- The list rarely changes
+- It's not secret (just domain patterns)
+- Changes are reviewable in PRs
+- The proxy must run in-cluster (workers route all browser traffic through it)
 
 ---
 
-## Deployment Checklist
+## Conventional Commits
 
-### Staging
+All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-- TrueFoundry applications created for: api, controller, worker, slack-bot, admin-ui
-- TrueFoundry FQNs updated in `deploy-staging.yaml` matrix
-- `TFY_API_KEY` secret set in GitHub
-- All env vars configured in TrueFoundry for each service
-- PostgreSQL, Redis, NATS, MinIO/S3 accessible from staging cluster
-- Egress proxy allowlist includes all target portal domains
-- `STAGING_API_URL` secret set (optional, for health checks)
+```
+type(scope): description
 
-### Production
+feat: add OTP retry logic
+fix: handle empty allowlist in egress proxy
+chore: update dependencies
+ci: add commitlint to PR checks
+```
 
-- Same as staging, plus:
-- GitHub environment `production` created with required reviewers
-- TLS enabled (cert-manager + `letsencrypt-prod`)
-- NATS auth enabled (`nats.auth.enabled: true`)
-- Network policies enabled
-- `CORS_ORIGIN` set to exact domain (not `*`)
-- Managed PostgreSQL with automated backups
-- Managed Redis with persistence
-- Managed S3/GCS instead of MinIO
-- `PRODUCTION_API_URL` secret set (optional, for health checks)
-- Monitoring: kube-prometheus-stack + PrometheusRules enabled
+Enforced by:
+- **Local:** Husky `commit-msg` hook runs commitlint
+- **CI:** `commitlint` job in `ci.yaml` validates all PR commits
+
+### Chart Version Auto-Bump
+
+On push to `dev`, the staging workflow automatically bumps the chart version:
+
+- `feat:` or `feat(scope):` → **minor** bump (0.X+1.0)
+- Everything else (`fix:`, `chore:`, `ci:`, etc.) → **patch** bump (0.0.X+1)
+
+The bump commit uses `[skip ci]` to prevent re-triggering the workflow.
+
+**Important:** Enforce squash merges on the `dev` branch so the commit message is the PR title (which must be conventional). Production reads whatever version is in Chart.yaml — no auto-bump.
+
+---
+
+## Verification Commands
+
+### Check deployed version
+
+```bash
+curl -s https://tabby-api.adoptai.dev/health/live | jq .
+# Returns: { "status": "ok", "version": "0.1.6", "commit": "abc1234..." }
+```
+
+### Check pods
+
+```bash
+kubectl get pods -n azure-ws -l app.kubernetes.io/instance=tabby-dev
+kubectl logs -n azure-ws deploy/tabby-dev-browser-hitl-api --tail=50
+```
+
+### Verify Helm release
+
+```bash
+kubectl get applications.argoproj.io tabby-dev -n azure-ws -o jsonpath='{.spec.source.targetRevision}'
+```
+
+### Local Helm validation
+
+```bash
+helm lint charts/browser-hitl/
+helm template tabby-dev charts/browser-hitl/ | grep -c "kind:"
+```
 
 ---
 
 ## Common Gotchas
 
-
-| Problem                                       | Cause                                                                                                    | Fix                                                                       |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Admin UI shows `ERR_NAME_NOT_RESOLVED`        | `NEXT_PUBLIC_API_URL` set to internal K8s DNS (`http://browser-hitl-api:8080`) instead of the public URL | Set it to the external URL the **browser** can reach                      |
-| Stream URLs return `http://localhost/vnc/...` | `STREAM_HOST` not set on API                                                                             | Set to public hostname (e.g. `tabby.example.com`)                         |
-| Slack bot silent after deploy                 | NATS wasn't ready when bot started — connection fails permanently                                        | Restart the bot pod after NATS is healthy                                 |
-| Worker pods crash-loop                        | Egress proxy is down → controller can't set allowlists → kills worker                                    | Restart egress proxy first, then controller                               |
-| `JWT_SIGNING_KEY` mismatch                    | API and bots have different keys → tokens from API are invalid for bot → 401                             | Ensure **all services** share the exact same `JWT_SIGNING_KEY`            |
-| Helm upgrade breaks env overrides             | `kubectl set env` overrides are lost on `helm upgrade`                                                   | Use Helm values or TrueFoundry config instead of manual `kubectl set env` |
-| Security audit fails CI                       | `pnpm audit` found high/critical vulnerability                                                           | Update the dependency or add to `.pnpmfile.cjs` audit overrides           |
-
-
----
-
-## TrueFoundry Application FQNs
-
-Update these in the workflow files once applications are created:
-
-
-| Service    | Staging FQN                                             | Production FQN                                        |
-| ---------- | ------------------------------------------------------- | ----------------------------------------------------- |
-| API        | `tfy-dev-cluster:adopt-dev-ws:tabby-api-staging`        | `tfy-dev-cluster:adopt-prod-ws:tabby-api-prod`        |
-| Controller | `tfy-dev-cluster:adopt-dev-ws:tabby-controller-staging` | `tfy-dev-cluster:adopt-prod-ws:tabby-controller-prod` |
-| Worker     | `tfy-dev-cluster:adopt-dev-ws:tabby-worker-staging`     | `tfy-dev-cluster:adopt-prod-ws:tabby-worker-prod`     |
-| Slack Bot  | `tfy-dev-cluster:adopt-dev-ws:tabby-slack-bot-staging`  | `tfy-dev-cluster:adopt-prod-ws:tabby-slack-bot-prod`  |
-| Admin UI   | `tfy-dev-cluster:adopt-dev-ws:tabby-admin-ui-staging`   | `tfy-dev-cluster:adopt-prod-ws:tabby-admin-ui-prod`   |
-
-
-> **Note:** Teams Bot and noVNC sidecar are not deployed standalone via TrueFoundry. The noVNC sidecar is bundled into Worker pods by the Controller. Teams Bot can be added when needed.
-
----
-
-## Workflow File Reference
-
-
-| File                     | Trigger               | What it does                                                                                 |
-| ------------------------ | --------------------- | -------------------------------------------------------------------------------------------- |
-| `ci.yaml`                | PR to dev/main        | Lint → Test → Build check → Security audit → Helm lint                                       |
-| `deploy-staging.yaml`    | Push to dev           | CI gates → Build 7 images (GHCR) → TrueFoundry staging → Health check                        |
-| `deploy-production.yaml` | Push to main / manual | CI gates (strict) → Build images → TrueFoundry prod (with approval) → Health check → Summary |
-
-
+| Problem                                       | Cause                                                              | Fix                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Admin UI shows `ERR_NAME_NOT_RESOLVED`        | `NEXT_PUBLIC_API_URL` points to internal K8s DNS                   | Set to the external URL the **browser** can reach                         |
+| Stream URLs return `http://localhost/vnc/...`  | `STREAM_HOST` not set on API                                       | Set to public hostname (e.g., `tabby-api.adoptai.dev`)                    |
+| Slack bot silent after deploy                  | NATS wasn't ready when bot started — no retry                      | Restart the bot pod after NATS is healthy                                 |
+| Worker pods crash-loop                         | Egress proxy down → controller can't set allowlists                | Restart egress proxy first, then controller                               |
+| `JWT_SIGNING_KEY` mismatch                     | API and bots have different keys → 401s                            | All services must share the exact same key                                |
+| Helm upgrade breaks env overrides              | `kubectl set env` overrides lost on upgrade                        | Use Helm values or TrueFoundry config                                     |
+| Postgres password unchanged after values edit  | PVC retains old password from init                                 | Delete PVC + pod to re-init                                               |
+| Chart push fails "already exists"              | Version wasn't bumped (manual push or prod re-push)                | Production uses `\|\| echo "already exists"` — this is expected           |
