@@ -243,6 +243,16 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
       CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
+      COMMIT_SHA: ${{ github.sha }}
+      # Managed service overrides (optional — defaults to in-cluster)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+      NATS_URL: ${{ secrets.NATS_URL }}
+      MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+      POSTGRES_ENABLED: ${{ secrets.POSTGRES_ENABLED || 'true' }}
+      REDIS_ENABLED: ${{ secrets.REDIS_ENABLED || 'true' }}
+      NATS_ENABLED: ${{ secrets.NATS_ENABLED || 'true' }}
+      MINIO_ENABLED: ${{ secrets.MINIO_ENABLED || 'true' }}
       TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
       TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}
       API_HOST: ${{ secrets.API_HOST }}
