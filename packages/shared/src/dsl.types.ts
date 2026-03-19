@@ -24,9 +24,12 @@ export type DslActionType =
 
 export interface BaseDslStep {
   action: DslActionType;
-  timeout_ms?: number;      // Default: 30000
-  retry_count?: number;     // Default: 1
-  sensitive?: boolean;      // Default: false. True for password/OTP steps
+  timeout_ms?: number;        // Default: 30000
+  retry_count?: number;       // Default: 1
+  sensitive?: boolean;        // Default: false. True for password/OTP steps
+  retry_backoff?: 'fixed' | 'exponential';  // Default: 'fixed'
+  retry_delay_ms?: number;    // Default: 1000
+  retry_max_delay_ms?: number; // Default: 30000 (exponential cap)
 }
 
 export interface GotoStep extends BaseDslStep {

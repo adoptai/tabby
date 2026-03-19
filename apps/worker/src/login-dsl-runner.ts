@@ -58,7 +58,8 @@ export class LoginDslRunner {
           console.warn(`Step ${i} (${step.action}) attempt ${attempt + 1} failed: ${error}`);
 
           if (attempt < retries) {
-            await this.page.waitForTimeout(1000); // Brief pause before retry
+            const delay = this.calculateRetryDelay(step, attempt);
+            await this.page.waitForTimeout(delay);
           }
         }
       }
@@ -247,6 +248,25 @@ export class LoginDslRunner {
     } else {
       throw new Error('OTP timeout - no value received');
     }
+  }
+
+  /**
+   * Calculate retry delay with optional exponential backoff + jitter.
+   */
+  private calculateRetryDelay(step: DslStep, attempt: number): number {
+    const backoff = step.retry_backoff || 'fixed';
+    const baseDelay = step.retry_delay_ms || 1000;
+    const maxDelay = step.retry_max_delay_ms || 30000;
+
+    if (backoff === 'exponential') {
+      const raw = baseDelay * Math.pow(2, attempt);
+      const capped = Math.min(raw, maxDelay);
+      // Add 0-20% jitter to prevent thundering herd
+      const jitter = capped * (Math.random() * 0.2);
+      return Math.round(capped + jitter);
+    }
+
+    return baseDelay;
   }
 
   /**
