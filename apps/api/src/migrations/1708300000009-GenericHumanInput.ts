@@ -27,9 +27,9 @@ export class GenericHumanInput1708300000009 implements MigrationInterface {
         IF NOT EXISTS (
           SELECT 1 FROM pg_enum
           WHERE enumlabel = 'INPUT_NEEDED'
-          AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'interventions_type_enum')
+          AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'intervention_type')
         ) THEN
-          ALTER TYPE interventions_type_enum ADD VALUE 'INPUT_NEEDED';
+          ALTER TYPE intervention_type ADD VALUE 'INPUT_NEEDED';
         END IF;
       END $$
     `);
