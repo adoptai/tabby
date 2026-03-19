@@ -125,8 +125,10 @@ Create two environments: `staging` and `production`.
 | `ADMIN_BOOTSTRAP_PASSWORD`  | Yes      | Both    | First admin account password                          |
 | `EGRESS_PROXY_ADMIN_TOKEN`  | Yes      | Both    | Auth for controller → proxy admin API                 |
 | `EGRESS_PROXY_SESSION_KEY`  | Yes      | Both    | Signs per-session proxy credentials                   |
-| `SERVICE_AUTH_CLIENT_ID`    | Yes      | Both    | Bot → API service auth client ID                      |
-| `SERVICE_AUTH_CLIENT_SECRET`| Yes      | Both    | Bot → API service auth client secret                  |
+| `SERVICE_AUTH_CLIENT_ID`    | Yes      | Both    | Bot → API service auth client ID (you define this)    |
+| `SERVICE_AUTH_CLIENT_SECRET`| Yes      | Both    | Bot → API service auth secret (`openssl rand -hex 32`)|
+| `SERVICE_AUTH_ALLOWED_TENANT_IDS` | Yes | Both   | `*` (all tenants) or comma-separated UUIDs            |
+| `SVC_AUTH_WILDCARD_SCOPE`  | Yes      | Both    | `true` if using `*` above                             |
 | `SLACK_BOT_TOKEN`           | Yes      | Both    | Slack Bot User OAuth Token (`xoxb-...`)               |
 | `SLACK_SIGNING_SECRET`      | Yes      | Both    | Slack request verification                            |
 | `SLACK_APP_TOKEN`           | Yes      | Both    | Slack Socket Mode token (`xapp-...`)                  |

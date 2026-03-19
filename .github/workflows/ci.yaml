@@ -12,14 +12,12 @@ env:
   NODE_VERSION: "20"
 
 jobs:
-  commitlint:
-    name: Commit Messages
+  pr-title:
+    name: PR Title (Conventional Commit)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -29,8 +27,8 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Validate commit messages
-        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+      - name: Validate PR title follows conventional commits
+        run: echo "${{ github.event.pull_request.title }}" | npx commitlint --verbose
 
   lint:
     name: Lint & Type-check

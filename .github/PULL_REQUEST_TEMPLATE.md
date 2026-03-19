@@ -1,23 +1,14 @@
 ## Summary
 
-<!-- Brief description of what this PR does and why -->
-
-## Changes
-
-<!-- List the key changes made -->
+<!-- 1-3 bullet points: what changed and why -->
 
 -
 
-## Testing
+## Test plan
 
-- [ ] All existing tests pass (`pnpm nx run-many --target=test --all`)
-- [ ] New tests added for new functionality
-- [ ] Build succeeds (`pnpm nx run-many --target=build --all`)
-- [ ] Manually tested (if applicable)
-
-## Security
-
+- [ ] `pnpm run lint` passes
+- [ ] `pnpm run build` passes
+- [ ] `pnpm run test` passes (all ~640 tests)
+- [ ] `helm lint charts/browser-hitl/` passes
+- [ ] Manually tested locally (if applicable)
 - [ ] No secrets or credentials committed
-- [ ] Input validation via class-validator DTOs (if new endpoints)
-- [ ] Authorization guards applied (if new endpoints)
-- [ ] No new dependencies with known vulnerabilities

@@ -2,7 +2,7 @@ import {
   Controller, Post, Get, Delete, Body, Param, HttpCode,
   UseGuards, Req, ParseUUIDPipe,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiProperty } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { TokenBlacklistService } from './token-blacklist.service';
@@ -31,17 +31,21 @@ class LoginDto {
 }
 
 class ServiceTokenDto {
+  @ApiProperty({ example: 'phase4-bot' })
   @IsString()
   @MinLength(1)
   client_id: string;
 
+  @ApiProperty({ example: 'phase4-secret' })
   @IsString()
   @MinLength(1)
   client_secret: string;
 
+  @ApiProperty({ example: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' })
   @IsUUID()
   tenant_id: string;
 
+  @ApiProperty({ example: 'Operator', required: false })
   @IsOptional()
   @IsString()
   @MinLength(1)
@@ -49,38 +53,46 @@ class ServiceTokenDto {
 }
 
 class AgentTokenDto {
+  @ApiProperty({ example: 'agent_cl_a1b2c3d4e5f6a1b2' })
   @IsString()
   @MinLength(1)
   client_id: string;
 
+  @ApiProperty({ example: 'secret_sk_abcdef0123456789...' })
   @IsString()
   @MinLength(1)
   client_secret: string;
 
+  @ApiProperty({ example: 'client_credentials' })
   @IsString()
   @Matches(/^client_credentials$/, { message: 'grant_type must be "client_credentials"' })
   grant_type: string;
 }
 
 class RegisterAgentClientDto {
+  @ApiProperty({ example: 'abcd-hubspot-agent' })
   @IsString()
   @MinLength(1)
   name: string;
 
+  @ApiProperty({ example: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' })
   @IsUUID()
   tenant_id: string;
 
+  @ApiProperty({ example: ['hubspot-standard'] })
   @IsArray()
   @ArrayMinSize(1)
   @IsString({ each: true })
   allowed_profiles: string[];
 
+  @ApiProperty({ example: 3600, required: false })
   @IsOptional()
   @IsInt()
   @Min(DEFAULTS.AGENT_TOKEN_MIN_TTL_SECONDS)
   @Max(DEFAULTS.AGENT_TOKEN_MAX_TTL_SECONDS)
   token_ttl_seconds?: number;
 
+  @ApiProperty({ example: 30, required: false })
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -106,6 +118,10 @@ export class AuthController {
   // Human auth
   // =================================================================
 
+  @ApiOperation({ summary: 'Login with email/password', description: 'Authenticate a human user and receive a JWT token. Rate limited to 5 requests per minute.' })
+  @ApiResponse({ status: 200, description: 'JWT token issued', schema: { example: { token: 'eyJhbGciOi...', expires_at: '2026-03-19T14:30:00.000Z' } } })
+  @ApiResponse({ status: 401, description: 'Invalid credentials' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
   @Post('login')
   @HttpCode(200)
   @Throttle({ default: { limit: parseInt(process.env.LOGIN_THROTTLE_LIMIT || '5', 10), ttl: 60000 } })
@@ -122,6 +138,8 @@ export class AuthController {
     return result;
   }
 
+  @ApiOperation({ summary: 'Logout and revoke token', description: 'Revokes the current JWT token by adding its JTI to the blacklist.' })
+  @ApiResponse({ status: 200, description: 'Token revoked', schema: { example: { message: 'Logged out successfully' } } })
   @Post('auth/logout')
   @HttpCode(200)
   @UseGuards(AuthGuard('jwt'))
@@ -145,6 +163,9 @@ export class AuthController {
   // Service token (existing — bots)
   // =================================================================
 
+  @ApiOperation({ summary: 'Issue service token', description: 'OAuth-style service token for bots. Validates against SERVICE_AUTH_CLIENT_ID/SECRET env vars. Rate limited to 20/min.' })
+  @ApiResponse({ status: 200, description: 'Service token issued', schema: { example: { token: 'eyJhbGciOi...', expires_at: '2026-03-19T14:30:00.000Z', token_type: 'Bearer' } } })
+  @ApiResponse({ status: 401, description: 'Invalid client credentials or tenant not allowed' })
   @Post('auth/service-token')
   @HttpCode(200)
   @Throttle({ default: { limit: 20, ttl: 60000 } })
@@ -174,6 +195,10 @@ export class AuthController {
   // Agent token (ADR-010 — OAuth 2.0 Client Credentials)
   // =================================================================
 
+  @ApiOperation({ summary: 'Issue agent token (OAuth 2.0 Client Credentials)', description: 'Issues a scoped JWT for AI agents. Token is scoped to allowed_profiles configured on the agent client. Rate limited to 60/min.' })
+  @ApiResponse({ status: 200, description: 'Agent token issued', schema: { example: { access_token: 'eyJhbGciOi...', token_type: 'Bearer', expires_in: 3600, refresh_before: 3300, scope: 'auth:request profile:hubspot-standard' } } })
+  @ApiResponse({ status: 401, description: 'Invalid client credentials, client revoked, or disabled' })
+  @ApiResponse({ status: 400, description: 'grant_type must be "client_credentials"' })
   @Post('auth/agent-token')
   @HttpCode(200)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
@@ -197,6 +222,9 @@ export class AuthController {
   // Agent client management (Admin-only, ADR-010)
   // =================================================================
 
+  @ApiOperation({ summary: 'Register new agent client', description: 'Creates an agent client with dedicated client_id/secret scoped to specific profiles. The client_secret is returned ONLY in this response — store it securely.' })
+  @ApiResponse({ status: 201, description: 'Agent client registered', schema: { example: { id: '11111111-2222-3333-4444-555555555555', client_id: 'agent_cl_a1b2c3d4...', client_secret: 'secret_sk_abcdef01...', name: 'abcd-hubspot-agent', tenant_id: 'aaaaaaaa-...', allowed_profiles: ['hubspot-standard'], created_at: '2026-03-18T10:00:00.000Z' } } })
+  @ApiResponse({ status: 403, description: 'Admin role required' })
   @Post('admin/agent-clients')
   @HttpCode(201)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -225,6 +253,8 @@ export class AuthController {
     return result;
   }
 
+  @ApiOperation({ summary: 'List agent clients for tenant', description: 'Returns all agent clients for the given tenant. Secret hashes are never included.' })
+  @ApiResponse({ status: 200, description: 'Agent client list (without secrets)' })
   @Get('admin/agent-clients/:tenantId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('Admin')
@@ -246,6 +276,8 @@ export class AuthController {
     }));
   }
 
+  @ApiOperation({ summary: 'Revoke agent client', description: 'Disables the agent client. All existing tokens will fail on next validation.' })
+  @ApiResponse({ status: 200, description: 'Client revoked', schema: { example: { message: 'Agent client revoked' } } })
   @Delete('admin/agent-clients/:id')
   @HttpCode(200)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -264,6 +296,8 @@ export class AuthController {
     return { message: 'Agent client revoked' };
   }
 
+  @ApiOperation({ summary: 'Rotate agent client secret', description: 'Generates a new secret. Old secret immediately invalidated. New secret returned once — store securely.' })
+  @ApiResponse({ status: 200, description: 'New credentials', schema: { example: { client_id: 'agent_cl_a1b2...', client_secret: 'secret_sk_newkey...' } } })
   @Post('admin/agent-clients/:id/rotate-secret')
   @HttpCode(200)
   @UseGuards(JwtAuthGuard, RolesGuard)

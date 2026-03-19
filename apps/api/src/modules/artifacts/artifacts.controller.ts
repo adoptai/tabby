@@ -1,7 +1,7 @@
 import {
   Controller, Get, Param, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { ArtifactsService } from './artifacts.service';
 import { Response } from 'express';
@@ -15,6 +15,9 @@ export class ArtifactsController {
 
   @Get(':id')
   @Roles('Admin', 'Operator')
+  @ApiOperation({ summary: 'Get artifact access URL', description: 'Returns a single-use download URL and token for an encrypted artifact bundle.' })
+  @ApiParam({ name: 'id', description: 'Artifact bundle UUID' })
+  @ApiResponse({ status: 200, description: 'Access link issued', schema: { example: { presigned_url: 'https://...', download_url: '/artifacts/.../download?token_id=...', token_id: 'tok-uuid', expires_at: '2026-03-18T10:12:00.000Z' } } })
   async getPresignedUrl(@Param('id') id: string, @Req() req: any) {
     return this.artifactsService.getPresignedUrl(
       id,
@@ -25,6 +28,11 @@ export class ArtifactsController {
 
   @Get(':id/download')
   @Roles('Admin', 'Operator')
+  @ApiOperation({ summary: 'Download artifact', description: 'Streams the encrypted artifact bundle. Requires a single-use token_id from the access link endpoint.' })
+  @ApiParam({ name: 'id', description: 'Artifact bundle UUID' })
+  @ApiQuery({ name: 'token_id', description: 'Single-use download token', required: true })
+  @ApiResponse({ status: 200, description: 'Encrypted artifact stream (application/octet-stream)' })
+  @ApiResponse({ status: 401, description: 'Invalid or expired token' })
   async downloadArtifact(
     @Param('id') id: string,
     @Query('token_id') tokenId: string,

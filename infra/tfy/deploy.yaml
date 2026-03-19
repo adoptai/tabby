@@ -59,6 +59,9 @@ values:
     streamHost: "${API_HOST}"
     streamProtocol: "wss"
     commitSha: "${COMMIT_SHA}"
+    # Service-to-service auth (bots → API)
+    serviceAuthAllowedTenantIds: "${SERVICE_AUTH_ALLOWED_TENANT_IDS}"
+    serviceAuthAllowWildcardTenantScope: "${SVC_AUTH_WILDCARD_SCOPE}"
     # Managed service overrides — when set, Helm uses these instead of constructing
     # URLs from in-cluster service names. Leave empty to use in-cluster defaults.
     databaseUrl: "${DATABASE_URL}"
