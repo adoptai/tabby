@@ -10,7 +10,7 @@ import {
   BotFrameworkAdapter,
   MessageFactory,
 } from 'botbuilder';
-import { HitlStartedEvent, HitlOtpRequestedEvent } from '@browser-hitl/shared';
+import { HitlStartedEvent } from '@browser-hitl/shared';
 import { HitlActionHandler } from './handlers/hitl-actions';
 
 type AnySubscription = Subscription | JetStreamSubscription;
@@ -55,7 +55,7 @@ export class NatsListener {
       const jsm = await this.nc.jetstreamManager();
 
       const STREAM_MAX_AGE_NS = 24 * 60 * 60 * 1_000_000_000;
-      try { await jsm.streams.add({ name: 'HITL_EVENTS', subjects: ['hitl.started.>', 'hitl.completed.>', 'hitl.otp-requested.>'], retention: RetentionPolicy.Limits, storage: StorageType.File, max_age: STREAM_MAX_AGE_NS }); } catch { /* exists */ }
+      try { await jsm.streams.add({ name: 'HITL_EVENTS', subjects: ['hitl.started.>', 'hitl.completed.>'], retention: RetentionPolicy.Limits, storage: StorageType.File, max_age: STREAM_MAX_AGE_NS }); } catch { /* exists */ }
 
       const makeSub = async (subject: string, durable: string, stream: string) => {
         try { await jsm.consumers.delete(stream, durable); } catch { /* doesn't exist */ }
@@ -72,18 +72,14 @@ export class NatsListener {
       };
 
       const hitlStartedSub = await makeSub('hitl.started.>', 'teams-hitl-started', 'HITL_EVENTS');
-      const otpRequestedSub = await makeSub('hitl.otp-requested.>', 'teams-otp-requested', 'HITL_EVENTS');
-      this.subscriptions.push(hitlStartedSub, otpRequestedSub);
+      this.subscriptions.push(hitlStartedSub);
       this.consumeHitlStarted(hitlStartedSub);
-      this.consumeOtpRequested(otpRequestedSub);
       mode = 'JetStream (durable)';
     } catch (err) {
       console.warn(`[NatsListener] JetStream unavailable, using Core NATS: ${err}`);
       const hitlStartedSub = this.nc.subscribe('hitl.started.>');
-      const otpRequestedSub = this.nc.subscribe('hitl.otp-requested.>');
-      this.subscriptions.push(hitlStartedSub, otpRequestedSub);
+      this.subscriptions.push(hitlStartedSub);
       this.consumeHitlStarted(hitlStartedSub);
-      this.consumeOtpRequested(otpRequestedSub);
       mode = 'Core NATS (no replay)';
     }
 
@@ -132,38 +128,6 @@ export class NatsListener {
         if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
       } catch (error) {
         console.error(`[NatsListener] Error processing hitl.started: ${error}`);
-      }
-    }
-  }
-
-  /**
-   * Process hitl.otp-requested events.
-   * Posts an Adaptive Card with OTP input and submit button.
-   */
-  private async consumeOtpRequested(sub: AnySubscription): Promise<void> {
-    for await (const msg of sub) {
-      try {
-        const data = JSON.parse(this.sc.decode(msg.data)) as HitlOtpRequestedEvent;
-        const { session_id, tenant_id, app_id, app_name } = data.payload;
-
-        console.log(
-          `[NatsListener] hitl.otp-requested: session=${session_id} app=${app_name}`,
-        );
-
-        const card = this.actionHandler.buildOtpRequestedCard(
-          session_id,
-          app_id,
-          app_name,
-          tenant_id,
-          data.timestamp,
-        );
-
-        await this.sendProactiveMessage(
-          MessageFactory.attachment(card),
-        );
-        if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
-      } catch (error) {
-        console.error(`[NatsListener] Error processing hitl.otp-requested: ${error}`);
       }
     }
   }

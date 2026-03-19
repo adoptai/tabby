@@ -7,7 +7,7 @@ import { LoginDslRunner } from './login-dsl-runner';
 import { KeepaliveRunner } from './keepalive-runner';
 import { HealthPredicateRunner } from './health-predicate-runner';
 import { ArtifactExtractor } from './artifact-extractor';
-import { OtpRelay } from './otp-relay';
+import { InputRelay } from './input-relay';
 import { SessionDb } from './session-db';
 import { RecyclingMonitor } from './recycling-monitor';
 import { ScreenshotFallback } from './screenshot-fallback';
@@ -183,19 +183,24 @@ async function main() {
     }
 
     // Initialize components
-    const otpRelay = new OtpRelay(sessionId);
+    const inputRelay = new InputRelay(sessionId);
     const allowDslEvaluate = ((appConfig.browser_policy as Record<string, unknown> | undefined)?.allow_evaluate === true)
       || (process.env.DSL_ALLOW_EVALUATE || '').trim().toLowerCase() === 'true';
     const dslRunner = new LoginDslRunner(
       page,
       context,
-      otpRelay,
+      inputRelay,
       sessionId,
       tenantId,
       appId,
       {
         allowEvaluate: allowDslEvaluate,
-        // Signal controller that login has entered an OTP-gated auth phase.
+        // Signal controller that human input is needed.
+        onInputRequested: async (request) => {
+          await db.writePendingInputRequest(sessionId, request as unknown as Record<string, unknown>);
+          await db.updateHealthResult(sessionId, 'AUTH_FAIL');
+        },
+        // Legacy: signal controller that login has entered an OTP-gated auth phase.
         onOtpWaitStart: async () => {
           await db.updateHealthResult(sessionId, 'AUTH_FAIL');
         },

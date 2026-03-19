@@ -49,6 +49,7 @@ export enum InterventionType {
   OTP = 'OTP',
   CAPTCHA = 'CAPTCHA',
   MANUAL = 'MANUAL',
+  INPUT_NEEDED = 'INPUT_NEEDED',
   OTHER = 'OTHER',
 }
 

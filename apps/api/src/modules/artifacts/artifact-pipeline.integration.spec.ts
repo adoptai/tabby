@@ -175,7 +175,6 @@ describe('Artifact Pipeline Integration', () => {
         NATS_SUBJECTS.sessionStateChanged(tenantId, sessionId),
         NATS_SUBJECTS.hitlStarted(tenantId, sessionId),
         NATS_SUBJECTS.hitlCompleted(tenantId, sessionId),
-        NATS_SUBJECTS.hitlOtpRequested(tenantId, sessionId),
       ];
 
       for (const subject of subjects) {
