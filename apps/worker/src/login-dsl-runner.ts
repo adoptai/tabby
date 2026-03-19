@@ -65,6 +65,14 @@ export class LoginDslRunner {
       }
 
       if (lastError) {
+        // Check on_failure handler before throwing
+        if (step.on_failure) {
+          const handled = await this.handleOnFailure(step, i, lastError);
+          if (handled === 'skip') continue;
+          // 'abort' falls through to throw, 'continue' means help was provided
+          if (handled === 'continue') continue;
+        }
+
         // Capture error screenshot only if non-sensitive and policy allows
         if (!step.sensitive) {
           try {
@@ -167,6 +175,88 @@ export class LoginDslRunner {
     // Legacy: check if this is an OTP wait step (sensitive wait_for)
     if (step.action === 'wait_for' && step.sensitive) {
       await this.handleOtpWait(step.selector, step.timeout_ms || 120000);
+    }
+  }
+
+  /**
+   * Handle on_failure after all retries are exhausted.
+   * Returns 'skip' to continue to next step, 'continue' if help was received,
+   * or 'abort' to throw.
+   */
+  private async handleOnFailure(
+    step: DslStep,
+    stepIndex: number,
+    error: Error,
+  ): Promise<'skip' | 'continue' | 'abort'> {
+    const handler = step.on_failure!;
+
+    switch (handler.action) {
+      case 'skip':
+        console.log(`Step ${stepIndex} (${step.action}) failed, skipping per on_failure policy`);
+        return 'skip';
+
+      case 'abort':
+        console.log(`Step ${stepIndex} (${step.action}) failed, aborting per on_failure policy`);
+        return 'abort';
+
+      case 'request_help': {
+        console.log(`Step ${stepIndex} (${step.action}) failed, requesting help: "${handler.message}"`);
+
+        // Take screenshot if requested
+        if (handler.screenshot && !step.sensitive) {
+          try {
+            await this.page.screenshot({ path: `/tmp/screenshot-help-${stepIndex}-${Date.now()}.png` });
+          } catch {
+            // Ignore screenshot errors
+          }
+        }
+
+        // Reuse the human input infrastructure
+        const inputType = handler.input_type || 'confirm';
+        const inputRequest: InputRequest = {
+          input_type: inputType,
+          label: handler.message,
+          step_index: stepIndex,
+        };
+
+        if (this.onInputRequested) {
+          try {
+            await this.onInputRequested(inputRequest);
+          } catch (err) {
+            console.warn(`Failed to report help request: ${err}`);
+          }
+        }
+
+        // Poll for human response
+        const timeoutMs = step.timeout_ms || 120000;
+        const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
+
+        if (!response) {
+          console.warn(`Help request timeout for step ${stepIndex}`);
+          return 'abort';
+        }
+
+        // Handle the response
+        switch (response.input_type) {
+          case 'url':
+            await this.page.goto(response.value);
+            break;
+          case 'confirm':
+            // Human resolved via VNC
+            break;
+          default:
+            if (handler.field_selector) {
+              await this.currentFrame.locator(handler.field_selector).fill(response.value);
+            }
+            break;
+        }
+
+        console.log(`Help received for step ${stepIndex}, resuming from next step`);
+        return 'continue';
+      }
+
+      default:
+        return 'abort';
     }
   }
 
