@@ -1,6 +1,6 @@
 # Tabby (Browser HITL)
 
-Browser Human-In-The-Loop platform. Workers run Playwright/Chromium to execute Login DSL scripts, with human intervention via Slack/VNC when automation gets stuck (OTP, CAPTCHA, MFA).
+Browser Human-In-The-Loop platform. Workers run Playwright/Chromium to execute Login DSL scripts, with human intervention via Slack/VNC when automation gets stuck (OTP, CAPTCHA, MFA, passwords, magic links, or any custom input).
 
 ## Build & Test
 
@@ -12,6 +12,8 @@ pnpm run lint
 helm lint charts/browser-hitl/
 ```
 
+**Test with encryption key:** `TENANT_ENCRYPTION_KEY=$(printf '0%.0s' {1..64}) pnpm run test`
+
 **Before committing:** Pre-commit hook runs `lint-staged` + `pnpm run build` + `pnpm run test` automatically via Husky. Commit-msg hook validates conventional commits via commitlint.
 
 ## Project Structure
@@ -20,10 +22,10 @@ Monorepo (NX + pnpm workspaces):
 - `apps/api` — NestJS REST API (port 8000)
 - `apps/controller` — Watches sessions, creates/destroys worker pods
 - `apps/worker` — Ephemeral Playwright pod, executes Login DSL
-- `apps/slack-bot` — NATS subscriber, Slack notifications + OTP relay
+- `apps/slack-bot` — NATS subscriber, Slack notifications + human input relay
 - `apps/teams-bot` — Microsoft Teams equivalent
 - `apps/admin-ui` — Next.js dashboard (port 8000)
-- `packages/shared` — Shared types, enums, state machines
+- `packages/shared` — Shared types, enums, state machines, DSL types, NATS events
 - `charts/browser-hitl` — Helm chart for K8s deployment
 - `infra/docker/` — 7 Dockerfiles (api, controller, worker, novnc, slack-bot, teams-bot, admin-ui)
 - `infra/tfy/deploy.yaml` — TrueFoundry manifest template (envsubst placeholders)
@@ -37,6 +39,8 @@ make k8s-port-forward     # forward API (18080), Admin UI (13000), Postgres, Red
 ```
 
 All local config (API URL, stream host, service auth, secrets) is in `values-local.yaml` — no manual `kubectl set env` needed.
+
+To enable slack-bot locally, set `slackBot.enabled: true` and add `slackSigningSecret`, `slackAppToken`, `slackBotToken` in `values-local.yaml` secrets section. Remember to also set `slackBot.slackDefaultChannel` to a channel ID.
 
 ## Ports (standardized)
 
@@ -70,12 +74,13 @@ Registry: `ghcr.io/adoptai/tabby/{service}:{tag}`
 
 - `ci.yaml` — PR validation: PR title conventional commit check, lint, test, build, security audit, helm lint
 - `deploy-staging.yaml` — Push to `dev`: build images → auto-bump chart version → push chart → `tfy apply` → health check
-- `deploy-production.yaml` — Push to `main`: same flow with manual confirmation gate + required reviewers
+- `deploy-production.yaml` — Push to `main`: reads already-bumped version from Chart.yaml, builds `prod-*` images, same chart version
 - Secrets are in GitHub Environments (`staging` / `production`), injected via envsubst into `infra/tfy/deploy.yaml`
 
 ### Conventional Commits (enforced)
 
 PR titles MUST follow conventional commits (squash merge makes PR title the commit message):
+- `release:` or `feat!:` / `fix!:` → **major** version bump (X+1.0.0)
 - `feat:` → minor version bump (0.X+1.0)
 - `fix:`, `chore:`, `ci:`, etc. → patch bump (0.0.X+1)
 - Enforced by: Husky commit-msg hook (local) + CI PR title check
@@ -91,28 +96,65 @@ PR titles MUST follow conventional commits (squash merge makes PR title the comm
 
 ## Architecture Notes
 
-### HITL Flow
-Worker detects OTP/MFA → signals `AUTH_FAIL` via DB → Controller transitions to `LOGIN_NEEDED` → Creates intervention + sets baton to `HUMAN_REQUESTED` → Publishes NATS events → Slack bot posts notification → Human either submits OTP via Slack (Redis relay) or takes over browser via VNC → Releases control → Worker resumes
+### HITL Flow (Generic Human Input)
+Worker hits `request_human_input` DSL step (or sensitive `wait_for` for legacy OTP) → writes `pending_input_request` to session + signals `AUTH_FAIL` via DB → Controller transitions to `LOGIN_NEEDED` → Creates intervention with `input_request_metadata` + sets baton to `HUMAN_REQUESTED` → Publishes enriched `hitl.started` NATS event (with `intervention_type` + `input_request`) → Slack bot posts dynamic message (buttons adapt to input type) → Human submits value via Slack modal or resolves via VNC → Value stored in Redis (`human_input:{sessionId}:{stepIndex}`) → Worker polls, receives, acts (fill field / navigate URL / resume) → Health check passes → Session returns to HEALTHY
+
+### Supported Human Input Types
+- `otp` — one-time password / 2FA code
+- `email` — email address
+- `password` — password (masked in Slack modal)
+- `captcha` — CAPTCHA solution
+- `verification_code` — generic verification code
+- `url` — URL (e.g., magic link)
+- `confirm` — human resolves via VNC, clicks "Mark as Resolved" in Slack
+
+### DSL Step: `on_failure`
+Any `wait_for`, `wait_for_url`, `click`, `fill`, `goto` step can have `on_failure`:
+- `{ "action": "skip" }` — skip failed step, continue DSL
+- `{ "action": "abort" }` — fail immediately
+- `{ "action": "request_help", "message": "...", "input_type": "url", "screenshot": true }` — screenshot + ask human for input (reuses generic human input infrastructure)
+
+### DSL Retry Backoff
+Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay_ms`. Default: fixed 1s delay.
 
 ### Baton State Machine
 `AUTOMATION_CONTROL → HUMAN_REQUESTED → HUMAN_CONTROL → HUMAN_RELEASED → AUTOMATION_CONTROL`
 
 ### Service Profile State Machine
 `STAGING → CANARY → ACTIVE → RETIRED`
-- `recordCanaryResult()` is dead code — canary_request_count never increments
-- Credentials (`POST /credentials/request`) require ACTIVE profile
-- Workaround: direct DB update to skip canary gate
+- Canary promotion gate is wired: `resolveActiveProfile()` queries ACTIVE + CANARY (prefers ACTIVE), increments `canary_request_count`/`canary_error_count`
+- Credentials (`POST /credentials/request`) returns `CANARY` freshness when serving from canary
+
+### Key API Endpoints
+- `POST /sessions/:id/stream` — VNC stream URL
+- `POST /sessions/:id/takeover` — Acquire baton
+- `POST /sessions/:id/release` — Release baton
+- `POST /sessions/:id/input` — Submit generic human input (type, value, step_index)
+- `POST /sessions/:id/otp` — Submit OTP (legacy, still works)
+- `POST /sessions/:id/acknowledge` — Acknowledge failure, retry
+
+### NATS Events
+- `hitl.started.{tenantId}.{sessionId}` — carries `intervention_type` + `input_request` metadata
+- `hitl.completed.{tenantId}.{sessionId}`
+- `session.state.changed.{tenantId}.{sessionId}`
+- ~~`hitl.otp-requested`~~ — removed (deduped into `hitl.started`)
+
+## Database Migrations
+
+9 migrations in `apps/api/src/migrations/`. TypeORM, `synchronize: false`, `migrationsRun: true`. Auto-run on API startup.
+
+Latest: `1708300000009-GenericHumanInput` — adds `sessions.pending_input_request` (JSONB), `interventions.input_request_metadata` (JSONB), `INPUT_NEEDED` to intervention type enum.
 
 ## Known Gotchas
 
 1. **Postgres PVC password persistence** — Changing `postgresPassword` in values does NOT change the actual DB password. Must delete PVC + pod to re-init.
 2. **NEXT_PUBLIC_* vars are browser-side** — Must be externally accessible URLs, not internal K8s DNS. Configured in `values-local.yaml` via `config.publicBaseUrl`.
-3. **Slack bot modes** — `main.ts` in K8s (Socket Mode, 3 tokens, interactive buttons) vs `soft-hitl-bridge.ts` locally (bot token only, text commands).
+3. **Slack bot modes** — `main.ts` in K8s (Socket Mode, 3 tokens, interactive buttons) vs `soft-hitl-bridge.ts` locally (bot token only, text commands + INPUT/RESOLVE).
 4. **ArgoCD auto-sync with prune** — Manual `helm upgrade` will be reverted by ArgoCD.
-5. **No OTP retry** — Wrong OTP code kills the session, no retry logic.
-6. **`recordCanaryResult()` never called** — Canary promotion gate is dead code. Must bypass via DB.
-7. **`tfy apply` replaces ALL values** — Must send full values every deploy (handled by `infra/tfy/deploy.yaml` template).
-8. **Never `kubectl set env` locally** — Use `values-local.yaml` instead. Manual env overrides conflict with Helm on next upgrade.
+5. **`tfy apply` replaces ALL values** — Must send full values every deploy (handled by `infra/tfy/deploy.yaml` template).
+6. **Never `kubectl set env` locally** — Use `values-local.yaml` instead. Manual env overrides conflict with Helm on next upgrade.
+7. **CSS selectors in DSL** — Attribute selectors must quote values: `[data-test-id="value"]` not `[data-test-id=value]`.
+8. **`--enable-automation` flag** — Still present in Chromium flags, sets `navigator.webdriver = true`. Triggers bot detection.
 
 ## Git
 
