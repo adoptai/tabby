@@ -53,28 +53,30 @@ function createMockBrowserContext() {
   return {};
 }
 
-function createMockOtpRelay() {
+function createMockInputRelay() {
   return {
     waitForOtp: jest.fn().mockResolvedValue('123456'),
+    waitForInput: jest.fn().mockResolvedValue({ input_type: 'otp', value: '123456' }),
+    disconnect: jest.fn().mockResolvedValue(undefined),
   };
 }
 
 function buildRunner(overrides: Record<string, any> = {}) {
   const page = overrides.page ?? createMockPage();
   const context = overrides.context ?? createMockBrowserContext();
-  const otpRelay = overrides.otpRelay ?? createMockOtpRelay();
+  const inputRelay = overrides.otpRelay ?? overrides.inputRelay ?? createMockInputRelay();
 
   const runner = new LoginDslRunner(
     page as any,
     context as any,
-    otpRelay as any,
+    inputRelay as any,
     'session-1',
     'tenant-1',
     'app-1',
     overrides.options,
   );
 
-  return { runner, page, context, otpRelay };
+  return { runner, page, context, inputRelay };
 }
 
 // ---------------------------------------------------------------------------
@@ -196,10 +198,10 @@ describe('LoginDslRunner', () => {
   describe('OTP wait detection', () => {
     it('triggers OTP relay polling when wait_for step is sensitive', async () => {
       const page = createMockPage();
-      const otpRelay = createMockOtpRelay();
-      otpRelay.waitForOtp.mockResolvedValue('789012');
+      const inputRelay = createMockInputRelay();
+      inputRelay.waitForOtp.mockResolvedValue('789012');
 
-      const { runner } = buildRunner({ page, otpRelay });
+      const { runner } = buildRunner({ page, inputRelay });
 
       const steps: DslStep[] = [
         {
@@ -213,7 +215,7 @@ describe('LoginDslRunner', () => {
       await runner.execute(steps, { username: '', password: '' });
 
       // OTP relay should have been polled
-      expect(otpRelay.waitForOtp).toHaveBeenCalledWith(60000);
+      expect(inputRelay.waitForOtp).toHaveBeenCalledWith(60000);
 
       // OTP value should have been filled into the field
       expect(page._locator.fill).toHaveBeenCalledWith('789012');
@@ -221,11 +223,11 @@ describe('LoginDslRunner', () => {
 
     it('invokes OTP wait start callback before polling Redis', async () => {
       const page = createMockPage();
-      const otpRelay = createMockOtpRelay();
+      const inputRelay = createMockInputRelay();
       const onOtpWaitStart = jest.fn().mockResolvedValue(undefined);
       const { runner } = buildRunner({
         page,
-        otpRelay,
+        inputRelay,
         options: { onOtpWaitStart },
       });
 
@@ -241,15 +243,15 @@ describe('LoginDslRunner', () => {
       await runner.execute(steps, { username: '', password: '' });
 
       expect(onOtpWaitStart).toHaveBeenCalledTimes(1);
-      expect(otpRelay.waitForOtp).toHaveBeenCalledWith(60000);
+      expect(inputRelay.waitForOtp).toHaveBeenCalledWith(60000);
     });
 
     it('throws when OTP relay returns null (timeout)', async () => {
       const page = createMockPage();
-      const otpRelay = createMockOtpRelay();
-      otpRelay.waitForOtp.mockResolvedValue(null);
+      const inputRelay = createMockInputRelay();
+      inputRelay.waitForOtp.mockResolvedValue(null);
 
-      const { runner } = buildRunner({ page, otpRelay });
+      const { runner } = buildRunner({ page, inputRelay });
 
       const steps: DslStep[] = [
         {
@@ -266,8 +268,8 @@ describe('LoginDslRunner', () => {
     });
 
     it('does not trigger OTP relay for non-sensitive wait_for', async () => {
-      const otpRelay = createMockOtpRelay();
-      const { runner } = buildRunner({ otpRelay });
+      const inputRelay = createMockInputRelay();
+      const { runner } = buildRunner({ inputRelay });
 
       const steps: DslStep[] = [
         { action: 'wait_for', selector: '#some-element', sensitive: false },
@@ -275,7 +277,7 @@ describe('LoginDslRunner', () => {
 
       await runner.execute(steps, { username: '', password: '' });
 
-      expect(otpRelay.waitForOtp).not.toHaveBeenCalled();
+      expect(inputRelay.waitForOtp).not.toHaveBeenCalled();
     });
   });
 

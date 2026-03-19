@@ -1,31 +1,36 @@
 import { Page, BrowserContext, Frame, FrameLocator } from 'playwright';
-import { DslStep } from '@browser-hitl/shared';
-import { OtpRelay } from './otp-relay';
+import { DslStep, RequestHumanInputStep, InputRequest } from '@browser-hitl/shared';
+import { InputRelay } from './input-relay';
 
 /**
- * Login DSL Runner - executes all 15 DSL actions per spec section 10.3.
+ * Login DSL Runner - executes all DSL actions per spec section 10.3.
  * Steps execute sequentially and are blocking.
  * Frame context persists across steps until explicitly changed.
  */
 export class LoginDslRunner {
   private currentFrame: Page | Frame | FrameLocator;
   private readonly allowEvaluate: boolean;
+  private readonly onInputRequested: ((request: InputRequest) => Promise<void> | void) | undefined;
+  /** @deprecated Use onInputRequested instead */
   private readonly onOtpWaitStart: (() => Promise<void> | void) | undefined;
 
   constructor(
     private readonly page: Page,
     private readonly context: BrowserContext,
-    private readonly otpRelay: OtpRelay,
+    private readonly inputRelay: InputRelay,
     private readonly sessionId: string,
     private readonly tenantId: string,
     private readonly appId: string,
     options?: {
       allowEvaluate?: boolean;
+      onInputRequested?: (request: InputRequest) => Promise<void> | void;
+      /** @deprecated Use onInputRequested instead */
       onOtpWaitStart?: () => Promise<void> | void;
     },
   ) {
     this.currentFrame = page;
     this.allowEvaluate = options?.allowEvaluate === true;
+    this.onInputRequested = options?.onInputRequested;
     this.onOtpWaitStart = options?.onOtpWaitStart;
   }
 
@@ -45,7 +50,7 @@ export class LoginDslRunner {
 
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          await this.executeStep(step, credentials, timeout);
+          await this.executeStep(step, i, credentials, timeout);
           lastError = undefined;
           break;
         } catch (error) {
@@ -75,6 +80,7 @@ export class LoginDslRunner {
 
   private async executeStep(
     step: DslStep,
+    stepIndex: number,
     credentials: { username: string; password: string },
     timeout: number,
   ): Promise<void> {
@@ -149,15 +155,75 @@ export class LoginDslRunner {
         await this.page.reload({ timeout });
         break;
 
+      case 'request_human_input':
+        await this.handleHumanInputRequest(step, stepIndex);
+        break;
+
       default:
         throw new Error(`Unknown DSL action: ${(step as any).action}`);
     }
 
-    // Check if this is an OTP wait step
+    // Legacy: check if this is an OTP wait step (sensitive wait_for)
     if (step.action === 'wait_for' && step.sensitive) {
-      // This may be an OTP field - start OTP relay polling
       await this.handleOtpWait(step.selector, step.timeout_ms || 120000);
     }
+  }
+
+  /**
+   * Handle a generic human input request step.
+   * Signals controller, polls Redis for the response, then acts on it.
+   */
+  private async handleHumanInputRequest(
+    step: RequestHumanInputStep,
+    stepIndex: number,
+  ): Promise<void> {
+    console.log(`Human input requested: type=${step.input_type}, label="${step.label}"`);
+
+    const inputRequest: InputRequest = {
+      input_type: step.input_type,
+      label: step.label,
+      placeholder: step.placeholder,
+      sensitive: step.sensitive,
+      step_index: stepIndex,
+    };
+
+    // Signal the controller via callback
+    if (this.onInputRequested) {
+      try {
+        await this.onInputRequested(inputRequest);
+      } catch (error) {
+        console.warn(`Failed to report input request: ${error}`);
+      }
+    }
+
+    // Poll for human input
+    const timeoutMs = step.timeout_ms || 120000;
+    const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
+
+    if (!response) {
+      throw new Error(`Human input timeout - no value received for "${step.label}"`);
+    }
+
+    // Handle the response based on input_type
+    switch (response.input_type) {
+      case 'url':
+        await this.page.goto(response.value);
+        break;
+      case 'confirm':
+        // Human resolved via VNC, nothing to do
+        break;
+      default:
+        // Fill the value into the field
+        if (step.field_selector) {
+          await this.currentFrame.locator(step.field_selector).fill(response.value);
+          if (step.submit_selector) {
+            await this.currentFrame.locator(step.submit_selector).click();
+          }
+        }
+        break;
+    }
+
+    console.log(`Human input received and processed: type=${response.input_type}`);
   }
 
   /**
@@ -174,7 +240,7 @@ export class LoginDslRunner {
       }
     }
 
-    const otpValue = await this.otpRelay.waitForOtp(timeoutMs);
+    const otpValue = await this.inputRelay.waitForOtp(timeoutMs);
     if (otpValue) {
       await this.currentFrame.locator(fieldSelector).fill(otpValue);
       console.log('OTP filled successfully');

@@ -1,4 +1,4 @@
-import { DslStep, DslActionType } from './dsl.types';
+import { DslStep, DslActionType, HumanInputType } from './dsl.types';
 import { LoginConfig, KeepaliveConfig, ExportPolicy, NotificationConfig } from './config.types';
 
 // ============================================================
@@ -19,6 +19,11 @@ const VALID_ACTIONS: DslActionType[] = [
   'goto', 'fill', 'type', 'click', 'select',
   'wait_for', 'wait_for_url', 'frame', 'main_frame',
   'popup', 'keyboard', 'evaluate', 'sleep', 'screenshot', 'reload',
+  'request_human_input',
+];
+
+const VALID_INPUT_TYPES: HumanInputType[] = [
+  'otp', 'email', 'password', 'captcha', 'verification_code', 'url', 'confirm',
 ];
 
 function validateStep(step: DslStep, index: number, prefix: string): ValidationError[] {
@@ -118,6 +123,22 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
     case 'reload':
       // No params needed
       break;
+
+    case 'request_human_input': {
+      const inputType = (step as any).input_type;
+      if (!inputType || !VALID_INPUT_TYPES.includes(inputType)) {
+        errors.push({ path: `${path}.input_type`, message: `request_human_input requires input_type (one of: ${VALID_INPUT_TYPES.join(', ')})` });
+      }
+      if (!(step as any).label || typeof (step as any).label !== 'string') {
+        errors.push({ path: `${path}.label`, message: 'request_human_input requires a label string' });
+      }
+      if (inputType && !['url', 'confirm'].includes(inputType)) {
+        if (!(step as any).field_selector || typeof (step as any).field_selector !== 'string') {
+          errors.push({ path: `${path}.field_selector`, message: `field_selector is required when input_type is "${inputType}"` });
+        }
+      }
+      break;
+    }
   }
 
   return errors;

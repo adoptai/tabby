@@ -282,6 +282,72 @@ export class HitlService implements OnModuleDestroy {
     return response;
   }
 
+  async submitInput(
+    sessionId: string,
+    inputType: string,
+    value: string,
+    stepIndex: number,
+    tenantId: string,
+    actorId: string,
+    idempotencyKey?: string,
+  ): Promise<{ status: 'delivered' }> {
+    const cached = await this.readActionIdempotency<{ status: 'delivered' }>(
+      'input',
+      sessionId,
+      tenantId,
+      actorId,
+      idempotencyKey,
+    );
+    if (cached) {
+      return cached;
+    }
+
+    const session = await this.findSessionForTenant(sessionId, tenantId);
+    if (session.state !== SessionState.LOGIN_IN_PROGRESS) {
+      throw new ConflictException(
+        `Session must be LOGIN_IN_PROGRESS for input submission. Current state: ${session.state}`,
+      );
+    }
+
+    const intervention = await this.interventionRepo.findOne({
+      where: {
+        session_id: sessionId,
+        tenant_id: tenantId,
+        completed_at: IsNull(),
+      },
+      order: { started_at: 'DESC' },
+    });
+    if (!intervention) {
+      throw new ConflictException('No active intervention is awaiting input for this session');
+    }
+
+    const redisKey = REDIS_KEYS.humanInput(sessionId, stepIndex);
+    const payload = JSON.stringify({ input_type: inputType, value });
+    const stored = await this.redis.set(
+      redisKey,
+      payload,
+      'EX',
+      REDIS_TTL.HUMAN_INPUT_SECONDS,
+      'NX',
+    );
+    if (stored !== 'OK') {
+      throw new ConflictException('Input value already pending for this session step');
+    }
+
+    await this.auditService.log({
+      tenant_id: tenantId,
+      actor_type: 'human',
+      actor_id: actorId,
+      event_type: 'hitl.input_submitted',
+      payload: { session_id: sessionId, input_type: inputType, step_index: stepIndex },
+    });
+    this.observabilityService.incrementCounter('hitl_input_submitted_total');
+
+    const response = { status: 'delivered' as const };
+    await this.writeActionIdempotency('input', sessionId, tenantId, actorId, idempotencyKey, response);
+    return response;
+  }
+
   async acknowledge(
     sessionId: string,
     tenantId: string,
