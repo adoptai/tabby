@@ -174,7 +174,11 @@ jobs:
           CURRENT=$(grep '^version:' charts/browser-hitl/Chart.yaml | awk '{print $2}')
           COMMIT_MSG=$(git log -1 --pretty=%s)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          if echo "$COMMIT_MSG" | grep -qE '^feat(\(.+\))?!?:'; then
+          if echo "$COMMIT_MSG" | grep -qiE '^release(\(.+\))?:' || echo "$COMMIT_MSG" | grep -qE '^[a-z]+(\(.+\))?!:'; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMIT_MSG" | grep -qE '^feat(\(.+\))?:'; then
             MINOR=$((MINOR + 1))
             PATCH=0
           else
