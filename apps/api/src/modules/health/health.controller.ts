@@ -1,5 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SessionEntity } from '../../entities';
@@ -24,6 +24,8 @@ export class HealthController {
   ) {}
 
   @Get('live')
+  @ApiOperation({ summary: 'Liveness probe', description: 'Returns chart version and commit SHA. No auth required. Used by K8s liveness probe.' })
+  @ApiResponse({ status: 200, description: 'Service is alive', schema: { example: { status: 'ok', version: '0.1.7', commit: '0676ad0' } } })
   liveness(): { status: string; version: string; commit: string } {
     return {
       status: 'ok',
@@ -33,6 +35,8 @@ export class HealthController {
   }
 
   @Get('ready')
+  @ApiOperation({ summary: 'Readiness probe', description: 'Checks database and Redis connectivity. Returns degraded (not 503) if a dependency is down. No auth required.' })
+  @ApiResponse({ status: 200, description: 'Readiness status', schema: { example: { status: 'ok', checks: { database: 'ok', redis: 'ok' } } } })
   async readiness(): Promise<{ status: string; checks: Record<string, string> }> {
     const checks: Record<string, string> = {};
 

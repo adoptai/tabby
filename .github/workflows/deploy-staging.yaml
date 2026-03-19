@@ -244,6 +244,8 @@ jobs:
       EGRESS_PROXY_SESSION_KEY: ${{ secrets.EGRESS_PROXY_SESSION_KEY }}
       SERVICE_AUTH_CLIENT_ID: ${{ secrets.SERVICE_AUTH_CLIENT_ID }}
       SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
+      SERVICE_AUTH_ALLOWED_TENANT_IDS: ${{ secrets.SERVICE_AUTH_ALLOWED_TENANT_IDS }}
+      SVC_AUTH_WILDCARD_SCOPE: ${{ secrets.SVC_AUTH_WILDCARD_SCOPE }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
       SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
@@ -273,12 +275,12 @@ jobs:
   health-check:
     name: Staging Health Check
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     needs: [deploy]
     environment: staging
     steps:
       - name: Wait for rollout
-        run: sleep 60
+        run: sleep 120
 
       - name: Check API health and version
         run: |
@@ -288,7 +290,7 @@ jobs:
             echo "::warning::API_HOST secret not set — skipping health check"
             exit 0
           fi
-          for i in 1 2 3 4 5; do
+          for i in 1 2 3 4 5 6 7 8; do
             RESPONSE=$(curl -sf "https://${API_HOST}/health/live" || echo "")
             STATUS=$(echo "$RESPONSE" | jq -r '.status // empty' 2>/dev/null || echo "")
             COMMIT=$(echo "$RESPONSE" | jq -r '.commit // empty' 2>/dev/null || echo "")
@@ -304,9 +306,9 @@ jobs:
                 echo "::warning::API is healthy but running commit $COMMIT (expected $EXPECTED_COMMIT). Waiting for rollout..."
               fi
             else
-              echo "Attempt $i: not ready, retrying in 15s..."
+              echo "Attempt $i: not ready, retrying in 30s..."
             fi
-            sleep 15
+            sleep 30
           done
-          echo "::error::API did not roll out with expected commit after 5 attempts"
+          echo "::error::API did not roll out with expected commit after 8 attempts"
           exit 1

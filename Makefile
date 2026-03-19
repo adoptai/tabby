@@ -27,7 +27,7 @@ SHELL := /bin/bash
 
 # --- Configuration -----------------------------------------------------------
 
-REGISTRY       ?= localhost:5000
+REGISTRY       ?= browser-hitl
 IMAGE_TAG      ?= dev
 HELM_RELEASE   ?= browser-hitl
 HELM_NAMESPACE ?= browser-hitl
@@ -35,14 +35,13 @@ K8S_CONTEXT    ?= $(shell kubectl config current-context 2>/dev/null)
 LOCAL_API_PORT ?= 18080
 LOCAL_ENV_FILE ?= .env.local
 
-# Docker image names
-IMG_API        := $(REGISTRY)/browser-hitl-api:$(IMAGE_TAG)
-IMG_CONTROLLER := $(REGISTRY)/browser-hitl-controller:$(IMAGE_TAG)
-IMG_WORKER     := $(REGISTRY)/browser-hitl-worker:$(IMAGE_TAG)
-IMG_SLACK      := $(REGISTRY)/browser-hitl-slack-bot:$(IMAGE_TAG)
-IMG_TEAMS      := $(REGISTRY)/browser-hitl-teams-bot:$(IMAGE_TAG)
-IMG_NOVNC      := $(REGISTRY)/browser-hitl-novnc:$(IMAGE_TAG)
-IMG_HARNESS    := $(REGISTRY)/browser-hitl-test-harness:$(IMAGE_TAG)
+# Docker image names — must match charts/browser-hitl/values-local.yaml
+IMG_API        := $(REGISTRY)/api:$(IMAGE_TAG)
+IMG_CONTROLLER := $(REGISTRY)/controller:$(IMAGE_TAG)
+IMG_WORKER     := $(REGISTRY)/worker:$(IMAGE_TAG)
+IMG_NOVNC      := $(REGISTRY)/novnc:$(IMAGE_TAG)
+IMG_ADMIN_UI   := $(REGISTRY)/admin-ui:$(IMAGE_TAG)
+IMG_HARNESS    := $(REGISTRY)/test-harness:$(IMAGE_TAG)
 
 # ============================================================
 # HELP
@@ -133,7 +132,7 @@ lint: ## Type-check all packages (tsc --noEmit)
 # ============================================================
 
 .PHONY: docker-build
-docker-build: docker-build-api docker-build-controller docker-build-worker docker-build-novnc docker-build-harness ## Build all Docker images
+docker-build: docker-build-api docker-build-controller docker-build-worker docker-build-novnc docker-build-admin-ui docker-build-harness ## Build all Docker images
 
 .PHONY: docker-build-api
 docker-build-api: ## Build API Docker image
@@ -150,6 +149,10 @@ docker-build-worker: ## Build worker Docker image (Playwright + Xvfb + x11vnc)
 .PHONY: docker-build-novnc
 docker-build-novnc: ## Build noVNC sidecar Docker image
 	docker build -f infra/docker/Dockerfile.novnc -t $(IMG_NOVNC) .
+
+.PHONY: docker-build-admin-ui
+docker-build-admin-ui: ## Build admin-ui Docker image
+	docker build -f infra/docker/Dockerfile.admin-ui -t $(IMG_ADMIN_UI) .
 
 .PHONY: docker-build-harness
 docker-build-harness: ## Build test harness Docker image
@@ -201,12 +204,22 @@ k8s-logs-controller: ## Tail controller logs
 	kubectl logs -n $(HELM_NAMESPACE) -l app.kubernetes.io/component=controller -f --tail=100
 
 .PHONY: k8s-port-forward
-k8s-port-forward: ## Port-forward API (8080), test-harness (9000)
-	@echo "API:          http://localhost:8080"
-	@echo "Test Harness: http://localhost:9000"
+k8s-port-forward: ## Port-forward all services for local development
+	@echo "API:        http://localhost:18080        (Swagger: http://localhost:18080/api/docs)"
+	@echo "Admin UI:   http://localhost:13000"
+	@echo "PostgreSQL: localhost:25432"
+	@echo "Redis:      localhost:16379"
+	@echo "MinIO:      localhost:19000"
+	@echo "NATS:       localhost:4222"
 	@echo ""
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 8080:8080 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-test-harness 9000:8000 &
+	@echo "Stop all: pkill -f 'kubectl port-forward'"
+	@echo ""
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8000 &
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-admin-ui 13000:8000 &
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-postgres 25432:5432 &
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-redis 16379:6379 &
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-minio 19000:9000 &
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-nats 4222:4222 &
 	@wait
 
 # ============================================================
@@ -223,11 +236,11 @@ kind-create: ## Create a Kind cluster for local development
 .PHONY: kind-load-images
 kind-load-images: ## Load all Docker images into the Kind cluster
 	kind load docker-image \
-		browser-hitl/api:0.1.0 \
-		browser-hitl/controller:0.1.0 \
-		browser-hitl/worker:0.1.0 \
-		browser-hitl/novnc:0.1.0 \
-		browser-hitl/admin-ui:0.1.0 \
+		$(IMG_API) \
+		$(IMG_CONTROLLER) \
+		$(IMG_WORKER) \
+		$(IMG_NOVNC) \
+		$(IMG_ADMIN_UI) \
 		--name $(KIND_CLUSTER)
 	@echo "Images loaded into Kind cluster '$(KIND_CLUSTER)'"
 
@@ -240,6 +253,58 @@ kind-deploy: ## Full local deploy: load images + helm install with local values
 		--namespace $(HELM_NAMESPACE) \
 		--wait --timeout 5m
 	@echo "Stack deployed. Run: kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8080"
+
+# --- Kind reload shortcuts: build + load + restart a single service ----------
+
+.PHONY: kind-reload-api
+kind-reload-api: docker-build-api ## Rebuild API and reload into Kind
+	kind load docker-image $(IMG_API) --name $(KIND_CLUSTER)
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+		-f charts/browser-hitl/values-local.yaml \
+		--namespace $(HELM_NAMESPACE) --reuse-values \
+		--wait --timeout 5m
+	@echo "API reloaded."
+
+.PHONY: kind-reload-controller
+kind-reload-controller: docker-build-controller ## Rebuild controller and reload into Kind
+	kind load docker-image $(IMG_CONTROLLER) --name $(KIND_CLUSTER)
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+		-f charts/browser-hitl/values-local.yaml \
+		--namespace $(HELM_NAMESPACE) --reuse-values \
+		--wait --timeout 5m
+	@echo "Controller reloaded."
+
+.PHONY: kind-reload-worker
+kind-reload-worker: docker-build-worker ## Rebuild worker and reload into Kind
+	kind load docker-image $(IMG_WORKER) --name $(KIND_CLUSTER)
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+		-f charts/browser-hitl/values-local.yaml \
+		--namespace $(HELM_NAMESPACE) --reuse-values \
+		--wait --timeout 5m
+	@echo "Worker reloaded."
+
+.PHONY: kind-reload-admin-ui
+kind-reload-admin-ui: docker-build-admin-ui ## Rebuild admin-ui and reload into Kind
+	kind load docker-image $(IMG_ADMIN_UI) --name $(KIND_CLUSTER)
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+		-f charts/browser-hitl/values-local.yaml \
+		--namespace $(HELM_NAMESPACE) --reuse-values \
+		--wait --timeout 5m
+	@echo "Admin UI reloaded."
+
+.PHONY: kind-reload-novnc
+kind-reload-novnc: docker-build-novnc ## Rebuild noVNC and reload into Kind
+	kind load docker-image $(IMG_NOVNC) --name $(KIND_CLUSTER)
+	@echo "noVNC reloaded (sidecar — new worker pods will pick it up)."
+
+.PHONY: kind-reload-all
+kind-reload-all: docker-build ## Rebuild all images, load into Kind, and upgrade Helm release
+	$(MAKE) kind-load-images
+	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
+		-f charts/browser-hitl/values-local.yaml \
+		--namespace $(HELM_NAMESPACE) --create-namespace \
+		--wait --timeout 5m
+	@echo "All services rebuilt and deployed with local images."
 
 .PHONY: kind-delete
 kind-delete: ## Delete the Kind cluster

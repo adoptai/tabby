@@ -18,9 +18,40 @@ async function bootstrap() {
   if (process.env.NODE_ENV !== 'production') {
     const config = new DocumentBuilder()
       .setTitle('Browser HITL API')
-      .setDescription('Human-in-the-Loop browser session management API')
-      .setVersion('0.1.0')
-      .addBearerAuth()
+      .setDescription(
+        'Human-in-the-Loop browser session management API.\n\n' +
+        'Tabby manages Playwright/Chromium browser sessions that execute Login DSL scripts. ' +
+        'When automation encounters OTP, CAPTCHA, or MFA challenges, human operators intervene via Slack or VNC. ' +
+        'Extracted credentials (cookies, headers, CSRF tokens, localStorage) are encrypted and served to downstream agents.\n\n' +
+        '## Authentication\n' +
+        '- **Human users**: `POST /login` with email/password → JWT token\n' +
+        '- **Service bots**: `POST /auth/service-token` with client_id/secret → JWT token\n' +
+        '- **AI agents**: `POST /auth/agent-token` with OAuth 2.0 Client Credentials → scoped JWT token\n\n' +
+        '## Key Flows\n' +
+        '1. Create an App with login config and health checks\n' +
+        '2. Scale sessions to spin up worker pods\n' +
+        '3. Workers execute login DSL and extract credentials\n' +
+        '4. Retrieve credentials via `POST /credentials/request`\n',
+      )
+      .setVersion(process.env.CHART_VERSION || '0.1.0')
+      .addBearerAuth(
+        { type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'JWT token from /login, /auth/service-token, or /auth/agent-token' },
+        'bearer',
+      )
+      .addTag('Authentication', 'Login, service tokens, agent tokens, and client management')
+      .addTag('Sessions', 'Session lifecycle, scaling, and intervention history')
+      .addTag('HITL', 'Human-in-the-loop: VNC streaming, baton takeover/release, OTP submission')
+      .addTag('Applications', 'Application CRUD — defines target URLs, login DSL, health checks, and export policy')
+      .addTag('Credentials', 'Retrieve extracted credentials (cookies, headers, CSRF, storage)')
+      .addTag('Profiles', 'Service profile versioning: staging → canary → active → retired')
+      .addTag('Artifacts', 'Encrypted artifact bundle access and download')
+      .addTag('Tenants', 'Multi-tenant management')
+      .addTag('Users', 'User account management')
+      .addTag('Agent', 'High-level agent endpoint for one-shot URL login')
+      .addTag('Health', 'Liveness and readiness probes')
+      .addTag('Metrics', 'Prometheus-compatible metrics endpoint')
+      .addTag('Streaming', 'VNC viewer and noVNC asset serving')
+      .addTag('Streaming - CDP', 'Chrome DevTools Protocol streaming viewer')
       .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('api/docs', app, document);
