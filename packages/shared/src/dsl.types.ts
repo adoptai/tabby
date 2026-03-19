@@ -2,6 +2,8 @@
 // Login DSL Action Types (15 actions per spec section 10.3)
 // ============================================================
 
+export type HumanInputType = 'otp' | 'email' | 'password' | 'captcha' | 'verification_code' | 'url' | 'confirm';
+
 export type DslActionType =
   | 'goto'
   | 'fill'
@@ -17,13 +19,23 @@ export type DslActionType =
   | 'evaluate'
   | 'sleep'
   | 'screenshot'
-  | 'reload';
+  | 'reload'
+  | 'request_human_input';
+
+export type FailureHandler =
+  | { action: 'request_help'; message: string; input_type?: HumanInputType; field_selector?: string; screenshot?: boolean }
+  | { action: 'skip' }
+  | { action: 'abort' };
 
 export interface BaseDslStep {
   action: DslActionType;
-  timeout_ms?: number;      // Default: 30000
-  retry_count?: number;     // Default: 1
-  sensitive?: boolean;      // Default: false. True for password/OTP steps
+  timeout_ms?: number;        // Default: 30000
+  retry_count?: number;       // Default: 1
+  sensitive?: boolean;        // Default: false. True for password/OTP steps
+  retry_backoff?: 'fixed' | 'exponential';  // Default: 'fixed'
+  retry_delay_ms?: number;    // Default: 1000
+  retry_max_delay_ms?: number; // Default: 30000 (exponential cap)
+  on_failure?: FailureHandler;
 }
 
 export interface GotoStep extends BaseDslStep {
@@ -103,6 +115,16 @@ export interface ReloadStep extends BaseDslStep {
   action: 'reload';
 }
 
+export interface RequestHumanInputStep extends BaseDslStep {
+  action: 'request_human_input';
+  input_type: HumanInputType;
+  label: string;
+  field_selector?: string;
+  submit_selector?: string;
+  placeholder?: string;
+  sensitive?: boolean;
+}
+
 export type DslStep =
   | GotoStep
   | FillStep
@@ -118,4 +140,14 @@ export type DslStep =
   | EvaluateStep
   | SleepStep
   | ScreenshotStep
-  | ReloadStep;
+  | ReloadStep
+  | RequestHumanInputStep;
+
+/** Metadata for a pending human input request, stored on session + passed via NATS. */
+export interface InputRequest {
+  input_type: HumanInputType;
+  label: string;
+  placeholder?: string;
+  sensitive?: boolean;
+  step_index: number;
+}

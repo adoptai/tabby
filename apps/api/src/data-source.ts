@@ -10,6 +10,7 @@ import { AccountLockout1708300000005 } from './migrations/1708300000005-AccountL
 import { ArtifactCascadeDelete1708300000006 } from './migrations/1708300000006-ArtifactCascadeDelete';
 import { ServiceProfiles1708300000007 } from './migrations/1708300000007-ServiceProfiles';
 import { ProfileAppLink1708300000008 } from './migrations/1708300000008-ProfileAppLink';
+import { GenericHumanInput1708300000009 } from './migrations/1708300000009-GenericHumanInput';
 
 export const dataSourceOptions: DataSourceOptions = {
   type: 'postgres',
@@ -17,7 +18,7 @@ export const dataSourceOptions: DataSourceOptions = {
     testDefault: 'postgresql://postgres:postgres@localhost:5432/browser_hitl',
   }),
   entities: Object.values(entities),
-  migrations: [InitialSchema1708300000000, WorkerRLS1708300000001, AgentClients1708300000002, AuthRequests1708300000003, LoginQueue1708300000004, AccountLockout1708300000005, ArtifactCascadeDelete1708300000006, ServiceProfiles1708300000007, ProfileAppLink1708300000008],
+  migrations: [InitialSchema1708300000000, WorkerRLS1708300000001, AgentClients1708300000002, AuthRequests1708300000003, LoginQueue1708300000004, AccountLockout1708300000005, ArtifactCascadeDelete1708300000006, ServiceProfiles1708300000007, ProfileAppLink1708300000008, GenericHumanInput1708300000009],
   migrationsRun: true, // Run migrations on startup per spec section 15.13
   synchronize: false,   // Never auto-sync; use migrations only
   logging: process.env.NODE_ENV === 'development' ? ['error', 'warn', 'migration'] : ['error'],

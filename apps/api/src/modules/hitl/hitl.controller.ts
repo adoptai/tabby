@@ -4,10 +4,12 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiHeader, ApiProperty } from '@nestjs/swagger';
 import {
+  IsInt,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
+  Min,
 } from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { HitlService } from './hitl.service';
@@ -34,6 +36,21 @@ class AcknowledgeDto {
   @IsString()
   @MaxLength(2000)
   note?: string;
+}
+
+class InputDto {
+  @ApiProperty({ description: 'Type of input being submitted', example: 'otp' })
+  @IsString()
+  input_type: string;
+
+  @ApiProperty({ description: 'The input value', example: '123456' })
+  @IsString()
+  value: string;
+
+  @ApiProperty({ description: 'Step index that requested this input', example: 5 })
+  @IsInt()
+  @Min(0)
+  step_index: number;
 }
 
 @ApiTags('HITL')
@@ -123,6 +140,30 @@ export class HitlController {
     return this.hitlService.submitOtp(
       sessionId,
       otpValue,
+      req.user.tenant_id,
+      req.user.user_id,
+      idempotencyKey,
+    );
+  }
+
+  @Post(':id/input')
+  @Roles('Admin', 'Operator')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Submit human input', description: 'Stores a generic human input value in Redis (key: human_input:{sessionId}:{stepIndex}, TTL: 300s). Supports OTP, passwords, URLs, confirmations, etc.' })
+  @ApiParam({ name: 'id', description: 'Session UUID' })
+  @ApiHeader({ name: 'idempotency-key', required: false })
+  @ApiResponse({ status: 200, description: 'Input delivered to Redis', schema: { example: { status: 'delivered' } } })
+  async input(
+    @Param('id') sessionId: string,
+    @Body() dto: InputDto,
+    @Req() req: any,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.hitlService.submitInput(
+      sessionId,
+      dto.input_type,
+      dto.value,
+      dto.step_index,
       req.user.tenant_id,
       req.user.user_id,
       idempotencyKey,

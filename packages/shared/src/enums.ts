@@ -49,6 +49,7 @@ export enum InterventionType {
   OTP = 'OTP',
   CAPTCHA = 'CAPTCHA',
   MANUAL = 'MANUAL',
+  INPUT_NEEDED = 'INPUT_NEEDED',
   OTHER = 'OTHER',
 }
 
@@ -114,6 +115,7 @@ export enum CredentialFreshness {
   EXTRACTED = 'EXTRACTED',
   ON_DEMAND = 'ON_DEMAND',
   DEGRADED = 'DEGRADED',
+  CANARY = 'CANARY',
 }
 
 export enum CredentialVolatility {

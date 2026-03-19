@@ -1,4 +1,4 @@
-import { DslStep, DslActionType } from './dsl.types';
+import { DslStep, DslActionType, HumanInputType, FailureHandler } from './dsl.types';
 import { LoginConfig, KeepaliveConfig, ExportPolicy, NotificationConfig } from './config.types';
 
 // ============================================================
@@ -19,6 +19,11 @@ const VALID_ACTIONS: DslActionType[] = [
   'goto', 'fill', 'type', 'click', 'select',
   'wait_for', 'wait_for_url', 'frame', 'main_frame',
   'popup', 'keyboard', 'evaluate', 'sleep', 'screenshot', 'reload',
+  'request_human_input',
+];
+
+const VALID_INPUT_TYPES: HumanInputType[] = [
+  'otp', 'email', 'password', 'captcha', 'verification_code', 'url', 'confirm',
 ];
 
 function validateStep(step: DslStep, index: number, prefix: string): ValidationError[] {
@@ -36,6 +41,35 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
 
   if (step.retry_count !== undefined && (typeof step.retry_count !== 'number' || step.retry_count < 0)) {
     errors.push({ path: `${path}.retry_count`, message: 'retry_count must be a non-negative number' });
+  }
+
+  if (step.retry_backoff !== undefined && !['fixed', 'exponential'].includes(step.retry_backoff)) {
+    errors.push({ path: `${path}.retry_backoff`, message: 'retry_backoff must be "fixed" or "exponential"' });
+  }
+
+  if (step.retry_delay_ms !== undefined && (typeof step.retry_delay_ms !== 'number' || step.retry_delay_ms <= 0)) {
+    errors.push({ path: `${path}.retry_delay_ms`, message: 'retry_delay_ms must be a positive number' });
+  }
+
+  if (step.retry_max_delay_ms !== undefined && (typeof step.retry_max_delay_ms !== 'number' || step.retry_max_delay_ms <= 0)) {
+    errors.push({ path: `${path}.retry_max_delay_ms`, message: 'retry_max_delay_ms must be a positive number' });
+  }
+
+  // Validate on_failure if present
+  if (step.on_failure) {
+    const FAILURE_ALLOWED_ACTIONS: DslActionType[] = ['wait_for', 'wait_for_url', 'click', 'fill', 'goto'];
+    if (!FAILURE_ALLOWED_ACTIONS.includes(step.action)) {
+      errors.push({ path: `${path}.on_failure`, message: `on_failure is only valid on ${FAILURE_ALLOWED_ACTIONS.join(', ')} steps` });
+    }
+    const fa = step.on_failure as FailureHandler;
+    if (!['request_help', 'skip', 'abort'].includes(fa.action)) {
+      errors.push({ path: `${path}.on_failure.action`, message: 'on_failure.action must be "request_help", "skip", or "abort"' });
+    }
+    if (fa.action === 'request_help') {
+      if (!fa.message || typeof fa.message !== 'string') {
+        errors.push({ path: `${path}.on_failure.message`, message: 'on_failure.message is required for request_help' });
+      }
+    }
   }
 
   switch (step.action) {
@@ -118,6 +152,22 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
     case 'reload':
       // No params needed
       break;
+
+    case 'request_human_input': {
+      const inputType = (step as any).input_type;
+      if (!inputType || !VALID_INPUT_TYPES.includes(inputType)) {
+        errors.push({ path: `${path}.input_type`, message: `request_human_input requires input_type (one of: ${VALID_INPUT_TYPES.join(', ')})` });
+      }
+      if (!(step as any).label || typeof (step as any).label !== 'string') {
+        errors.push({ path: `${path}.label`, message: 'request_human_input requires a label string' });
+      }
+      if (inputType && !['url', 'confirm'].includes(inputType)) {
+        if (!(step as any).field_selector || typeof (step as any).field_selector !== 'string') {
+          errors.push({ path: `${path}.field_selector`, message: `field_selector is required when input_type is "${inputType}"` });
+        }
+      }
+      break;
+    }
   }
 
   return errors;

@@ -4,6 +4,7 @@ import {
   RetentionPolicy, StorageType,
 } from 'nats';
 import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
+import type { InputRequest } from '@browser-hitl/shared';
 
 /** 24 hours in nanoseconds (JetStream max_age unit). */
 const STREAM_MAX_AGE_NS = 24 * 60 * 60 * 1_000_000_000;
@@ -43,7 +44,7 @@ export class NatsPublisherService implements OnModuleInit, OnModuleDestroy {
     const streams = [
       {
         name: 'HITL_EVENTS',
-        subjects: ['hitl.started.>', 'hitl.completed.>', 'hitl.otp-requested.>'],
+        subjects: ['hitl.started.>', 'hitl.completed.>'],
       },
       {
         name: 'SESSION_EVENTS',
@@ -112,39 +113,26 @@ export class NatsPublisherService implements OnModuleInit, OnModuleDestroy {
     appId: string,
     interventionId: string,
     appName: string,
+    interventionType: string = 'MANUAL',
+    inputRequest?: InputRequest,
   ): Promise<void> {
     const subject = NATS_SUBJECTS.hitlStarted(tenantId, sessionId);
+    const eventPayload: Record<string, unknown> = {
+      session_id: sessionId,
+      tenant_id: tenantId,
+      app_id: appId,
+      app_name: appName,
+      reason: 'login_needed',
+      intervention_id: interventionId,
+      intervention_type: interventionType,
+    };
+    if (inputRequest) {
+      eventPayload.input_request = inputRequest;
+    }
     const payload = {
       type: 'hitl.started',
       timestamp: new Date().toISOString(),
-      payload: {
-        session_id: sessionId,
-        tenant_id: tenantId,
-        app_id: appId,
-        app_name: appName,
-        reason: 'login_needed',
-        intervention_id: interventionId,
-      },
-    };
-    await this.publish(subject, payload);
-  }
-
-  async publishHitlOtpRequested(
-    tenantId: string,
-    sessionId: string,
-    appId: string,
-    appName: string,
-  ): Promise<void> {
-    const subject = NATS_SUBJECTS.hitlOtpRequested(tenantId, sessionId);
-    const payload = {
-      type: 'hitl.otp-requested',
-      timestamp: new Date().toISOString(),
-      payload: {
-        session_id: sessionId,
-        tenant_id: tenantId,
-        app_id: appId,
-        app_name: appName,
-      },
+      payload: eventPayload,
     };
     await this.publish(subject, payload);
   }

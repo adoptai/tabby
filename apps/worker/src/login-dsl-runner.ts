@@ -1,31 +1,36 @@
 import { Page, BrowserContext, Frame, FrameLocator } from 'playwright';
-import { DslStep } from '@browser-hitl/shared';
-import { OtpRelay } from './otp-relay';
+import { DslStep, RequestHumanInputStep, InputRequest } from '@browser-hitl/shared';
+import { InputRelay } from './input-relay';
 
 /**
- * Login DSL Runner - executes all 15 DSL actions per spec section 10.3.
+ * Login DSL Runner - executes all DSL actions per spec section 10.3.
  * Steps execute sequentially and are blocking.
  * Frame context persists across steps until explicitly changed.
  */
 export class LoginDslRunner {
   private currentFrame: Page | Frame | FrameLocator;
   private readonly allowEvaluate: boolean;
+  private readonly onInputRequested: ((request: InputRequest) => Promise<void> | void) | undefined;
+  /** @deprecated Use onInputRequested instead */
   private readonly onOtpWaitStart: (() => Promise<void> | void) | undefined;
 
   constructor(
     private readonly page: Page,
     private readonly context: BrowserContext,
-    private readonly otpRelay: OtpRelay,
+    private readonly inputRelay: InputRelay,
     private readonly sessionId: string,
     private readonly tenantId: string,
     private readonly appId: string,
     options?: {
       allowEvaluate?: boolean;
+      onInputRequested?: (request: InputRequest) => Promise<void> | void;
+      /** @deprecated Use onInputRequested instead */
       onOtpWaitStart?: () => Promise<void> | void;
     },
   ) {
     this.currentFrame = page;
     this.allowEvaluate = options?.allowEvaluate === true;
+    this.onInputRequested = options?.onInputRequested;
     this.onOtpWaitStart = options?.onOtpWaitStart;
   }
 
@@ -45,7 +50,7 @@ export class LoginDslRunner {
 
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          await this.executeStep(step, credentials, timeout);
+          await this.executeStep(step, i, credentials, timeout);
           lastError = undefined;
           break;
         } catch (error) {
@@ -53,12 +58,21 @@ export class LoginDslRunner {
           console.warn(`Step ${i} (${step.action}) attempt ${attempt + 1} failed: ${error}`);
 
           if (attempt < retries) {
-            await this.page.waitForTimeout(1000); // Brief pause before retry
+            const delay = this.calculateRetryDelay(step, attempt);
+            await this.page.waitForTimeout(delay);
           }
         }
       }
 
       if (lastError) {
+        // Check on_failure handler before throwing
+        if (step.on_failure) {
+          const handled = await this.handleOnFailure(step, i, lastError);
+          if (handled === 'skip') continue;
+          // 'abort' falls through to throw, 'continue' means help was provided
+          if (handled === 'continue') continue;
+        }
+
         // Capture error screenshot only if non-sensitive and policy allows
         if (!step.sensitive) {
           try {
@@ -75,6 +89,7 @@ export class LoginDslRunner {
 
   private async executeStep(
     step: DslStep,
+    stepIndex: number,
     credentials: { username: string; password: string },
     timeout: number,
   ): Promise<void> {
@@ -149,15 +164,157 @@ export class LoginDslRunner {
         await this.page.reload({ timeout });
         break;
 
+      case 'request_human_input':
+        await this.handleHumanInputRequest(step, stepIndex);
+        break;
+
       default:
         throw new Error(`Unknown DSL action: ${(step as any).action}`);
     }
 
-    // Check if this is an OTP wait step
+    // Legacy: check if this is an OTP wait step (sensitive wait_for)
     if (step.action === 'wait_for' && step.sensitive) {
-      // This may be an OTP field - start OTP relay polling
       await this.handleOtpWait(step.selector, step.timeout_ms || 120000);
     }
+  }
+
+  /**
+   * Handle on_failure after all retries are exhausted.
+   * Returns 'skip' to continue to next step, 'continue' if help was received,
+   * or 'abort' to throw.
+   */
+  private async handleOnFailure(
+    step: DslStep,
+    stepIndex: number,
+    error: Error,
+  ): Promise<'skip' | 'continue' | 'abort'> {
+    const handler = step.on_failure!;
+
+    switch (handler.action) {
+      case 'skip':
+        console.log(`Step ${stepIndex} (${step.action}) failed, skipping per on_failure policy`);
+        return 'skip';
+
+      case 'abort':
+        console.log(`Step ${stepIndex} (${step.action}) failed, aborting per on_failure policy`);
+        return 'abort';
+
+      case 'request_help': {
+        console.log(`Step ${stepIndex} (${step.action}) failed, requesting help: "${handler.message}"`);
+
+        // Take screenshot if requested
+        if (handler.screenshot && !step.sensitive) {
+          try {
+            await this.page.screenshot({ path: `/tmp/screenshot-help-${stepIndex}-${Date.now()}.png` });
+          } catch {
+            // Ignore screenshot errors
+          }
+        }
+
+        // Reuse the human input infrastructure
+        const inputType = handler.input_type || 'confirm';
+        const inputRequest: InputRequest = {
+          input_type: inputType,
+          label: handler.message,
+          step_index: stepIndex,
+        };
+
+        if (this.onInputRequested) {
+          try {
+            await this.onInputRequested(inputRequest);
+          } catch (err) {
+            console.warn(`Failed to report help request: ${err}`);
+          }
+        }
+
+        // Poll for human response
+        const timeoutMs = step.timeout_ms || 120000;
+        const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
+
+        if (!response) {
+          console.warn(`Help request timeout for step ${stepIndex}`);
+          return 'abort';
+        }
+
+        // Handle the response
+        switch (response.input_type) {
+          case 'url':
+            await this.page.goto(response.value);
+            break;
+          case 'confirm':
+            // Human resolved via VNC
+            break;
+          default:
+            if (handler.field_selector) {
+              await this.currentFrame.locator(handler.field_selector).fill(response.value);
+            }
+            break;
+        }
+
+        console.log(`Help received for step ${stepIndex}, resuming from next step`);
+        return 'continue';
+      }
+
+      default:
+        return 'abort';
+    }
+  }
+
+  /**
+   * Handle a generic human input request step.
+   * Signals controller, polls Redis for the response, then acts on it.
+   */
+  private async handleHumanInputRequest(
+    step: RequestHumanInputStep,
+    stepIndex: number,
+  ): Promise<void> {
+    console.log(`Human input requested: type=${step.input_type}, label="${step.label}"`);
+
+    const inputRequest: InputRequest = {
+      input_type: step.input_type,
+      label: step.label,
+      placeholder: step.placeholder,
+      sensitive: step.sensitive,
+      step_index: stepIndex,
+    };
+
+    // Signal the controller via callback
+    if (this.onInputRequested) {
+      try {
+        await this.onInputRequested(inputRequest);
+      } catch (error) {
+        console.warn(`Failed to report input request: ${error}`);
+      }
+    }
+
+    // Poll for human input
+    const timeoutMs = step.timeout_ms || 120000;
+    const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
+
+    if (!response) {
+      throw new Error(`Human input timeout - no value received for "${step.label}"`);
+    }
+
+    // Handle the response based on input_type
+    switch (response.input_type) {
+      case 'url':
+        await this.page.goto(response.value);
+        break;
+      case 'confirm':
+        // Human resolved via VNC, nothing to do
+        break;
+      default:
+        // Fill the value into the field
+        if (step.field_selector) {
+          await this.currentFrame.locator(step.field_selector).fill(response.value);
+          if (step.submit_selector) {
+            await this.currentFrame.locator(step.submit_selector).click();
+          }
+        }
+        break;
+    }
+
+    console.log(`Human input received and processed: type=${response.input_type}`);
   }
 
   /**
@@ -174,13 +331,32 @@ export class LoginDslRunner {
       }
     }
 
-    const otpValue = await this.otpRelay.waitForOtp(timeoutMs);
+    const otpValue = await this.inputRelay.waitForOtp(timeoutMs);
     if (otpValue) {
       await this.currentFrame.locator(fieldSelector).fill(otpValue);
       console.log('OTP filled successfully');
     } else {
       throw new Error('OTP timeout - no value received');
     }
+  }
+
+  /**
+   * Calculate retry delay with optional exponential backoff + jitter.
+   */
+  private calculateRetryDelay(step: DslStep, attempt: number): number {
+    const backoff = step.retry_backoff || 'fixed';
+    const baseDelay = step.retry_delay_ms || 1000;
+    const maxDelay = step.retry_max_delay_ms || 30000;
+
+    if (backoff === 'exponential') {
+      const raw = baseDelay * Math.pow(2, attempt);
+      const capped = Math.min(raw, maxDelay);
+      // Add 0-20% jitter to prevent thundering herd
+      const jitter = capped * (Math.random() * 0.2);
+      return Math.round(capped + jitter);
+    }
+
+    return baseDelay;
   }
 
   /**
