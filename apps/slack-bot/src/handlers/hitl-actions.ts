@@ -3,18 +3,11 @@ import { ApiClient } from '../api-client';
 
 /**
  * Registers Slack action and view-submission handlers for the HITL flow.
- * Per spec section 12.1-12.3:
- *   - open_stream: opens browser VNC stream for the operator
- *   - submit_otp: opens modal to collect OTP code
- *   - otp_modal_submit: relays OTP to the API
- *   - release_control: releases baton back to automation, prompts for notes
- *   - release_notes_submit: stores operator notes via API
+ * Supports both legacy OTP-only and generic human input.
  */
 export function registerHitlActions(app: App, apiClient: ApiClient): void {
   // ----------------------------------------------------------------
   // Action: open_stream
-  // When operator clicks "Open Stream", fetch stream URL from API
-  // and present it to the user.
   // ----------------------------------------------------------------
   app.action<BlockAction>('open_stream', async ({ ack, body, client, logger }) => {
     await ack();
@@ -61,14 +54,66 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
     }
   });
 
-  // Acknowledge the external link button click (no-op)
   app.action('open_stream_link', async ({ ack }) => {
     await ack();
   });
 
   // ----------------------------------------------------------------
-  // Action: submit_otp
-  // Opens a modal dialog for the operator to enter the OTP code.
+  // Action: submit_input (generic human input)
+  // Opens a dynamic modal based on the input_request metadata.
+  // ----------------------------------------------------------------
+  app.action<BlockAction>('submit_input', async ({ ack, body, client, logger }) => {
+    await ack();
+
+    const actionContext = extractActionContext(body);
+    if (!actionContext?.sessionId || !actionContext.tenantId) {
+      logger.error('submit_input: missing session_id or tenant_id in action value');
+      return;
+    }
+
+    const inputRequest = actionContext.inputRequest;
+    const modalTitle = inputRequest?.label
+      ? inputRequest.label.slice(0, 24)
+      : 'Submit Input';
+    const placeholder = inputRequest?.placeholder || 'Enter the value';
+    const sensitive = inputRequest?.sensitive === true;
+
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id!,
+        view: {
+          type: 'modal',
+          callback_id: 'input_modal_submit',
+          private_metadata: JSON.stringify({
+            session_id: actionContext.sessionId,
+            tenant_id: actionContext.tenantId,
+            input_type: inputRequest?.input_type || 'otp',
+            step_index: inputRequest?.step_index ?? 0,
+          }),
+          title: { type: 'plain_text', text: modalTitle },
+          submit: { type: 'plain_text', text: 'Submit' },
+          close: { type: 'plain_text', text: 'Cancel' },
+          blocks: [
+            {
+              type: 'input',
+              block_id: 'input_block',
+              label: { type: 'plain_text', text: inputRequest?.label || 'Value' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'input_value',
+                placeholder: { type: 'plain_text', text: placeholder },
+              },
+            },
+          ],
+        },
+      });
+    } catch (error) {
+      logger.error(`submit_input modal open failed: ${error}`);
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // Action: submit_otp (legacy, kept for backwards compatibility)
   // ----------------------------------------------------------------
   app.action<BlockAction>('submit_otp', async ({ ack, body, client, logger }) => {
     await ack();
@@ -115,8 +160,37 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
   });
 
   // ----------------------------------------------------------------
-  // View submission: otp_modal_submit
-  // Relays the OTP value to the HITL API.
+  // View submission: input_modal_submit (generic)
+  // ----------------------------------------------------------------
+  app.view<ViewSubmitAction>('input_modal_submit', async ({ ack, view, logger }) => {
+    const metadata = JSON.parse(view.private_metadata || '{}');
+    const { session_id: sessionId, tenant_id: tenantId, input_type: inputType, step_index: stepIndex } = metadata;
+    const value = view.state.values.input_block.input_value.value;
+
+    if (!sessionId || !tenantId || !value) {
+      await ack({
+        response_action: 'errors',
+        errors: { input_block: 'Value is required.' },
+      });
+      return;
+    }
+
+    try {
+      await apiClient.submitInput(sessionId, inputType, value, stepIndex, tenantId);
+      await ack();
+    } catch (error) {
+      logger.error(`Input submission failed: ${error}`);
+      await ack({
+        response_action: 'errors',
+        errors: {
+          input_block: `Failed to submit: ${error instanceof Error ? error.message : 'unknown error'}`,
+        },
+      });
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // View submission: otp_modal_submit (legacy)
   // ----------------------------------------------------------------
   app.view<ViewSubmitAction>('otp_modal_submit', async ({ ack, view, logger }) => {
     const metadata = JSON.parse(view.private_metadata || '{}');
@@ -127,9 +201,7 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
     if (!sessionId || !tenantId || !otpValue) {
       await ack({
         response_action: 'errors',
-        errors: {
-          otp_block: 'OTP code is required.',
-        },
+        errors: { otp_block: 'OTP code is required.' },
       });
       return;
     }
@@ -149,8 +221,45 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
   });
 
   // ----------------------------------------------------------------
+  // Action: confirm_resolved (for input_type: 'confirm')
+  // ----------------------------------------------------------------
+  app.action<BlockAction>('confirm_resolved', async ({ ack, body, client, logger }) => {
+    await ack();
+
+    const actionContext = extractActionContext(body);
+    if (!actionContext?.sessionId || !actionContext.tenantId) {
+      logger.error('confirm_resolved: missing session_id or tenant_id');
+      return;
+    }
+
+    const stepIndex = actionContext.inputRequest?.step_index ?? 0;
+
+    try {
+      await apiClient.submitInput(
+        actionContext.sessionId,
+        'confirm',
+        'resolved',
+        stepIndex,
+        actionContext.tenantId,
+      );
+
+      await client.chat.postEphemeral({
+        channel: body.channel?.id || '',
+        user: body.user.id,
+        text: 'Marked as resolved. Automation resuming.',
+      });
+    } catch (error) {
+      logger.error(`confirm_resolved failed: ${error}`);
+      await client.chat.postEphemeral({
+        channel: body.channel?.id || '',
+        user: body.user.id,
+        text: `Failed to confirm: ${error instanceof Error ? error.message : 'unknown error'}`,
+      });
+    }
+  });
+
+  // ----------------------------------------------------------------
   // Action: release_control
-  // Releases the baton back to automation, then prompts for notes.
   // ----------------------------------------------------------------
   app.action<BlockAction>('release_control', async ({ ack, body, client, logger }) => {
     await ack();
@@ -167,7 +276,6 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
         actionContext.tenantId,
       );
 
-      // Post a follow-up prompt asking "What happened? Anything unusual?"
       await client.chat.postMessage({
         channel: body.channel?.id || '',
         text: `Session \`${actionContext.sessionId}\` released (baton: ${releaseResponse.baton_state}). What happened? Anything unusual?`,
@@ -183,10 +291,7 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
             type: 'input',
             dispatch_action: true,
             block_id: `release_notes_${actionContext.sessionId}`,
-            label: {
-              type: 'plain_text',
-              text: 'What happened? Anything unusual?',
-            },
+            label: { type: 'plain_text', text: 'What happened? Anything unusual?' },
             element: {
               type: 'plain_text_input',
               action_id: 'release_notes_input',
@@ -226,7 +331,6 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
 
   // ----------------------------------------------------------------
   // Action: release_notes_submit
-  // Collects the operator's notes and stores them via the API.
   // ----------------------------------------------------------------
   app.action<BlockAction>('release_notes_submit', async ({ ack, body, client, logger }) => {
     await ack();
@@ -237,7 +341,6 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
       return;
     }
 
-    // Extract note text from the message blocks state
     const stateValues = (body as any).state?.values || {};
     const notesBlockKey = `release_notes_${actionContext.sessionId}`;
     const note = stateValues[notesBlockKey]?.release_notes_input?.value || '';
@@ -262,22 +365,26 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
 }
 
 /**
- * Extract session/tenant context from an action's value field.
- * Actions encode JSON payload with session_id + tenant_id.
+ * Extract session/tenant/input_request context from an action's value field.
  */
-function extractActionContext(body: any): { sessionId: string; tenantId: string } | null {
-  // Try direct value from the first action
+function extractActionContext(body: any): {
+  sessionId: string;
+  tenantId: string;
+  inputRequest?: { input_type: string; label: string; placeholder?: string; sensitive?: boolean; step_index: number };
+} | null {
   const actions = body.actions || [];
   for (const action of actions) {
     if (action.value) {
       try {
         const parsed = JSON.parse(action.value);
         if (parsed.session_id && parsed.tenant_id) {
-          return { sessionId: parsed.session_id, tenantId: parsed.tenant_id };
+          return {
+            sessionId: parsed.session_id,
+            tenantId: parsed.tenant_id,
+            inputRequest: parsed.input_request || undefined,
+          };
         }
       } catch {
-        // Backward-compatibility fallback. If raw value is a session ID
-        // the request can still work when a default tenant is configured.
         const defaultTenant = process.env.SERVICE_AUTH_DEFAULT_TENANT_ID || '';
         if (defaultTenant) {
           return { sessionId: action.value, tenantId: defaultTenant };
