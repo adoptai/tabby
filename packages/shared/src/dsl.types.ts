@@ -2,6 +2,8 @@
 // Login DSL Action Types (15 actions per spec section 10.3)
 // ============================================================
 
+export type HumanInputType = 'otp' | 'email' | 'password' | 'captcha' | 'verification_code' | 'url' | 'confirm';
+
 export type DslActionType =
   | 'goto'
   | 'fill'
@@ -17,7 +19,8 @@ export type DslActionType =
   | 'evaluate'
   | 'sleep'
   | 'screenshot'
-  | 'reload';
+  | 'reload'
+  | 'request_human_input';
 
 export interface BaseDslStep {
   action: DslActionType;
@@ -103,6 +106,16 @@ export interface ReloadStep extends BaseDslStep {
   action: 'reload';
 }
 
+export interface RequestHumanInputStep extends BaseDslStep {
+  action: 'request_human_input';
+  input_type: HumanInputType;
+  label: string;
+  field_selector?: string;
+  submit_selector?: string;
+  placeholder?: string;
+  sensitive?: boolean;
+}
+
 export type DslStep =
   | GotoStep
   | FillStep
@@ -118,4 +131,14 @@ export type DslStep =
   | EvaluateStep
   | SleepStep
   | ScreenshotStep
-  | ReloadStep;
+  | ReloadStep
+  | RequestHumanInputStep;
+
+/** Metadata for a pending human input request, stored on session + passed via NATS. */
+export interface InputRequest {
+  input_type: HumanInputType;
+  label: string;
+  placeholder?: string;
+  sensitive?: boolean;
+  step_index: number;
+}
