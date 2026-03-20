@@ -11,8 +11,6 @@ export class LoginDslRunner {
   private currentFrame: Page | Frame | FrameLocator;
   private readonly allowEvaluate: boolean;
   private readonly onInputRequested: ((request: InputRequest) => Promise<void> | void) | undefined;
-  /** @deprecated Use onInputRequested instead */
-  private readonly onOtpWaitStart: (() => Promise<void> | void) | undefined;
 
   constructor(
     private readonly page: Page,
@@ -24,14 +22,11 @@ export class LoginDslRunner {
     options?: {
       allowEvaluate?: boolean;
       onInputRequested?: (request: InputRequest) => Promise<void> | void;
-      /** @deprecated Use onInputRequested instead */
-      onOtpWaitStart?: () => Promise<void> | void;
     },
   ) {
     this.currentFrame = page;
     this.allowEvaluate = options?.allowEvaluate === true;
     this.onInputRequested = options?.onInputRequested;
-    this.onOtpWaitStart = options?.onOtpWaitStart;
   }
 
   /**
@@ -45,6 +40,8 @@ export class LoginDslRunner {
       const step = steps[i];
       const timeout = step.timeout_ms || 30000;
       const retries = step.retry_count ?? 1;
+
+      console.log(`[DSL] Step ${i} (${step.action})`);
 
       let lastError: Error | undefined;
 
@@ -172,10 +169,6 @@ export class LoginDslRunner {
         throw new Error(`Unknown DSL action: ${(step as any).action}`);
     }
 
-    // Legacy: check if this is an OTP wait step (sensitive wait_for)
-    if (step.action === 'wait_for' && step.sensitive) {
-      await this.handleOtpWait(step.selector, step.timeout_ms || 120000);
-    }
   }
 
   /**
@@ -315,29 +308,6 @@ export class LoginDslRunner {
     }
 
     console.log(`Human input received and processed: type=${response.input_type}`);
-  }
-
-  /**
-   * Handle OTP wait: poll Redis for OTP value, fill field when received.
-   * Per spec section 9.7.
-   */
-  private async handleOtpWait(fieldSelector: string, timeoutMs: number): Promise<void> {
-    console.log('OTP wait detected, starting relay polling');
-    if (this.onOtpWaitStart) {
-      try {
-        await this.onOtpWaitStart();
-      } catch (error) {
-        console.warn(`Failed to report OTP wait start: ${error}`);
-      }
-    }
-
-    const otpValue = await this.inputRelay.waitForOtp(timeoutMs);
-    if (otpValue) {
-      await this.currentFrame.locator(fieldSelector).fill(otpValue);
-      console.log('OTP filled successfully');
-    } else {
-      throw new Error('OTP timeout - no value received');
-    }
   }
 
   /**

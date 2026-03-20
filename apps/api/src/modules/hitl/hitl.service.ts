@@ -8,11 +8,11 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, IsNull } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { SessionEntity, SessionBatonEntity, InterventionEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 import {
-  REDIS_KEYS, REDIS_TTL, SessionState, BATON_TIMEOUTS, requireEnv,
+  REDIS_KEYS, REDIS_TTL, BATON_TIMEOUTS, requireEnv,
 } from '@browser-hitl/shared';
 import { StreamProviderFactory } from '../streaming/stream-provider.factory';
 import { ObservabilityService } from '../observability/observability.service';
@@ -219,69 +219,6 @@ export class HitlService implements OnModuleDestroy {
     return result;
   }
 
-  async submitOtp(
-    sessionId: string,
-    otpValue: string,
-    tenantId: string,
-    actorId: string,
-    idempotencyKey?: string,
-  ): Promise<{ status: 'delivered' }> {
-    const cached = await this.readActionIdempotency<{ status: 'delivered' }>(
-      'otp',
-      sessionId,
-      tenantId,
-      actorId,
-      idempotencyKey,
-    );
-    if (cached) {
-      return cached;
-    }
-
-    const session = await this.findSessionForTenant(sessionId, tenantId);
-    if (session.state !== SessionState.LOGIN_IN_PROGRESS) {
-      throw new ConflictException(
-        `Session must be LOGIN_IN_PROGRESS for OTP submission. Current state: ${session.state}`,
-      );
-    }
-
-    const intervention = await this.interventionRepo.findOne({
-      where: {
-        session_id: sessionId,
-        tenant_id: tenantId,
-        completed_at: IsNull(),
-      },
-      order: { started_at: 'DESC' },
-    });
-    if (!intervention) {
-      throw new ConflictException('No active intervention is awaiting OTP for this session');
-    }
-
-    const redisKey = REDIS_KEYS.otp(sessionId);
-    const stored = await this.redis.set(
-      redisKey,
-      otpValue,
-      'EX',
-      REDIS_TTL.OTP_SECONDS,
-      'NX',
-    );
-    if (stored !== 'OK') {
-      throw new ConflictException('OTP value already pending for this session');
-    }
-
-    await this.auditService.log({
-      tenant_id: tenantId,
-      actor_type: 'human',
-      actor_id: actorId,
-      event_type: 'hitl.otp_submitted',
-      payload: { session_id: sessionId },
-    });
-    this.observabilityService.incrementCounter('hitl_otp_submitted_total');
-
-    const response = { status: 'delivered' as const };
-    await this.writeActionIdempotency('otp', sessionId, tenantId, actorId, idempotencyKey, response);
-    return response;
-  }
-
   async submitInput(
     sessionId: string,
     inputType: string,
@@ -302,37 +239,16 @@ export class HitlService implements OnModuleDestroy {
       return cached;
     }
 
-    const session = await this.findSessionForTenant(sessionId, tenantId);
-    if (session.state !== SessionState.LOGIN_IN_PROGRESS) {
-      throw new ConflictException(
-        `Session must be LOGIN_IN_PROGRESS for input submission. Current state: ${session.state}`,
-      );
-    }
-
-    const intervention = await this.interventionRepo.findOne({
-      where: {
-        session_id: sessionId,
-        tenant_id: tenantId,
-        completed_at: IsNull(),
-      },
-      order: { started_at: 'DESC' },
-    });
-    if (!intervention) {
-      throw new ConflictException('No active intervention is awaiting input for this session');
-    }
+    await this.findSessionForTenant(sessionId, tenantId);
 
     const redisKey = REDIS_KEYS.humanInput(sessionId, stepIndex);
     const payload = JSON.stringify({ input_type: inputType, value });
-    const stored = await this.redis.set(
+    await this.redis.set(
       redisKey,
       payload,
       'EX',
       REDIS_TTL.HUMAN_INPUT_SECONDS,
-      'NX',
     );
-    if (stored !== 'OK') {
-      throw new ConflictException('Input value already pending for this session step');
-    }
 
     await this.auditService.log({
       tenant_id: tenantId,
@@ -515,6 +431,6 @@ export class HitlService implements OnModuleDestroy {
       return;
     }
     const redisKey = this.actionIdempotencyRedisKey(action, tenantId, sessionId, actorId, key);
-    await this.redis.set(redisKey, JSON.stringify(payload), 'EX', REDIS_TTL.OTP_SECONDS);
+    await this.redis.set(redisKey, JSON.stringify(payload), 'EX', REDIS_TTL.HUMAN_INPUT_SECONDS);
   }
 }
