@@ -1,4 +1,4 @@
-import { StreamResponse, OtpResponse, ReleaseResponse, AcknowledgeResponse, InputSubmitResponse } from '@browser-hitl/shared';
+import { StreamResponse, ReleaseResponse, AcknowledgeResponse, InputSubmitResponse } from '@browser-hitl/shared';
 
 /**
  * HTTP client for calling the HITL API from the Slack bot.
@@ -39,29 +39,6 @@ export class ApiClient {
     }
 
     return response.json() as Promise<StreamResponse>;
-  }
-
-  /**
-   * Submit an OTP value for a session.
-   * POST /sessions/{id}/otp
-   */
-  async submitOtp(sessionId: string, otp: string, tenantId: string, token?: string): Promise<OtpResponse> {
-    const authToken = token || await this.getAuthToken(tenantId);
-    const response = await fetch(`${this.baseUrl}/sessions/${sessionId}/otp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({ otp_value: otp }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed to submit OTP (${response.status}): ${body}`);
-    }
-
-    return response.json() as Promise<OtpResponse>;
   }
 
   /**

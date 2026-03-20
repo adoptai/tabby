@@ -54,28 +54,6 @@ export class InputRelay {
     return null; // Timeout
   }
 
-  /**
-   * Backwards-compatible: poll for OTP using the legacy otp:{sessionId} key.
-   */
-  async waitForOtp(timeoutMs: number = 120000): Promise<string | null> {
-    const redis = this.getRedis();
-    const key = REDIS_KEYS.otp(this.sessionId);
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < timeoutMs) {
-      const value = await redis.get(key);
-
-      if (value) {
-        await redis.del(key);
-        return value;
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-
-    return null;
-  }
-
   async disconnect(): Promise<void> {
     if (this.redis) {
       await this.redis.quit();

@@ -200,10 +200,6 @@ async function main() {
           await db.writePendingInputRequest(sessionId, request as unknown as Record<string, unknown>);
           await db.updateHealthResult(sessionId, 'AUTH_FAIL');
         },
-        // Legacy: signal controller that login has entered an OTP-gated auth phase.
-        onOtpWaitStart: async () => {
-          await db.updateHealthResult(sessionId, 'AUTH_FAIL');
-        },
       },
     );
     const healthRunner = new HealthPredicateRunner(page, context, appConfig.keepalive_config);

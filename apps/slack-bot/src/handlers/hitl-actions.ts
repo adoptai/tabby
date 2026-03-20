@@ -3,7 +3,6 @@ import { ApiClient } from '../api-client';
 
 /**
  * Registers Slack action and view-submission handlers for the HITL flow.
- * Supports both legacy OTP-only and generic human input.
  */
 export function registerHitlActions(app: App, apiClient: ApiClient): void {
   // ----------------------------------------------------------------
@@ -113,53 +112,6 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
   });
 
   // ----------------------------------------------------------------
-  // Action: submit_otp (legacy, kept for backwards compatibility)
-  // ----------------------------------------------------------------
-  app.action<BlockAction>('submit_otp', async ({ ack, body, client, logger }) => {
-    await ack();
-
-    const actionContext = extractActionContext(body);
-    if (!actionContext?.sessionId || !actionContext.tenantId) {
-      logger.error('submit_otp: missing session_id or tenant_id in action value');
-      return;
-    }
-
-    try {
-      await client.views.open({
-        trigger_id: body.trigger_id!,
-        view: {
-          type: 'modal',
-          callback_id: 'otp_modal_submit',
-          private_metadata: JSON.stringify({
-            session_id: actionContext.sessionId,
-            tenant_id: actionContext.tenantId,
-          }),
-          title: { type: 'plain_text', text: 'Submit OTP Code' },
-          submit: { type: 'plain_text', text: 'Submit' },
-          close: { type: 'plain_text', text: 'Cancel' },
-          blocks: [
-            {
-              type: 'input',
-              block_id: 'otp_block',
-              label: { type: 'plain_text', text: 'OTP Code' },
-              element: {
-                type: 'plain_text_input',
-                action_id: 'otp_value',
-                placeholder: {
-                  type: 'plain_text',
-                  text: 'Enter the OTP code shown on screen',
-                },
-              },
-            },
-          ],
-        },
-      });
-    } catch (error) {
-      logger.error(`submit_otp modal open failed: ${error}`);
-    }
-  });
-
-  // ----------------------------------------------------------------
   // View submission: input_modal_submit (generic)
   // ----------------------------------------------------------------
   app.view<ViewSubmitAction>('input_modal_submit', async ({ ack, view, logger }) => {
@@ -184,37 +136,6 @@ export function registerHitlActions(app: App, apiClient: ApiClient): void {
         response_action: 'errors',
         errors: {
           input_block: `Failed to submit: ${error instanceof Error ? error.message : 'unknown error'}`,
-        },
-      });
-    }
-  });
-
-  // ----------------------------------------------------------------
-  // View submission: otp_modal_submit (legacy)
-  // ----------------------------------------------------------------
-  app.view<ViewSubmitAction>('otp_modal_submit', async ({ ack, view, logger }) => {
-    const metadata = JSON.parse(view.private_metadata || '{}');
-    const sessionId = metadata.session_id;
-    const tenantId = metadata.tenant_id;
-    const otpValue = view.state.values.otp_block.otp_value.value;
-
-    if (!sessionId || !tenantId || !otpValue) {
-      await ack({
-        response_action: 'errors',
-        errors: { otp_block: 'OTP code is required.' },
-      });
-      return;
-    }
-
-    try {
-      await apiClient.submitOtp(sessionId, otpValue, tenantId);
-      await ack();
-    } catch (error) {
-      logger.error(`OTP submission failed: ${error}`);
-      await ack({
-        response_action: 'errors',
-        errors: {
-          otp_block: `Failed to submit OTP: ${error instanceof Error ? error.message : 'unknown error'}`,
         },
       });
     }
