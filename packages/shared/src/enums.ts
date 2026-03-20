@@ -114,6 +114,7 @@ export enum CredentialFreshness {
   EXTRACTED = 'EXTRACTED',
   ON_DEMAND = 'ON_DEMAND',
   DEGRADED = 'DEGRADED',
+  CANARY = 'CANARY',
 }
 
 export enum CredentialVolatility {

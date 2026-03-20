@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { In, MoreThan, Repository } from 'typeorm';
 import {
   DEFAULTS,
   REDIS_KEYS,
@@ -96,17 +96,20 @@ export class CredentialsService {
       forceRefresh = false, includeVolatile = true, requestId,
     } = params;
 
-    // 1. Resolve ACTIVE profile
+    // 1. Resolve ACTIVE (or CANARY fallback) profile
     const profile = await this.resolveActiveProfile(tenantId, profileId);
+    const isCanary = profile.version_state === ProfileVersionState.CANARY;
 
     // 2. Find healthy session via profile's app_id
     const session = await this.findHealthySession(tenantId, profile.app_id);
 
     // 3. Force-refresh coalescing (RT-11)
-    let freshness = CredentialFreshness.CACHED;
+    let freshness: CredentialFreshness = isCanary
+      ? CredentialFreshness.CANARY
+      : CredentialFreshness.CACHED;
     const effectiveCredSetId = credentialSetId || 'default';
 
-    if (forceRefresh) {
+    if (forceRefresh && !isCanary) {
       const coalesceResult = await this.acquireExtractLock(
         tenantId, profileId, effectiveCredSetId,
       );
@@ -115,18 +118,31 @@ export class CredentialsService {
         : CredentialFreshness.ON_DEMAND;
     }
 
-    // 4. Fetch and decrypt latest artifact bundle from MinIO
-    const bundle = await this.fetchAndDecryptLatestBundle(
-      session, tenantId, requestId, forceRefresh,
-    );
+    // 4. Record canary traffic
+    if (isCanary) {
+      await this.profileRepo.increment({ id: profile.id }, 'canary_request_count', 1);
+    }
 
-    // 5. Build credential set with real values from bundle
+    // 5. Fetch and decrypt latest artifact bundle from MinIO
+    let bundle: { decrypted: Record<string, any>; extractedAt: string } | null = null;
+    try {
+      bundle = await this.fetchAndDecryptLatestBundle(
+        session, tenantId, requestId, forceRefresh,
+      );
+    } catch (err) {
+      if (isCanary) {
+        await this.profileRepo.increment({ id: profile.id }, 'canary_error_count', 1);
+      }
+      throw err;
+    }
+
+    // 6. Build credential set with real values from bundle
     const credentials = this.buildCredentialSet(profile, includeVolatile, bundle?.decrypted);
 
-    // 6. Build usage hints
+    // 7. Build usage hints
     const usage = this.buildUsage(profile);
 
-    // 7. Build metadata
+    // 8. Build metadata
     const metadata: CredentialMetadata = {
       extracted_at: bundle?.extractedAt || new Date().toISOString(),
       extraction_duration_ms: 0,
@@ -149,17 +165,22 @@ export class CredentialsService {
   // ---------------------------------------------------------------
 
   async resolveActiveProfile(tenantId: string, profileId: string): Promise<ServiceProfileEntity> {
-    const profile = await this.profileRepo.findOne({
+    // Query for both ACTIVE and CANARY profiles, preferring ACTIVE
+    const profiles = await this.profileRepo.find({
       where: {
         tenant_id: tenantId,
         profile_id: profileId,
-        version_state: ProfileVersionState.ACTIVE,
+        version_state: In([ProfileVersionState.ACTIVE, ProfileVersionState.CANARY]),
       },
     });
-    if (!profile) {
+
+    if (profiles.length === 0) {
       throw new NotFoundException(`No active profile found for "${profileId}"`);
     }
-    return profile;
+
+    // Prefer ACTIVE over CANARY
+    const active = profiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
+    return active || profiles[0];
   }
 
   // ---------------------------------------------------------------
