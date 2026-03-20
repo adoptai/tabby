@@ -85,6 +85,19 @@ export class SessionDb {
     });
   }
 
+  async writePendingInputRequest(
+    sessionId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.pool) return;
+    await this.withSession(async (client) => {
+      await client.query(
+        `UPDATE sessions SET pending_input_request = $1 WHERE id = $2`,
+        [JSON.stringify(metadata), sessionId],
+      );
+    });
+  }
+
   async insertArtifactBundle(input: {
     sessionId: string;
     appId: string;
