@@ -5,9 +5,22 @@ import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
 import { SessionDb } from './session-db';
 
 /**
+ * Custom extraction definition for export_policy.custom_extractions.
+ * Supports extracting values via JS evaluation or named cookie lookup.
+ */
+interface CustomExtraction {
+  key: string;
+  type: 'js_eval' | 'cookie';
+  expression?: string;       // JS expression to evaluate in page context (for js_eval)
+  cookie_name?: string;      // Cookie name to extract (for cookie type)
+  extract_on_url?: string;   // Only extract when current page URL matches this glob
+  description?: string;
+}
+
+/**
  * Artifact Extraction Pipeline per spec sections 9.8, 10.8.
  *
- * Extracts: cookies, headers, csrf_token, local_storage, session_storage.
+ * Extracts: cookies, headers, csrf_token, local_storage, session_storage, custom (js_eval).
  * Encrypts with AES-256-GCM per-tenant key.
  * Uploads encrypted blob to MinIO.
  * Publishes export metadata to NATS.
@@ -84,6 +97,12 @@ export class ArtifactExtractor {
 
     if (artifactTypes.includes('session_storage')) {
       artifacts.session_storage = await this.extractSessionStorage();
+    }
+
+    // Custom extractions (js_eval for aura tokens, VF remoting, etc.)
+    const customExtractions = exportPolicy?.custom_extractions as CustomExtraction[] | undefined;
+    if (customExtractions && customExtractions.length > 0) {
+      artifacts.custom = await this.extractCustom(customExtractions);
     }
 
     // Encrypt the artifact bundle
@@ -178,6 +197,45 @@ export class ArtifactExtractor {
    */
   private async extractSessionStorage(): Promise<string> {
     return this.page.evaluate(() => JSON.stringify(window.sessionStorage));
+  }
+
+  /**
+   * Run custom extractions defined in export_policy.custom_extractions.
+   * Supports js_eval (run arbitrary JS in page context) and cookie (named cookie lookup).
+   * Used for Salesforce aura tokens, VF Remoting tokens, and similar site-specific extractions.
+   */
+  private async extractCustom(extractions: CustomExtraction[]): Promise<Record<string, string>> {
+    const results: Record<string, string> = {};
+    const currentUrl = this.page.url();
+
+    for (const extraction of extractions) {
+      // Skip if URL filter doesn't match current page
+      if (extraction.extract_on_url) {
+        const pattern = extraction.extract_on_url.replace(/\*/g, '.*');
+        if (!new RegExp(pattern).test(currentUrl)) {
+          continue;
+        }
+      }
+
+      try {
+        if (extraction.type === 'js_eval' && extraction.expression) {
+          const value = await this.page.evaluate(extraction.expression);
+          if (value) {
+            results[extraction.key] = String(value);
+          }
+        } else if (extraction.type === 'cookie' && extraction.cookie_name) {
+          const cookies = await this.context.cookies();
+          const match = cookies.find(c => c.name === extraction.cookie_name);
+          if (match) {
+            results[extraction.key] = match.value;
+          }
+        }
+      } catch (error) {
+        console.warn(`Custom extraction '${extraction.key}' failed: ${error}`);
+      }
+    }
+
+    return results;
   }
 
   /**
