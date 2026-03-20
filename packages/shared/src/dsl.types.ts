@@ -22,6 +22,11 @@ export type DslActionType =
   | 'reload'
   | 'request_human_input';
 
+export type FailureHandler =
+  | { action: 'request_help'; message: string; input_type?: HumanInputType; field_selector?: string; screenshot?: boolean }
+  | { action: 'skip' }
+  | { action: 'abort' };
+
 export interface BaseDslStep {
   action: DslActionType;
   timeout_ms?: number;        // Default: 30000
@@ -30,6 +35,7 @@ export interface BaseDslStep {
   retry_backoff?: 'fixed' | 'exponential';  // Default: 'fixed'
   retry_delay_ms?: number;    // Default: 1000
   retry_max_delay_ms?: number; // Default: 30000 (exponential cap)
+  on_failure?: FailureHandler;
 }
 
 export interface GotoStep extends BaseDslStep {

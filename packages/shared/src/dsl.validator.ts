@@ -1,4 +1,4 @@
-import { DslStep, DslActionType, HumanInputType } from './dsl.types';
+import { DslStep, DslActionType, HumanInputType, FailureHandler } from './dsl.types';
 import { LoginConfig, KeepaliveConfig, ExportPolicy, NotificationConfig } from './config.types';
 
 // ============================================================
@@ -53,6 +53,23 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
 
   if (step.retry_max_delay_ms !== undefined && (typeof step.retry_max_delay_ms !== 'number' || step.retry_max_delay_ms <= 0)) {
     errors.push({ path: `${path}.retry_max_delay_ms`, message: 'retry_max_delay_ms must be a positive number' });
+  }
+
+  // Validate on_failure if present
+  if (step.on_failure) {
+    const FAILURE_ALLOWED_ACTIONS: DslActionType[] = ['wait_for', 'wait_for_url', 'click', 'fill', 'goto'];
+    if (!FAILURE_ALLOWED_ACTIONS.includes(step.action)) {
+      errors.push({ path: `${path}.on_failure`, message: `on_failure is only valid on ${FAILURE_ALLOWED_ACTIONS.join(', ')} steps` });
+    }
+    const fa = step.on_failure as FailureHandler;
+    if (!['request_help', 'skip', 'abort'].includes(fa.action)) {
+      errors.push({ path: `${path}.on_failure.action`, message: 'on_failure.action must be "request_help", "skip", or "abort"' });
+    }
+    if (fa.action === 'request_help') {
+      if (!fa.message || typeof fa.message !== 'string') {
+        errors.push({ path: `${path}.on_failure.message`, message: 'on_failure.message is required for request_help' });
+      }
+    }
   }
 
   switch (step.action) {

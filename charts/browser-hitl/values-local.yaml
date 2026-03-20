@@ -269,6 +269,20 @@ egressProxy:
     - ".jsdelivr.net"
     - ".unpkg.com"
     - ".amazonaws.com"
+    # --- Salesforce ---
+    - ".salesforce.com"
+    - ".force.com"
+    # --- Automation Anywhere ---
+    - ".automationanywhere.digital"
+    - ".automationanywhere.com"
+    # --- Salesforce analytics (Pendo) ---
+    - ".pendo.io"
+    - ".pendo-static-5673999629942784.storage.googleapis.com"
+    - ".pendo-io-static.storage.googleapis.com"
+    # --- Salesforce docs (ZoomIn) ---
+    - ".zoominsoftware.io"
+    # --- Microsoft (Teams SDK) ---
+    - ".cdn.office.net"
     # --- Dev/test ---
     - ".dontpad.com"
     - ".api.dontpad.com"
