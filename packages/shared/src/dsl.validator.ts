@@ -43,6 +43,18 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
     errors.push({ path: `${path}.retry_count`, message: 'retry_count must be a non-negative number' });
   }
 
+  if (step.retry_backoff !== undefined && !['fixed', 'exponential'].includes(step.retry_backoff)) {
+    errors.push({ path: `${path}.retry_backoff`, message: 'retry_backoff must be "fixed" or "exponential"' });
+  }
+
+  if (step.retry_delay_ms !== undefined && (typeof step.retry_delay_ms !== 'number' || step.retry_delay_ms <= 0)) {
+    errors.push({ path: `${path}.retry_delay_ms`, message: 'retry_delay_ms must be a positive number' });
+  }
+
+  if (step.retry_max_delay_ms !== undefined && (typeof step.retry_max_delay_ms !== 'number' || step.retry_max_delay_ms <= 0)) {
+    errors.push({ path: `${path}.retry_max_delay_ms`, message: 'retry_max_delay_ms must be a positive number' });
+  }
+
   switch (step.action) {
     case 'goto':
       if (!step.url || typeof step.url !== 'string') {
