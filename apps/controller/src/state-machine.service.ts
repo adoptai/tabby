@@ -291,6 +291,34 @@ export class StateMachineService {
       return;
     }
 
+    // Check if worker is requesting new human input (sequential input requests)
+    if (session.pending_input_request && healthResult === HealthResultType.AUTH_FAIL) {
+      const inputRequest = session.pending_input_request as any;
+      const appName = await this.resolveAppName(session.app_id, session.tenant_id);
+      const interventionType = this.mapInterventionType(inputRequest);
+
+      this.logger.log(
+        `Session ${session.id}: new input requested (type=${inputRequest?.input_type}, step=${inputRequest?.step_index})`,
+      );
+
+      await this.natsPublisher.publishHitlStarted(
+        session.tenant_id,
+        session.id,
+        session.app_id,
+        '', // no new intervention ID — reuses existing
+        appName,
+        interventionType,
+        inputRequest,
+      );
+
+      // Clear so we don't re-publish on next reconcile
+      await this.sessionRepo.update(session.id, { pending_input_request: null });
+
+      // Reset the login timeout since we're actively in a new input step
+      await this.sessionRepo.update(session.id, { last_login_at: new Date() });
+      return;
+    }
+
     // Check 10-minute timeout
     const loginStarted = session.last_login_at
       ? new Date(session.last_login_at).getTime()
