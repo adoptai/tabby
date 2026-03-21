@@ -34,7 +34,7 @@ Monorepo (NX + pnpm workspaces):
 
 ```bash
 make kind-create          # one-time: create Kind cluster
-make kind-reload-all      # build images + load + helm upgrade with values-local.yaml
+make kind-reload-all      # clean + build + docker-build + load + helm upgrade with values-local.yaml
 make k8s-port-forward     # forward API (18080), Admin UI (13000), Postgres, Redis, MinIO, NATS
 ```
 
@@ -97,7 +97,11 @@ PR titles MUST follow conventional commits (squash merge makes PR title the comm
 ## Architecture Notes
 
 ### HITL Flow (Generic Human Input)
-Worker hits `request_human_input` DSL step (or sensitive `wait_for` for legacy OTP) → writes `pending_input_request` to session + signals `AUTH_FAIL` via DB → Controller transitions to `LOGIN_NEEDED` → Creates intervention with `input_request_metadata` + sets baton to `HUMAN_REQUESTED` → Publishes enriched `hitl.started` NATS event (with `intervention_type` + `input_request`) → Slack bot posts dynamic message (buttons adapt to input type) → Human submits value via Slack modal or resolves via VNC → Value stored in Redis (`human_input:{sessionId}:{stepIndex}`) → Worker polls, receives, acts (fill field / navigate URL / resume) → Health check passes → Session returns to HEALTHY
+Worker hits `request_human_input` DSL step → writes `pending_input_request` to session + signals `AUTH_FAIL` via DB → Controller transitions to `LOGIN_NEEDED` → Creates intervention with `input_request_metadata` + sets baton to `HUMAN_REQUESTED` → Publishes enriched `hitl.started` NATS event (with `intervention_type` + `input_request`) → Slack bot posts dynamic message (buttons adapt to input type) → Human submits value via Slack modal or resolves via VNC → Value stored in Redis (`human_input:{sessionId}:{stepIndex}`, 300s TTL) → Worker polls, receives, acts (fill field / navigate URL / resume) → Health check passes → Session returns to HEALTHY
+
+**Sequential human input:** Controller detects new `pending_input_request` during `LOGIN_IN_PROGRESS` and publishes additional `hitl.started` events. Enables password → OTP in sequence without session state reset.
+
+**No state check on input submission:** `POST /sessions/:id/input` intentionally skips `LOGIN_IN_PROGRESS` state check. Avoids timing race where worker is waiting but controller hasn't reconciled from STARTING yet. Input can also be resubmitted (no NX flag on Redis SET).
 
 ### Supported Human Input Types
 - `otp` — one-time password / 2FA code
@@ -125,19 +129,23 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 - Canary promotion gate is wired: `resolveActiveProfile()` queries ACTIVE + CANARY (prefers ACTIVE), increments `canary_request_count`/`canary_error_count`
 - Credentials (`POST /credentials/request`) returns `CANARY` freshness when serving from canary
 
+### Custom Extractions (export_policy)
+`export_policy.custom_extractions` array supports site-specific token extraction:
+- `js_eval` — runs `page.evaluate(expression)` in browser context (e.g., Salesforce `aura_token`)
+- `cookie` — named cookie lookup from browser context
+- Both support `extract_on_url` glob filter to only extract on matching pages
+
 ### Key API Endpoints
 - `POST /sessions/:id/stream` — VNC stream URL
 - `POST /sessions/:id/takeover` — Acquire baton
 - `POST /sessions/:id/release` — Release baton
 - `POST /sessions/:id/input` — Submit generic human input (type, value, step_index)
-- `POST /sessions/:id/otp` — Submit OTP (legacy, still works)
 - `POST /sessions/:id/acknowledge` — Acknowledge failure, retry
 
 ### NATS Events
-- `hitl.started.{tenantId}.{sessionId}` — carries `intervention_type` + `input_request` metadata
+- `hitl.started.{tenantId}.{sessionId}` — carries `intervention_type` + `input_request` metadata (multiple events per session for sequential inputs)
 - `hitl.completed.{tenantId}.{sessionId}`
 - `session.state.changed.{tenantId}.{sessionId}`
-- ~~`hitl.otp-requested`~~ — removed (deduped into `hitl.started`)
 
 ## Database Migrations
 
@@ -155,6 +163,12 @@ Latest: `1708300000009-GenericHumanInput` — adds `sessions.pending_input_reque
 6. **Never `kubectl set env` locally** — Use `values-local.yaml` instead. Manual env overrides conflict with Helm on next upgrade.
 7. **CSS selectors in DSL** — Attribute selectors must quote values: `[data-test-id="value"]` not `[data-test-id=value]`.
 8. **`--enable-automation` flag** — Still present in Chromium flags, sets `navigator.webdriver = true`. Triggers bot detection.
+9. **`TENANT_ENCRYPTION_KEY` on API pod** — Worker encrypts artifacts, API decrypts for `/credentials/request`. If API pod is missing the key, credentials return empty values silently. Must be set in `values-local.yaml` secrets or via `--set`.
+10. **Salesforce Lightning SPA health check** — `dom_check` on `body` may fail (`isVisible()` returns false) even when logged in. Lightning SPA renders body differently. Consider `url_check` instead.
+11. **`kind-reload-all` stale dist/** — Docker caches stale `dist/` folders. Makefile now runs `clean build docker-build` to fix.
+12. **Salesforce OTP selector** — `input[name='Verification Code']` works for `wait_for` but NOT for `fill`. Correct selector: `input#smc`.
+13. **Salesforce account lockout** — Blocks after ~5 failed OTP attempts. No automated backoff.
+14. **Slack `expired_trigger_id` in Kind** — Socket Mode has >3s latency locally. Slack modals require trigger_id within 3s. Works in staging/prod.
 
 ## Git
 

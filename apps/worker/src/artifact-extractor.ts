@@ -105,6 +105,20 @@ export class ArtifactExtractor {
       artifacts.custom = await this.extractCustom(customExtractions);
     }
 
+    // Log extracted artifact summary (keys + value lengths, NOT values)
+    console.log('[Artifacts] Extracted:');
+    if (artifacts.cookies) {
+      const cookies = artifacts.cookies as any[];
+      console.log(`  cookies: ${cookies.length} cookies [${cookies.map((c: any) => `${c.name}=${String(c.value).length}chars`).join(', ')}]`);
+    }
+    if (artifacts.headers) console.log(`  headers: ${Object.keys(artifacts.headers as object).length} URLs captured`);
+    if (artifacts.local_storage) console.log(`  local_storage: ${String(artifacts.local_storage).length} chars`);
+    if (artifacts.session_storage) console.log(`  session_storage: ${String(artifacts.session_storage).length} chars`);
+    if (artifacts.custom) {
+      const custom = artifacts.custom as Record<string, string>;
+      console.log(`  custom: ${Object.keys(custom).map(k => `${k}=${custom[k]?.length || 0}chars`).join(', ')}`);
+    }
+
     // Encrypt the artifact bundle
     const plaintext = Buffer.from(JSON.stringify(artifacts), 'utf-8');
     const { encrypted, nonce, keyVersion } = await this.encrypt(plaintext);

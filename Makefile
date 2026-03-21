@@ -298,7 +298,7 @@ kind-reload-novnc: docker-build-novnc ## Rebuild noVNC and reload into Kind
 	@echo "noVNC reloaded (sidecar — new worker pods will pick it up)."
 
 .PHONY: kind-reload-all
-kind-reload-all: docker-build ## Rebuild all images, load into Kind, and upgrade Helm release
+kind-reload-all: clean build docker-build ## Clean + build source + images, load into Kind, and upgrade Helm release
 	$(MAKE) kind-load-images
 	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
 		-f charts/browser-hitl/values-local.yaml \
