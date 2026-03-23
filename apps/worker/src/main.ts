@@ -1,7 +1,5 @@
 import { chromium, Browser, BrowserContext, Page, LaunchOptions } from 'playwright';
 import { CHROMIUM_FLAGS, CDP_PORTS, PORTS } from '@browser-hitl/shared';
-import { readFile } from 'fs/promises';
-import { join } from 'path';
 import { HealthServer } from './health-server';
 import { LoginDslRunner } from './login-dsl-runner';
 import { KeepaliveRunner } from './keepalive-runner';
@@ -11,6 +9,7 @@ import { InputRelay } from './input-relay';
 import { SessionDb } from './session-db';
 import { RecyclingMonitor } from './recycling-monitor';
 import { ScreenshotFallback } from './screenshot-fallback';
+import { resolveCredentials } from './credential-resolver';
 
 /**
  * Browser Worker Main Entry Point
@@ -218,6 +217,13 @@ async function main() {
     await db.updateLastLoginAt(sessionId);
     await dslRunner.execute(appConfig.login_config.steps, credentials);
 
+    // Pass DSL variables (e.g., quote_id from store_as) to artifact extractor
+    const dslVars = dslRunner.getVariables();
+    if (dslVars.size > 0) {
+      artifactExtractor.setDslVariables(dslVars);
+      console.log(`DSL variables passed to extractor: ${[...dslVars.keys()].join(', ')}`);
+    }
+
     // Run health predicate to confirm authentication
     const healthResult = await healthRunner.evaluate();
     await db.updateHealthResult(sessionId, healthResult.overall);
@@ -256,58 +262,6 @@ async function main() {
   } catch (error) {
     console.error(`Worker error: ${error}`);
     await db.updateHealthResult(sessionId, classifyWorkerError(error));
-  }
-}
-
-/**
- * Resolve credentials from K8s Secret reference.
- * Format: k8s:secret/{secret-name}
- */
-async function resolveCredentials(credentialRef: string): Promise<{ username: string; password: string }> {
-  const secretName = credentialRef.replace('k8s:secret/', '').trim();
-  if (!secretName) {
-    throw new Error(`Invalid credential_ref: ${credentialRef}`);
-  }
-
-  const mountRoot = process.env.CREDENTIALS_MOUNT_PATH || '/var/run/secrets/browser-hitl';
-  const mountDir = join(mountRoot, secretName);
-
-  // Primary path: mounted secret files (username/password)
-  const usernameFromFile = await readOptionalTrimmedFile(join(mountDir, 'username'));
-  const passwordFromFile = await readOptionalTrimmedFile(join(mountDir, 'password'));
-  if (usernameFromFile && passwordFromFile) {
-    return { username: usernameFromFile, password: passwordFromFile };
-  }
-
-  const allowEnvFallback = (process.env.WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK || '')
-    .trim()
-    .toLowerCase() === 'true';
-  if (!allowEnvFallback) {
-    throw new Error(
-      `Credentials not found for ${credentialRef}. Expected mounted files at ${mountDir}/{username,password}.`,
-    );
-  }
-
-  // Explicit opt-in fallback for local development only.
-  const username = process.env[`${secretName}_USERNAME`] || '';
-  const password = process.env[`${secretName}_PASSWORD`] || '';
-
-  if (!username || !password) {
-    throw new Error(
-      `Credentials not found for ${credentialRef}. Checked ${mountDir}/{username,password} and explicit env fallback.`,
-    );
-  }
-
-  return { username, password };
-}
-
-async function readOptionalTrimmedFile(path: string): Promise<string | null> {
-  try {
-    const content = await readFile(path, 'utf8');
-    const value = content.trim();
-    return value.length > 0 ? value : null;
-  } catch {
-    return null;
   }
 }
 

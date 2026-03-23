@@ -3,9 +3,8 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AppsService } from './apps.service';
-import { CreateAppDto, UpdateAppDto } from './apps.dto';
+import { CreateAppDto, UpdateAppDto, ListAppsQueryDto } from './apps.dto';
 
 @ApiTags('Applications')
 @ApiBearerAuth()
@@ -28,11 +27,12 @@ export class AppsController {
   @Roles('Admin', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'List applications' })
   @ApiResponse({ status: 200, description: 'Paginated app list' })
+  @ApiResponse({ status: 400, description: 'Invalid field name in fields param' })
   async findAll(
-    @Query() query: PaginationQueryDto,
+    @Query() query: ListAppsQueryDto,
     @Req() req: any,
   ) {
-    return this.appsService.findAll(req.user.tenant_id, query.limit, query.offset);
+    return this.appsService.findAll(req.user.tenant_id, query.limit, query.offset, query.fields);
   }
 
   @Get(':id')

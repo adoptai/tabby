@@ -2,6 +2,41 @@ import {
   IsString, IsArray, IsObject, IsOptional, IsInt, Min, MinLength, ArrayMinSize,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+
+export const APP_SELECTABLE_FIELDS = [
+  'id', 'name', 'tenant_id', 'target_urls', 'login_config', 'keepalive_config',
+  'export_policy', 'notification_config', 'browser_policy', 'desired_session_count',
+  'credential_last_validated_at', 'credential_rotation_reminder_days',
+  'created_at', 'updated_at',
+] as const;
+
+export type AppSelectableField = typeof APP_SELECTABLE_FIELDS[number];
+
+export class ListAppsQueryDto {
+  @ApiProperty({ description: 'Number of items per page', example: 50, default: 50, minimum: 1, maximum: 200, required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit = 50;
+
+  @ApiProperty({ description: 'Number of items to skip', example: 0, default: 0, minimum: 0, required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset = 0;
+
+  @ApiProperty({
+    description: `Comma-separated list of fields to include in each result. Omit to return all fields. Allowed: ${APP_SELECTABLE_FIELDS.join(', ')}`,
+    example: 'id,name,desired_session_count',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  fields?: string;
+}
 
 export class CreateAppDto {
   @ApiProperty({ description: 'Application display name', example: 'HubSpot Production' })

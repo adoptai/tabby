@@ -4,6 +4,7 @@ import { In, MoreThan, Repository } from 'typeorm';
 import {
   DEFAULTS,
   REDIS_KEYS,
+  REDIS_TTL,
   CredentialFreshness,
   CredentialVolatility,
   ProfileVersionState,
@@ -15,6 +16,7 @@ import type {
   CookieCredential,
   HeaderCredential,
   CsrfCredential,
+  CustomCredential,
   CredentialUsage,
   CredentialMetadata,
 } from '@browser-hitl/shared';
@@ -89,11 +91,12 @@ export class CredentialsService {
     credentialSetId?: string;
     forceRefresh?: boolean;
     includeVolatile?: boolean;
+    waitSeconds?: number;
     requestId: string;
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
-      forceRefresh = false, includeVolatile = true, requestId,
+      forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
     } = params;
 
     // 1. Resolve ACTIVE (or CANARY fallback) profile
@@ -116,6 +119,18 @@ export class CredentialsService {
       freshness = coalesceResult.isLeader
         ? CredentialFreshness.EXTRACTED
         : CredentialFreshness.ON_DEMAND;
+
+      // Signal worker to re-extract artifacts from the live browser
+      if (coalesceResult.isLeader) {
+        await this.signalWorkerExtract(session.id);
+
+        // If caller wants to wait for fresh data, block until the worker signals done
+        if (waitSeconds > 0) {
+          const doneKey = REDIS_KEYS.extractDone(session.id);
+          await this.redis.blpop(doneKey, waitSeconds);
+          // Returns when worker pushes, or null on timeout — proceed either way
+        }
+      }
     }
 
     // 4. Record canary traffic
@@ -378,6 +393,20 @@ export class CredentialsService {
     }
   }
 
+  /**
+   * Signal the worker to perform an immediate artifact extraction.
+   * Sets a Redis key that the keepalive runner polls for on each tick.
+   */
+  private async signalWorkerExtract(sessionId: string): Promise<void> {
+    const key = REDIS_KEYS.extractRequest(sessionId);
+    try {
+      await this.redis.set(key, Date.now().toString(), 'EX', REDIS_TTL.EXTRACT_REQUEST_SECONDS);
+      this.logger.debug(`Extract request signaled for session ${sessionId}`);
+    } catch (err) {
+      this.logger.warn(`Failed to signal extract request for ${sessionId}: ${(err as Error).message}`);
+    }
+  }
+
   async releaseExtractLock(
     tenantId: string,
     profileId: string,
@@ -483,8 +512,25 @@ export class CredentialsService {
       }
     }
 
+    // Build custom credentials from credential_types.custom, merging values from decrypted.custom
+    const custom: CustomCredential[] = [];
+    if (credTypes.custom && Array.isArray(credTypes.custom)) {
+      const customValues = (decrypted?.custom || {}) as Record<string, string>;
+      for (const entry of credTypes.custom) {
+        const volatility = (entry.volatility as CredentialVolatility) || CredentialVolatility.SEMI_STABLE;
+        if (!includeVolatile && volatility === CredentialVolatility.VOLATILE) {
+          continue;
+        }
+        custom.push({
+          key: entry.key,
+          value: customValues[entry.key] ?? '',
+          volatility,
+        });
+      }
+    }
+
     // Merge local_storage and session_storage from decrypted bundle
-    const result: CredentialSet = { cookies, headers, csrf };
+    const result: CredentialSet = { cookies, headers, csrf, ...(custom.length > 0 ? { custom } : {}) };
     if (decrypted?.local_storage) {
       result.local_storage = decrypted.local_storage;
     }
@@ -517,6 +563,13 @@ export class CredentialsService {
     }
     if (credTypes.csrf?.volatility === CredentialVolatility.VOLATILE) {
       volatileFields.push('csrf');
+    }
+    if (credTypes.custom && Array.isArray(credTypes.custom)) {
+      for (const c of credTypes.custom) {
+        if (c.volatility === CredentialVolatility.VOLATILE) {
+          volatileFields.push(`custom:${c.key}`);
+        }
+      }
     }
 
     return {

@@ -62,10 +62,10 @@ worker:
   resources:
     requests:
       cpu: "500m"
-      memory: "1Gi"
+      memory: "2Gi"
     limits:
       cpu: "4000m"
-      memory: "4Gi"
+      memory: "8Gi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
 teamsBot:
@@ -283,6 +283,9 @@ egressProxy:
     - ".zoominsoftware.io"
     # --- Microsoft (Teams SDK) ---
     - ".cdn.office.net"
+    # --- Workday ---
+    - ".workday.com"
+    - ".workdaycdn.com"
     # --- Dev/test ---
     - ".dontpad.com"
     - ".api.dontpad.com"

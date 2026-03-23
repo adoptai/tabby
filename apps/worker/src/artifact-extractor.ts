@@ -27,6 +27,7 @@ interface CustomExtraction {
  */
 export class ArtifactExtractor {
   private capturedHeaders: Map<string, Record<string, string>> = new Map();
+  private dslVariables: Map<string, string> = new Map();
 
   constructor(
     private readonly page: Page,
@@ -37,6 +38,10 @@ export class ArtifactExtractor {
     private readonly appId: string,
     private readonly db: SessionDb,
   ) {}
+
+  setDslVariables(vars: Map<string, string>): void {
+    this.dslVariables = vars;
+  }
 
   /**
    * Register response header capture BEFORE login actions (spec section 10.8).
@@ -221,31 +226,99 @@ export class ArtifactExtractor {
   private async extractCustom(extractions: CustomExtraction[]): Promise<Record<string, string>> {
     const results: Record<string, string> = {};
     const currentUrl = this.page.url();
+    const extractUrls: Record<string, string> = this.appConfig.export_policy?.extract_urls || {};
+
+    // Group extractions: those matching current page vs those needing a new tab
+    const mainPageExtractions: CustomExtraction[] = [];
+    const remoteGroups: Map<string, CustomExtraction[]> = new Map();
 
     for (const extraction of extractions) {
-      // Skip if URL filter doesn't match current page
-      if (extraction.extract_on_url) {
-        const pattern = extraction.extract_on_url.replace(/\*/g, '.*');
-        if (!new RegExp(pattern).test(currentUrl)) {
-          continue;
+      if (!extraction.extract_on_url) {
+        mainPageExtractions.push(extraction);
+        continue;
+      }
+      const pattern = extraction.extract_on_url.replace(/\*/g, '.*');
+      if (new RegExp(pattern).test(currentUrl)) {
+        mainPageExtractions.push(extraction);
+      } else {
+        const group = remoteGroups.get(extraction.extract_on_url) || [];
+        group.push(extraction);
+        remoteGroups.set(extraction.extract_on_url, group);
+      }
+    }
+
+    // Run main page extractions on current page
+    for (const extraction of mainPageExtractions) {
+      try {
+        const value = await this.runSingleExtraction(this.page, extraction);
+        if (value) results[extraction.key] = value;
+      } catch (error) {
+        console.warn(`Custom extraction '${extraction.key}' failed: ${error}`);
+      }
+    }
+
+    // Run remote extractions in new tabs
+    for (const [urlPattern, group] of remoteGroups) {
+      const urlTemplate = extractUrls[urlPattern];
+      if (!urlTemplate) {
+        console.warn(`[Artifacts] No extract_urls mapping for pattern '${urlPattern}', skipping ${group.length} extractions`);
+        continue;
+      }
+      // Interpolate {{varname}} from DSL variables
+      const resolvedUrl = urlTemplate.replace(/\{\{(\w+)\}\}/g, (_, key) => this.dslVariables.get(key) ?? '');
+      if (!resolvedUrl || resolvedUrl.includes('{{')) {
+        console.warn(`[Artifacts] Unresolved variables in extract URL: ${resolvedUrl}`);
+        continue;
+      }
+
+      const remoteResults = await this.extractInNewTab(resolvedUrl, group);
+      Object.assign(results, remoteResults);
+    }
+
+    return results;
+  }
+
+  private async runSingleExtraction(page: Page, extraction: CustomExtraction): Promise<string | null> {
+    if (extraction.type === 'js_eval' && extraction.expression) {
+      const value = await page.evaluate(extraction.expression);
+      return value ? String(value) : null;
+    } else if (extraction.type === 'cookie' && extraction.cookie_name) {
+      const cookies = await this.context.cookies();
+      const match = cookies.find(c => c.name === extraction.cookie_name);
+      return match ? match.value : null;
+    }
+    return null;
+  }
+
+  /**
+   * Open a new tab, navigate to the given URL, run extractions, close the tab.
+   * Shares the same BrowserContext (cookies, proxy) as the main page.
+   */
+  private async extractInNewTab(url: string, extractions: CustomExtraction[]): Promise<Record<string, string>> {
+    const results: Record<string, string> = {};
+    let newPage: Page | null = null;
+
+    try {
+      newPage = await this.context.newPage();
+      console.log(`[Artifacts] Opening new tab for extraction: ${url}`);
+      await newPage.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' });
+      await newPage.waitForTimeout(8000);
+
+      for (const extraction of extractions) {
+        try {
+          const value = await this.runSingleExtraction(newPage, extraction);
+          if (value) results[extraction.key] = value;
+        } catch (error) {
+          console.warn(`Custom extraction '${extraction.key}' failed in new tab: ${error}`);
         }
       }
 
-      try {
-        if (extraction.type === 'js_eval' && extraction.expression) {
-          const value = await this.page.evaluate(extraction.expression);
-          if (value) {
-            results[extraction.key] = String(value);
-          }
-        } else if (extraction.type === 'cookie' && extraction.cookie_name) {
-          const cookies = await this.context.cookies();
-          const match = cookies.find(c => c.name === extraction.cookie_name);
-          if (match) {
-            results[extraction.key] = match.value;
-          }
-        }
-      } catch (error) {
-        console.warn(`Custom extraction '${extraction.key}' failed: ${error}`);
+      console.log(`[Artifacts] New tab extractions: ${Object.keys(results).map(k => `${k}=${results[k]?.length || 0}chars`).join(', ')}`);
+    } catch (error) {
+      console.error(`[Artifacts] New tab extraction failed for ${url}: ${error}`);
+    } finally {
+      if (newPage) {
+        try { await newPage.close(); } catch { /* best effort */ }
       }
     }
 

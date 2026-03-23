@@ -11,6 +11,7 @@ export class LoginDslRunner {
   private currentFrame: Page | Frame | FrameLocator;
   private readonly allowEvaluate: boolean;
   private readonly onInputRequested: ((request: InputRequest) => Promise<void> | void) | undefined;
+  private readonly variables: Map<string, string> = new Map();
 
   constructor(
     private readonly page: Page,
@@ -27,6 +28,10 @@ export class LoginDslRunner {
     this.currentFrame = page;
     this.allowEvaluate = options?.allowEvaluate === true;
     this.onInputRequested = options?.onInputRequested;
+  }
+
+  getVariables(): Map<string, string> {
+    return this.variables;
   }
 
   /**
@@ -91,9 +96,22 @@ export class LoginDslRunner {
     timeout: number,
   ): Promise<void> {
     switch (step.action) {
-      case 'goto':
-        await this.page.goto(step.url, { timeout });
+      case 'goto': {
+        let gotoUrl: string;
+        if (step.url_expression) {
+          if (!this.allowEvaluate) {
+            throw new Error('DSL goto url_expression requires allow_evaluate policy');
+          }
+          gotoUrl = String(await this.page.evaluate(step.url_expression));
+        } else if (step.url) {
+          // Interpolate {{varname}} placeholders from DSL variables
+          gotoUrl = step.url.replace(/\{\{(\w+)\}\}/g, (_, key) => this.variables.get(key) ?? '');
+        } else {
+          throw new Error('DSL goto requires either url or url_expression');
+        }
+        await this.page.goto(gotoUrl, { timeout });
         break;
+      }
 
       case 'fill': {
         const value = this.interpolate(step.value, credentials);
@@ -141,12 +159,17 @@ export class LoginDslRunner {
         await this.page.keyboard.press(step.key);
         break;
 
-      case 'evaluate':
+      case 'evaluate': {
         if (!this.allowEvaluate) {
           throw new Error('DSL evaluate action is disabled by policy');
         }
-        await this.page.evaluate(step.expression);
+        const evalResult = await this.page.evaluate(step.expression);
+        if (step.store_as && evalResult !== null && evalResult !== undefined) {
+          this.variables.set(step.store_as, String(evalResult));
+          console.log(`[DSL] Stored variable '${step.store_as}' (${String(evalResult).length} chars)`);
+        }
         break;
+      }
 
       case 'sleep':
         await this.page.waitForTimeout(step.ms);

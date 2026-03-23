@@ -67,6 +67,8 @@ export const REDIS_KEYS = {
   artifactToken: (tokenId: string) => `artifact_token:${tokenId}`,
   authReqLock: (tenantId: string, appId: string) => `auth_req_lock:${tenantId}:${appId}`,
   extractLock: (tenantId: string, profileId: string, credSetId: string) => `extract_lock:${tenantId}:${profileId}:${credSetId}`,
+  extractRequest: (sessionId: string) => `extract_request:${sessionId}`,
+  extractDone: (sessionId: string) => `extract_done:${sessionId}`,
 } as const;
 
 export const REDIS_TTL = {
@@ -74,6 +76,8 @@ export const REDIS_TTL = {
   STREAM_TOKEN_SECONDS: 600,
   ARTIFACT_TOKEN_SECONDS: 600,
   EXTRACT_LOCK_SECONDS: 30,
+  EXTRACT_REQUEST_SECONDS: 60,
+  EXTRACT_DONE_SECONDS: 10,
 } as const;
 
 // ============================================================

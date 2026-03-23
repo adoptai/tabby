@@ -40,7 +40,8 @@ export interface BaseDslStep {
 
 export interface GotoStep extends BaseDslStep {
   action: 'goto';
-  url: string;
+  url?: string;
+  url_expression?: string;  // JS expression evaluated at runtime to compute the URL (requires allow_evaluate)
 }
 
 export interface FillStep extends BaseDslStep {
@@ -100,6 +101,7 @@ export interface KeyboardStep extends BaseDslStep {
 export interface EvaluateStep extends BaseDslStep {
   action: 'evaluate';
   expression: string;
+  store_as?: string;  // Store result in DSL variable, accessible as {{varname}} in subsequent goto url fields
 }
 
 export interface SleepStep extends BaseDslStep {

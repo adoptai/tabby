@@ -182,8 +182,8 @@ export function validateLoginConfig(config: LoginConfig): ValidationResult {
 
   if (!config.credential_ref || typeof config.credential_ref !== 'string') {
     errors.push({ path: 'credential_ref', message: 'credential_ref is required' });
-  } else if (!config.credential_ref.startsWith('k8s:secret/')) {
-    errors.push({ path: 'credential_ref', message: 'credential_ref must start with k8s:secret/' });
+  } else if (!config.credential_ref.startsWith('k8s:secret/') && !config.credential_ref.startsWith('manual:')) {
+    errors.push({ path: 'credential_ref', message: 'credential_ref must start with k8s:secret/ or manual:' });
   }
 
   if (!config.steps || !Array.isArray(config.steps) || config.steps.length === 0) {
