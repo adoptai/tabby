@@ -129,11 +129,20 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 - Canary promotion gate is wired: `resolveActiveProfile()` queries ACTIVE + CANARY (prefers ACTIVE), increments `canary_request_count`/`canary_error_count`
 - Credentials (`POST /credentials/request`) returns `CANARY` freshness when serving from canary
 
+### Credential Reference Types
+- `k8s:secret/{name}` — Worker reads `username`/`password` from K8s Secret, injects as `${USERNAME}`/`${PASSWORD}` in DSL
+- `manual:` — No stored credentials. Human provides everything via VNC during HITL. Worker skips credential injection entirely.
+
 ### Custom Extractions (export_policy)
 `export_policy.custom_extractions` array supports site-specific token extraction:
 - `js_eval` — runs `page.evaluate(expression)` in browser context (e.g., Salesforce `aura_token`)
 - `cookie` — named cookie lookup from browser context
 - Both support `extract_on_url` glob filter to only extract on matching pages
+- `extract_urls` — map of glob patterns to URLs. Worker navigates to these URLs before running filtered extractions. Supports `{{variable}}` placeholders from `store_as` values. Example: `{"*/apex/sb*": "https://example.com/apex/sb?id={{quote_id}}"}`
+- `store_as` — on `evaluate` DSL steps, stores the result in a variable for use in `extract_urls` templates
+
+### Profile credential_types.custom
+`credential_types.custom` array in profiles maps custom extraction keys to consumers. The `key` must exactly match a `key` from `custom_extractions`. Volatility levels: `STABLE`, `SEMI_STABLE`, `VOLATILE`.
 
 ### Key API Endpoints
 - `POST /sessions/:id/stream` — VNC stream URL
@@ -141,6 +150,7 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 - `POST /sessions/:id/release` — Release baton
 - `POST /sessions/:id/input` — Submit generic human input (type, value, step_index)
 - `POST /sessions/:id/acknowledge` — Acknowledge failure, retry
+- `POST /credentials/request` — Request credentials. Supports `force_refresh: true` to trigger immediate re-extraction. Add `wait_seconds: 1-30` to block until fresh credentials arrive (BLPOP on Redis). Without `wait_seconds`, force_refresh is fire-and-forget.
 
 ### NATS Events
 - `hitl.started.{tenantId}.{sessionId}` — carries `intervention_type` + `input_request` metadata (multiple events per session for sequential inputs)
@@ -169,6 +179,10 @@ Latest: `1708300000009-GenericHumanInput` — adds `sessions.pending_input_reque
 12. **Salesforce OTP selector** — `input[name='Verification Code']` works for `wait_for` but NOT for `fill`. Correct selector: `input#smc`.
 13. **Salesforce account lockout** — Blocks after ~5 failed OTP attempts. No automated backoff.
 14. **Slack `expired_trigger_id` in Kind** — Socket Mode has >3s latency locally. Slack modals require trigger_id within 3s. Works in staging/prod.
+15. **`screenshot` keepalive does not keep sessions alive** — `screenshot` only captures pixels, does NOT make HTTP requests. Server-side session timers keep ticking. Use `goto` (real navigation) or `evaluate` with `fetch()` for keepalive actions.
+16. **`url_check` preferred over `dom_check` for SPAs** — `dom_check` on `body` returns `isVisible()=false` for SPAs like Salesforce Lightning and Workday even when logged in. Use `url_check` with `expect_status: 200` instead.
+17. **`refresh_interval_seconds` defaults to 3600** — If not set in `export_policy`, credentials are only re-extracted once per hour. For volatile tokens (Salesforce aura, CSRF), set to 60-120.
+18. **`streaming_mode` ignored in `browser_policy`** — Not a valid field. VNC streaming is always enabled for HITL sessions. Remove from app payloads.
 
 ## Git
 

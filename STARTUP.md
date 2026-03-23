@@ -241,35 +241,28 @@ echo $TOKEN
 
 ### Step 2: Create the application
 
-Example for HubSpot:
+Example for HubSpot (manual HITL — human logs in via VNC):
 
 ```bash
 curl -s -X POST http://localhost:${API_PORT:-18080}/apps \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "HubSpot Production",
+    "name": "HubSpot Manual Login",
     "target_urls": ["https://app-na2.hubspot.com"],
     "login_config": {
       "login_url": "https://app-na2.hubspot.com/login",
       "credential_ref": "k8s:secret/hubspot-creds",
       "steps": [
         {"action": "goto", "url": "https://app-na2.hubspot.com/login"},
-        {"action": "wait_for", "selector": "input#username", "timeout_ms": 30000},
-        {"action": "fill", "selector": "input#username", "value": "${USERNAME}"},
-        {"action": "click", "selector": "button[type=submit]"},
-        {"action": "sleep", "ms": 3000},
-        {"action": "wait_for", "selector": "input#password", "timeout_ms": 15000},
-        {"action": "fill", "selector": "input#password", "value": "${PASSWORD}", "sensitive": true},
-        {"action": "click", "selector": "button#loginBtn"},
-        {"action": "sleep", "ms": 5000},
-        {"action": "wait_for", "selector": "input#codeEntry", "sensitive": true, "timeout_ms": 120000},
+        {"action": "wait_for", "selector": "[data-test-id=\"email-input-field\"]", "timeout_ms": 30000},
+        {"action": "request_human_input", "input_type": "confirm", "label": "Log into HubSpot via VNC stream, then click Mark as Resolved", "timeout_ms": 300000},
         {"action": "screenshot"}
       ]
     },
     "keepalive_config": {
-      "interval_seconds": 600,
-      "actions": [{"action": "screenshot"}],
+      "interval_seconds": 60,
+      "actions": [{"action": "goto", "url": "https://app-na2.hubspot.com"}],
       "health_checks": [
         {"type": "dom_check", "selector": "body", "exists": true}
       ]
@@ -278,21 +271,24 @@ curl -s -X POST http://localhost:${API_PORT:-18080}/apps \
       "artifact_types": ["cookies", "headers", "local_storage"],
       "encryption": {"algo": "AES-256-GCM"},
       "ttl_seconds": 3600,
+      "refresh_interval_seconds": 120,
       "header_allowlist": ["authorization", "x-csrf-token"]
     },
     "notification_config": {
-      "channels": ["slack:#tabby-experiments"],
-      "escalation": { "after_minutes": 10, "notify": ["slack:#tabby-experiments"] }
+      "channels": ["slack:#tabby-experiments"]
     },
     "browser_policy": {
       "downloads": false,
       "clipboard": false,
-      "file_chooser": false,
-      "streaming_mode": "vnc"
+      "file_chooser": false
     },
     "desired_session_count": 1
   }' | jq .
 ```
+
+> **Keepalive note:** The keepalive uses `goto` (not `screenshot`) because `screenshot` only captures pixels without making HTTP requests. The server-side session would time out. `goto` triggers a real navigation that resets the session timer.
+
+> **Credential ref:** Use `"credential_ref": "manual:"` instead of `k8s:secret/...` when credentials cannot be stored (SSO, hardware tokens). The human provides everything via VNC.
 
 ### Step 3: Create the credentials secret (K8s only)
 
@@ -325,6 +321,32 @@ curl -s -X POST http://localhost:${API_PORT:-18080}/sessions/$SESSION_ID/stream 
 ```
 
 Open the returned URL in a browser to view the noVNC stream.
+
+### Step 6: Force refresh credentials
+
+Once the session is HEALTHY and you have a profile set up (see `tabby-abcd-integration-guide.md`), you can request credentials with on-demand refresh:
+
+```bash
+# Normal request (returns cached credentials)
+curl -s -X POST http://localhost:${API_PORT:-18080}/credentials/request \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile_id": "hubspot-production"}' | jq .
+
+# Force refresh: fire-and-forget (triggers re-extraction, returns current credentials)
+curl -s -X POST http://localhost:${API_PORT:-18080}/credentials/request \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile_id": "hubspot-production", "force_refresh": true}' | jq .
+
+# Force refresh: blocking (waits up to 15s for fresh credentials)
+curl -s -X POST http://localhost:${API_PORT:-18080}/credentials/request \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile_id": "hubspot-production", "force_refresh": true, "wait_seconds": 15}' | jq .
+```
+
+With `wait_seconds`, the API uses Redis BLPOP to block until the worker publishes fresh credentials or the timeout expires. Range: 1-30 seconds.
 
 ---
 
