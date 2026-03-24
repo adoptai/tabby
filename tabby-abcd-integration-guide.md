@@ -4,6 +4,51 @@ Complete guide to integrating with Tabby's credential management platform. Two a
 
 ---
 
+## Table of Contents
+
+- [Section 1: The Setup (For Platform Engineers)](#section-1-the-setup-for-platform-engineers)
+  - [Step 1: Authenticate](#step-1-authenticate)
+  - [Step 2: Create a Tenant](#step-2-create-a-tenant)
+  - [Step 3: Register an Agent Client](#step-3-register-an-agent-client)
+  - [Step 4: Create the App](#step-4-create-the-app)
+  - [Step 5: Create K8s Secret (if using `k8s:secret/`)](#step-5-create-k8s-secret-if-using-k8ssecret)
+  - [Step 6: Wait for HEALTHY](#step-6-wait-for-healthy)
+  - [Step 7: HITL — Log In via VNC](#step-7-hitl--log-in-via-vnc)
+  - [Step 8: Create Profile](#step-8-create-profile)
+  - [Step 9: Promote Profile](#step-9-promote-profile)
+  - [Step 10: Request Credentials](#step-10-request-credentials)
+  - [Step 11: Force Refresh](#step-11-force-refresh)
+- [Section 2: Quick Start (For Agent Developers)](#section-2-quick-start-for-agent-developers)
+  - [Step 1: Get an Agent JWT](#step-1-get-an-agent-jwt)
+  - [Step 2: Request Credentials](#step-2-request-credentials)
+  - [Step 3: Use Cookies in API Calls](#step-3-use-cookies-in-api-calls)
+  - [Step 4: Refresh Before Expiry](#step-4-refresh-before-expiry)
+- [Section 3: Working Examples](#section-3-working-examples)
+  - [Example 1: HubSpot Manual HITL](#example-1-hubspot-manual-hitl)
+  - [Example 2: Salesforce Human-Assisted (with Multi-Page Extraction)](#example-2-salesforce-human-assisted-with-multi-page-extraction)
+  - [Example 3: Workday Human-Assisted](#example-3-workday-human-assisted)
+- [Section 4: Credential Volatility Guide](#section-4-credential-volatility-guide)
+- [Section 5: Refresh Intervals Explained](#section-5-refresh-intervals-explained)
+- [Section 6: force_refresh Deep Dive](#section-6-force_refresh-deep-dive)
+- [Section 7: Troubleshooting](#section-7-troubleshooting)
+  - [1. Credentials return empty values](#1-credentials-return-empty-values)
+  - [2. custom_extractions return empty strings](#2-custom_extractions-return-empty-strings)
+  - [3. Session goes UNHEALTHY after login succeeds](#3-session-goes-unhealthy-after-login-succeeds)
+  - [4. `screenshot` keepalive does not prevent session timeout](#4-screenshot-keepalive-does-not-prevent-session-timeout)
+  - [5. Salesforce `aura_token` is stale](#5-salesforce-aura_token-is-stale)
+  - [6. VF tokens all empty (Salesforce)](#6-vf-tokens-all-empty-salesforce)
+  - [7. Profile credential_types.custom key mismatch](#7-profile-credential_typescustom-key-mismatch)
+  - [8. force_refresh returns stale credentials despite wait_seconds](#8-force_refresh-returns-stale-credentials-despite-wait_seconds)
+  - [9. Session stuck in LOGIN_IN_PROGRESS](#9-session-stuck-in-login_in_progress)
+  - [10. Workday session times out in < 5 minutes](#10-workday-session-times-out-in--5-minutes)
+  - [11. Multiple domains: cookies missing for some domains](#11-multiple-domains-cookies-missing-for-some-domains)
+  - [12. `streaming_mode` in browser_policy causes validation error](#12-streaming_mode-in-browser_policy-causes-validation-error)
+  - [13. Canary profile not serving credentials](#13-canary-profile-not-serving-credentials)
+  - [14. refresh_interval_seconds defaults to 3600](#14-refresh_interval_seconds-defaults-to-3600)
+- [Section 8: API Quick Reference](#section-8-api-quick-reference)
+
+---
+
 ## Section 1: The Setup (For Platform Engineers)
 
 ### Step 1: Authenticate
