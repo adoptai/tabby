@@ -83,8 +83,9 @@ implementation_tracker/**/sbom/
 # --- Local reference docs (not for git) ---
 abcd-deep-dive.md
 tabby-deep-dive.md
-tabby-abcd-integration-guide.md
+manual-credential-ref.md
 SF_TOKEN_EXTRACTION_GUIDE.md
+browser_agent_guide_token_extraction.md
 
 # --- Claude ---
 .claude

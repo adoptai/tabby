@@ -147,6 +147,7 @@ secrets:
   jwtSigningKey: "localdev-jwt-key-at-least-32-characters-long"
   minioAccessKey: "minioadmin"
   minioSecretKey: "minioadmin"
+  agentSecretHmacKey: "fb81bb3c58e6b9ad111c460e00cd059a8beaa7ee025b3d71bce933221a1df4c0" # just for local development
   adminBootstrapPassword: "LocalDev123!@#"
   egressProxyAdminToken: "localdev-egress-token"
   egressProxySessionKey: "localdev-egress-session-key"

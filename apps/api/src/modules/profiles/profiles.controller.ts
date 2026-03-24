@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Get, Body, Param, Query, Req, UseGuards, HttpCode,
+  Controller, Post, Get, Body, Param, Query, Req, UseGuards, HttpCode, ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiProperty } from '@nestjs/swagger';
 import {
@@ -53,6 +53,11 @@ class CreateProfileDto {
   @IsOptional()
   @IsString()
   parent_version_id?: string;
+
+  @ApiProperty({ description: 'Target tenant UUID. Admin only — defaults to caller tenant if omitted.', required: false })
+  @IsOptional()
+  @IsUUID()
+  tenant_id?: string;
 }
 
 @ApiTags('Profiles')
@@ -62,12 +67,23 @@ class CreateProfileDto {
 export class ProfilesController {
   constructor(private readonly profilesService: ProfilesService) {}
 
+  private resolveTenantId(req: any, overrideTenantId?: string): string {
+    if (overrideTenantId) {
+      if (req.user.role !== 'Admin') {
+        throw new ForbiddenException('Only Admin can specify tenant_id');
+      }
+      return overrideTenantId;
+    }
+    return req.user.tenant_id;
+  }
+
   @Post()
   @Roles('Admin')
   @ApiOperation({ summary: 'Create service profile', description: 'Creates a new profile version in STAGING state. Profiles define what credentials to extract and how to validate them.' })
   @ApiResponse({ status: 201, description: 'Profile created' })
   async create(@Body() dto: CreateProfileDto, @Req() req: any) {
-    return this.profilesService.create(dto, req.user.tenant_id, req.user.user_id);
+    const tenantId = this.resolveTenantId(req, dto.tenant_id);
+    return this.profilesService.create(dto, tenantId, req.user.user_id);
   }
 
   @Get()
@@ -75,7 +91,8 @@ export class ProfilesController {
   @ApiOperation({ summary: 'List profiles' })
   @ApiResponse({ status: 200 })
   async findAll(@Query() query: PaginationQueryDto, @Req() req: any) {
-    return this.profilesService.findAll(req.user.tenant_id, query.limit, query.offset);
+    const tenantId = this.resolveTenantId(req, (query as any).tenant_id);
+    return this.profilesService.findAll(tenantId, query.limit, query.offset);
   }
 
   @Get(':id')
@@ -83,7 +100,8 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Get profile details' })
   @ApiParam({ name: 'id', description: 'Profile UUID' })
   async findOne(@Param('id') id: string, @Req() req: any) {
-    return this.profilesService.findOne(id, req.user.tenant_id);
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    return this.profilesService.findOne(id, tenantId);
   }
 
   @Post(':id/promote')
@@ -94,7 +112,8 @@ export class ProfilesController {
   @ApiResponse({ status: 409, description: 'Canary criteria not met' })
   @HttpCode(200)
   async promote(@Param('id') id: string, @Req() req: any) {
-    return this.profilesService.promote(id, req.user.tenant_id, req.user.user_id);
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    return this.profilesService.promote(id, tenantId, req.user.user_id);
   }
 
   @Post(':id/rollback')
@@ -104,6 +123,7 @@ export class ProfilesController {
   @ApiResponse({ status: 200 })
   @HttpCode(200)
   async rollback(@Param('id') id: string, @Req() req: any) {
-    return this.profilesService.rollback(id, req.user.tenant_id, req.user.user_id);
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    return this.profilesService.rollback(id, tenantId, req.user.user_id);
   }
 }

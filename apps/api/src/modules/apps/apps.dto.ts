@@ -1,5 +1,5 @@
 import {
-  IsString, IsArray, IsObject, IsOptional, IsInt, Min, MinLength, ArrayMinSize,
+  IsString, IsArray, IsObject, IsOptional, IsInt, IsUUID, Min, MinLength, ArrayMinSize,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
@@ -76,6 +76,11 @@ export class CreateAppDto {
   @IsOptional()
   @IsObject()
   browser_policy?: Record<string, unknown>;
+
+  @ApiProperty({ description: 'Target tenant UUID. Admin only — defaults to caller tenant if omitted.', required: false })
+  @IsOptional()
+  @IsUUID()
+  tenant_id?: string;
 }
 
 export class UpdateAppDto {
