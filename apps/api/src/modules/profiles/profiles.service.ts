@@ -102,10 +102,10 @@ export class ProfilesService {
     });
   }
 
-  async findOne(id: string, tenantId: string): Promise<ServiceProfileEntity> {
-    const profile = await this.profileRepo.findOne({
-      where: { id, tenant_id: tenantId },
-    });
+  async findOne(id: string, tenantId?: string): Promise<ServiceProfileEntity> {
+    const where: any = { id };
+    if (tenantId) where.tenant_id = tenantId;
+    const profile = await this.profileRepo.findOne({ where });
     if (!profile) {
       throw new NotFoundException(`Profile ${id} not found`);
     }
@@ -116,7 +116,7 @@ export class ProfilesService {
   // State Machine: Promote
   // ---------------------------------------------------------------
 
-  async promote(id: string, tenantId: string, actorId: string): Promise<ServiceProfileEntity> {
+  async promote(id: string, tenantId: string | undefined, actorId: string): Promise<ServiceProfileEntity> {
     const profile = await this.findOne(id, tenantId);
     const currentState = profile.version_state as ProfileVersionState;
 
@@ -132,7 +132,7 @@ export class ProfilesService {
 
       this.logger.log(`Profile promoted: ${id} STAGING → CANARY`);
       await this.auditService.log({
-        tenant_id: tenantId,
+        tenant_id: profile.tenant_id,
         actor_type: 'human',
         actor_id: actorId,
         event_type: 'profile.promoted',
@@ -164,7 +164,7 @@ export class ProfilesService {
       return this.dataSource.transaction(async (manager) => {
         // Retire current ACTIVE for this profile_id
         await manager.update(ServiceProfileEntity, {
-          tenant_id: tenantId,
+          tenant_id: profile.tenant_id,
           profile_id: profile.profile_id,
           version_state: ProfileVersionState.ACTIVE,
         }, {
@@ -177,7 +177,7 @@ export class ProfilesService {
 
         this.logger.log(`Profile promoted: ${id} CANARY → ACTIVE`);
         await this.auditService.log({
-          tenant_id: tenantId,
+          tenant_id: profile.tenant_id,
           actor_type: 'human',
           actor_id: actorId,
           event_type: 'profile.promoted',
@@ -197,7 +197,7 @@ export class ProfilesService {
   // State Machine: Rollback
   // ---------------------------------------------------------------
 
-  async rollback(id: string, tenantId: string, actorId: string): Promise<ServiceProfileEntity> {
+  async rollback(id: string, tenantId: string | undefined, actorId: string): Promise<ServiceProfileEntity> {
     const profile = await this.findOne(id, tenantId);
     const currentState = profile.version_state as ProfileVersionState;
 
@@ -210,7 +210,7 @@ export class ProfilesService {
 
       this.logger.log(`Profile rolled back: ${id} CANARY → STAGING`);
       await this.auditService.log({
-        tenant_id: tenantId,
+        tenant_id: profile.tenant_id,
         actor_type: 'human',
         actor_id: actorId,
         event_type: 'profile.rolledback',
@@ -233,7 +233,7 @@ export class ProfilesService {
 
         // Reactivate parent
         const parent = await manager.findOne(ServiceProfileEntity, {
-          where: { id: profile.parent_version_id!, tenant_id: tenantId },
+          where: { id: profile.parent_version_id!, tenant_id: profile.tenant_id },
         });
         if (!parent) {
           throw new NotFoundException(`Parent profile ${profile.parent_version_id} not found`);
@@ -246,7 +246,7 @@ export class ProfilesService {
           `Profile rolled back: ${id} ACTIVE → RETIRED, parent ${parent.id} reactivated`,
         );
         await this.auditService.log({
-          tenant_id: tenantId,
+          tenant_id: profile.tenant_id,
           actor_type: 'human',
           actor_id: actorId,
           event_type: 'profile.rolledback',

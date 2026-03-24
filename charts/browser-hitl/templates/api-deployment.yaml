@@ -74,6 +74,12 @@ spec:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: TENANT_ENCRYPTION_KEY
                   optional: true
+            - name: AGENT_SECRET_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: AGENT_SECRET_HMAC_KEY
+                  optional: true
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           livenessProbe:
