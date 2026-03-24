@@ -1,9 +1,10 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { In, MoreThan, Repository } from 'typeorm';
 import {
   DEFAULTS,
   REDIS_KEYS,
+  REDIS_TTL,
   CredentialFreshness,
   CredentialVolatility,
   ProfileVersionState,
@@ -15,6 +16,7 @@ import type {
   CookieCredential,
   HeaderCredential,
   CsrfCredential,
+  CustomCredential,
   CredentialUsage,
   CredentialMetadata,
 } from '@browser-hitl/shared';
@@ -89,44 +91,73 @@ export class CredentialsService {
     credentialSetId?: string;
     forceRefresh?: boolean;
     includeVolatile?: boolean;
+    waitSeconds?: number;
     requestId: string;
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
-      forceRefresh = false, includeVolatile = true, requestId,
+      forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
     } = params;
 
-    // 1. Resolve ACTIVE profile
+    // 1. Resolve ACTIVE (or CANARY fallback) profile
     const profile = await this.resolveActiveProfile(tenantId, profileId);
+    const isCanary = profile.version_state === ProfileVersionState.CANARY;
 
     // 2. Find healthy session via profile's app_id
     const session = await this.findHealthySession(tenantId, profile.app_id);
 
     // 3. Force-refresh coalescing (RT-11)
-    let freshness = CredentialFreshness.CACHED;
+    let freshness: CredentialFreshness = isCanary
+      ? CredentialFreshness.CANARY
+      : CredentialFreshness.CACHED;
     const effectiveCredSetId = credentialSetId || 'default';
 
-    if (forceRefresh) {
+    if (forceRefresh && !isCanary) {
       const coalesceResult = await this.acquireExtractLock(
         tenantId, profileId, effectiveCredSetId,
       );
       freshness = coalesceResult.isLeader
         ? CredentialFreshness.EXTRACTED
         : CredentialFreshness.ON_DEMAND;
+
+      // Signal worker to re-extract artifacts from the live browser
+      if (coalesceResult.isLeader) {
+        await this.signalWorkerExtract(session.id);
+
+        // If caller wants to wait for fresh data, block until the worker signals done
+        if (waitSeconds > 0) {
+          const doneKey = REDIS_KEYS.extractDone(session.id);
+          await this.redis.blpop(doneKey, waitSeconds);
+          // Returns when worker pushes, or null on timeout — proceed either way
+        }
+      }
     }
 
-    // 4. Fetch and decrypt latest artifact bundle from MinIO
-    const bundle = await this.fetchAndDecryptLatestBundle(
-      session, tenantId, requestId, forceRefresh,
-    );
+    // 4. Record canary traffic
+    if (isCanary) {
+      await this.profileRepo.increment({ id: profile.id }, 'canary_request_count', 1);
+    }
 
-    // 5. Build credential set with real values from bundle
+    // 5. Fetch and decrypt latest artifact bundle from MinIO
+    let bundle: { decrypted: Record<string, any>; extractedAt: string } | null = null;
+    try {
+      bundle = await this.fetchAndDecryptLatestBundle(
+        session, tenantId, requestId, forceRefresh,
+      );
+    } catch (err) {
+      if (isCanary) {
+        await this.profileRepo.increment({ id: profile.id }, 'canary_error_count', 1);
+      }
+      throw err;
+    }
+
+    // 6. Build credential set with real values from bundle
     const credentials = this.buildCredentialSet(profile, includeVolatile, bundle?.decrypted);
 
-    // 6. Build usage hints
+    // 7. Build usage hints
     const usage = this.buildUsage(profile);
 
-    // 7. Build metadata
+    // 8. Build metadata
     const metadata: CredentialMetadata = {
       extracted_at: bundle?.extractedAt || new Date().toISOString(),
       extraction_duration_ms: 0,
@@ -149,17 +180,22 @@ export class CredentialsService {
   // ---------------------------------------------------------------
 
   async resolveActiveProfile(tenantId: string, profileId: string): Promise<ServiceProfileEntity> {
-    const profile = await this.profileRepo.findOne({
+    // Query for both ACTIVE and CANARY profiles, preferring ACTIVE
+    const profiles = await this.profileRepo.find({
       where: {
         tenant_id: tenantId,
         profile_id: profileId,
-        version_state: ProfileVersionState.ACTIVE,
+        version_state: In([ProfileVersionState.ACTIVE, ProfileVersionState.CANARY]),
       },
     });
-    if (!profile) {
+
+    if (profiles.length === 0) {
       throw new NotFoundException(`No active profile found for "${profileId}"`);
     }
-    return profile;
+
+    // Prefer ACTIVE over CANARY
+    const active = profiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
+    return active || profiles[0];
   }
 
   // ---------------------------------------------------------------
@@ -357,6 +393,20 @@ export class CredentialsService {
     }
   }
 
+  /**
+   * Signal the worker to perform an immediate artifact extraction.
+   * Sets a Redis key that the keepalive runner polls for on each tick.
+   */
+  private async signalWorkerExtract(sessionId: string): Promise<void> {
+    const key = REDIS_KEYS.extractRequest(sessionId);
+    try {
+      await this.redis.set(key, Date.now().toString(), 'EX', REDIS_TTL.EXTRACT_REQUEST_SECONDS);
+      this.logger.debug(`Extract request signaled for session ${sessionId}`);
+    } catch (err) {
+      this.logger.warn(`Failed to signal extract request for ${sessionId}: ${(err as Error).message}`);
+    }
+  }
+
   async releaseExtractLock(
     tenantId: string,
     profileId: string,
@@ -462,8 +512,25 @@ export class CredentialsService {
       }
     }
 
+    // Build custom credentials from credential_types.custom, merging values from decrypted.custom
+    const custom: CustomCredential[] = [];
+    if (credTypes.custom && Array.isArray(credTypes.custom)) {
+      const customValues = (decrypted?.custom || {}) as Record<string, string>;
+      for (const entry of credTypes.custom) {
+        const volatility = (entry.volatility as CredentialVolatility) || CredentialVolatility.SEMI_STABLE;
+        if (!includeVolatile && volatility === CredentialVolatility.VOLATILE) {
+          continue;
+        }
+        custom.push({
+          key: entry.key,
+          value: customValues[entry.key] ?? '',
+          volatility,
+        });
+      }
+    }
+
     // Merge local_storage and session_storage from decrypted bundle
-    const result: CredentialSet = { cookies, headers, csrf };
+    const result: CredentialSet = { cookies, headers, csrf, ...(custom.length > 0 ? { custom } : {}) };
     if (decrypted?.local_storage) {
       result.local_storage = decrypted.local_storage;
     }
@@ -496,6 +563,13 @@ export class CredentialsService {
     }
     if (credTypes.csrf?.volatility === CredentialVolatility.VOLATILE) {
       volatileFields.push('csrf');
+    }
+    if (credTypes.custom && Array.isArray(credTypes.custom)) {
+      for (const c of credTypes.custom) {
+        if (c.volatility === CredentialVolatility.VOLATILE) {
+          volatileFields.push(`custom:${c.key}`);
+        }
+      }
     }
 
     return {

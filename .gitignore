@@ -80,5 +80,11 @@ implementation_tracker/**/sbom/
 .Spotlight-V100
 .Trashes
 
+# --- Local reference docs (not for git) ---
+abcd-deep-dive.md
+tabby-deep-dive.md
+tabby-abcd-integration-guide.md
+SF_TOKEN_EXTRACTION_GUIDE.md
+
 # --- Claude ---
 .claude

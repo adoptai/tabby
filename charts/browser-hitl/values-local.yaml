@@ -62,10 +62,10 @@ worker:
   resources:
     requests:
       cpu: "500m"
-      memory: "1Gi"
+      memory: "2Gi"
     limits:
       cpu: "4000m"
-      memory: "4Gi"
+      memory: "8Gi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
 teamsBot:
@@ -154,7 +154,7 @@ secrets:
   serviceAuthClientSecret: "phase4-secret"
   metricsAuthToken: ""  # Open access locally
   natsAuthToken: ""
-  tenantEncryptionKey: ""  # Generate with: openssl rand -hex 32
+  tenantEncryptionKey: "4ab15ef3f3c527603482702f1eab5bd8c9ea98b8dfd5076332ea216c26226149"  # Generate with: openssl rand -hex 32
 
 egressProxy:
   defaultAllowlist:
@@ -247,6 +247,8 @@ egressProxy:
     - ".hscollectedforms.net"
     - ".hsadspixel.net"
     - ".hsstatic.net"
+    - ".ably.io"
+    - ".ably-realtime.com"
     # --- Google (shared auth/CDN/analytics) ---
     - ".googleapis.com"
     - ".gstatic.com"
@@ -267,6 +269,23 @@ egressProxy:
     - ".jsdelivr.net"
     - ".unpkg.com"
     - ".amazonaws.com"
+    # --- Salesforce ---
+    - ".salesforce.com"
+    - ".force.com"
+    # --- Automation Anywhere ---
+    - ".automationanywhere.digital"
+    - ".automationanywhere.com"
+    # --- Salesforce analytics (Pendo) ---
+    - ".pendo.io"
+    - ".pendo-static-5673999629942784.storage.googleapis.com"
+    - ".pendo-io-static.storage.googleapis.com"
+    # --- Salesforce docs (ZoomIn) ---
+    - ".zoominsoftware.io"
+    # --- Microsoft (Teams SDK) ---
+    - ".cdn.office.net"
+    # --- Workday ---
+    - ".workday.com"
+    - ".workdaycdn.com"
     # --- Dev/test ---
     - ".dontpad.com"
     - ".api.dontpad.com"

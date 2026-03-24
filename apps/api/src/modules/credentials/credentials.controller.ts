@@ -2,7 +2,7 @@ import {
   Controller, Post, Body, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CredentialsService } from './credentials.service';
@@ -26,6 +26,17 @@ class RequestCredentialsDto {
   @IsOptional()
   @IsBoolean()
   include_volatile?: boolean;
+
+  @ApiProperty({
+    example: 15,
+    required: false,
+    description: 'When set with force_refresh, blocks up to this many seconds waiting for fresh extraction. 0 = fire-and-forget (default). Max 30.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(30)
+  wait_seconds?: number;
 }
 
 @ApiTags('Credentials')
@@ -49,6 +60,7 @@ export class CredentialsController {
       credentialSetId: dto.credential_set_id,
       forceRefresh: dto.force_refresh,
       includeVolatile: dto.include_volatile,
+      waitSeconds: dto.wait_seconds,
       requestId: randomUUID(),
     });
   }

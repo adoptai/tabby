@@ -112,22 +112,14 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
       expect(hitlSrc).toContain('implements OnModuleDestroy');
     });
 
-    it('should use Redis for OTP storage', () => {
-      expect(hitlSrc).toContain('REDIS_KEYS.otp(sessionId)');
+    it('should use Redis for human input storage', () => {
+      expect(hitlSrc).toContain('REDIS_KEYS.humanInput(sessionId');
       expect(hitlSrc).toContain("'EX'");
-      expect(hitlSrc).toContain('REDIS_TTL.OTP_SECONDS');
-    });
-
-    it('should use NX flag for OTP deduplication', () => {
-      expect(hitlSrc).toContain("'NX'");
+      expect(hitlSrc).toContain('REDIS_TTL.HUMAN_INPUT_SECONDS');
     });
 
     it('should enforce session state for takeover', () => {
       expect(hitlSrc).toContain("session.state !== 'LOGIN_IN_PROGRESS'");
-    });
-
-    it('should enforce session state for OTP submission', () => {
-      expect(hitlSrc).toContain('session.state !== SessionState.LOGIN_IN_PROGRESS');
     });
 
     it('should use pessimistic write lock on baton operations', () => {
@@ -168,12 +160,12 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
       expect(hitlSrc).toContain("'hitl.stream_requested'");
       expect(hitlSrc).toContain("'hitl.takeover'");
       expect(hitlSrc).toContain("'hitl.release'");
-      expect(hitlSrc).toContain("'hitl.otp_submitted'");
+      expect(hitlSrc).toContain("'hitl.input_submitted'");
       expect(hitlSrc).toContain("'hitl.acknowledge'");
     });
 
-    it('should track OTP metrics', () => {
-      expect(hitlSrc).toContain("'hitl_otp_submitted_total'");
+    it('should track input metrics', () => {
+      expect(hitlSrc).toContain("'hitl_input_submitted_total'");
     });
 
     it('should handle baton timeout transitions', () => {
@@ -209,19 +201,10 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
       expect(ctrlSrc).toMatch(/@Roles\('Admin', 'Operator'\)[\s\S]*?takeover/);
     });
 
-    it('should use OtpDto with validated otp_value and code fields', () => {
-      expect(ctrlSrc).toContain('class OtpDto');
-      expect(ctrlSrc).toContain('otp_value?: string');
-      expect(ctrlSrc).toContain('code?: string');
-    });
-
-    it('should use alphanumeric OTP regex', () => {
-      expect(ctrlSrc).toContain('^[A-Za-z0-9]{4,10}$');
-    });
-
-    it('should require either otp_value or code', () => {
-      expect(ctrlSrc).toContain('dto.otp_value ?? dto.code');
-      expect(ctrlSrc).toContain('Either otp_value or code is required');
+    it('should use InputDto with input_type, value, step_index', () => {
+      expect(ctrlSrc).toContain('class InputDto');
+      expect(ctrlSrc).toContain('input_type: string');
+      expect(ctrlSrc).toContain('step_index: number');
     });
 
     it('should use AcknowledgeDto with validated note', () => {
@@ -231,7 +214,7 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
 
     it('should accept idempotency-key header on all mutation endpoints', () => {
       const idempotencyCount = (ctrlSrc.match(/idempotency-key/g) || []).length;
-      expect(idempotencyCount).toBeGreaterThanOrEqual(4); // takeover, release, otp, acknowledge
+      expect(idempotencyCount).toBeGreaterThanOrEqual(3); // takeover, release, input, acknowledge
     });
 
     it('should throttle stream endpoint', () => {

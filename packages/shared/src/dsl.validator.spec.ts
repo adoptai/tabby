@@ -45,6 +45,18 @@ describe('validateLoginConfig', () => {
     expect(result.errors.some(e => e.path === 'credential_ref')).toBe(true);
   });
 
+  it('accepts manual: credential_ref', () => {
+    const result = validateLoginConfig({ ...validConfig, credential_ref: 'manual:' });
+    expect(result.valid).toBe(true);
+    expect(result.errors.filter(e => e.path === 'credential_ref')).toHaveLength(0);
+  });
+
+  it('accepts manual: credential_ref with suffix', () => {
+    const result = validateLoginConfig({ ...validConfig, credential_ref: 'manual:workday' });
+    expect(result.valid).toBe(true);
+    expect(result.errors.filter(e => e.path === 'credential_ref')).toHaveLength(0);
+  });
+
   it('rejects invalid action type', () => {
     const result = validateLoginConfig({
       ...validConfig,
