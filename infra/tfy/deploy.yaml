@@ -169,6 +169,8 @@ values:
       - ".hscollectedforms.net"
       - ".hsadspixel.net"
       - ".hsstatic.net"
+      - ".ably.io"
+      - ".ably-realtime.com"
       - ".googleapis.com"
       - ".gstatic.com"
       - ".google.com"
@@ -201,6 +203,9 @@ values:
       - ".zoominsoftware.io"
       # --- Microsoft (Teams SDK) ---
       - ".cdn.office.net"
+      # --- Workday ---
+      - ".workday.com"
+      - ".workdaycdn.com"
 
   ingress:
     enabled: false
