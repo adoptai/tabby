@@ -81,40 +81,56 @@ export class HealthPredicateRunner {
    * Uses direct fetch, NOT browser navigation.
    */
   private async runUrlCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
-    const cookies = await this.context.cookies();
-    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    const timeoutMs = check.timeout_ms ?? 15000;
 
     try {
-      const response = await fetch(check.url, {
-        headers: { 'Cookie': cookieHeader },
-        redirect: 'manual',
-        signal: AbortSignal.timeout(5000),
+      // Use Playwright's APIRequestContext — it inherits the browser's proxy
+      // and cookies, so it can reach external URLs through the egress proxy.
+      const response = await this.context.request.get(check.url, {
+        timeout: timeoutMs,
+        maxRedirects: 5,
       });
 
-      if (response.status === check.expect_status) {
+      const finalUrl = response.url();
+      const isAuthRedirect = check.auth_redirect_pattern
+        ? new RegExp(check.auth_redirect_pattern, 'i').test(finalUrl)
+        : finalUrl !== check.url && this.looksLikeAuthUrl(finalUrl);
+
+      if (isAuthRedirect) {
+        return { result: HealthResultType.AUTH_FAIL, detail: `Redirected to auth: ${finalUrl}` };
+      }
+
+      if (response.status() === check.expect_status) {
         return { result: HealthResultType.PASS };
       }
 
-      if (response.status === 401 || response.status === 403) {
-        return { result: HealthResultType.AUTH_FAIL, detail: `HTTP ${response.status}` };
+      if (response.status() === 401 || response.status() === 403) {
+        return { result: HealthResultType.AUTH_FAIL, detail: `HTTP ${response.status()}` };
       }
 
-      if (response.status >= 300 && response.status < 400) {
-        // Redirect - could be auth redirect
-        const location = response.headers.get('location') || '';
-        if (location.includes('login') || location.includes('auth')) {
-          return { result: HealthResultType.AUTH_FAIL, detail: `Redirect to ${location}` };
-        }
-        return { result: HealthResultType.TRANSIENT_FAIL, detail: `Redirect to ${location}` };
+      if (response.status() >= 500) {
+        return { result: HealthResultType.TRANSIENT_FAIL, detail: `HTTP ${response.status()}` };
       }
 
-      if (response.status >= 500) {
-        return { result: HealthResultType.TRANSIENT_FAIL, detail: `HTTP ${response.status}` };
-      }
-
-      return { result: HealthResultType.TRANSIENT_FAIL, detail: `Unexpected status ${response.status}` };
+      return { result: HealthResultType.TRANSIENT_FAIL, detail: `Unexpected status ${response.status()} (url: ${finalUrl})` };
     } catch (error) {
-      return { result: HealthResultType.TRANSIENT_FAIL, detail: `Fetch error: ${error}` };
+      return { result: HealthResultType.TRANSIENT_FAIL, detail: `Request error: ${error}` };
+    }
+  }
+
+  /**
+   * Heuristic: does the URL look like an auth/login page?
+   * Checks both path segments and hostname parts (e.g. "identity.workday.com",
+   * "authgwy-impl.workday.com"). Only triggers on word-boundary matches to avoid
+   * false positives like "/authorization-settings" or "/login-history".
+   */
+  private looksLikeAuthUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const hostAndPath = parsed.hostname + parsed.pathname;
+      return /\b(login|signin|sign-in|sso|oauth|saml|authgw[y]?|identity)\b/i.test(hostAndPath);
+    } catch {
+      return false;
     }
   }
 
@@ -145,22 +161,20 @@ export class HealthPredicateRunner {
    * Network check: HTTP client with cookie injection and body matching.
    */
   private async runNetworkCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
-    const cookies = await this.context.cookies();
-    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    const timeoutMs = check.timeout_ms ?? 15000;
 
     try {
-      const response = await fetch(check.url, {
-        headers: { 'Cookie': cookieHeader },
-        redirect: 'manual',
-        signal: AbortSignal.timeout(5000),
+      const response = await this.context.request.get(check.url, {
+        timeout: timeoutMs,
+        maxRedirects: 0,
       });
 
-      if (response.status === 401 || response.status === 403) {
-        return { result: HealthResultType.AUTH_FAIL, detail: `HTTP ${response.status}` };
+      if (response.status() === 401 || response.status() === 403) {
+        return { result: HealthResultType.AUTH_FAIL, detail: `HTTP ${response.status()}` };
       }
 
-      if (response.status !== check.expect_status) {
-        return { result: HealthResultType.TRANSIENT_FAIL, detail: `HTTP ${response.status}` };
+      if (response.status() !== check.expect_status) {
+        return { result: HealthResultType.TRANSIENT_FAIL, detail: `HTTP ${response.status()}` };
       }
 
       if (check.body_contains) {
@@ -172,7 +186,7 @@ export class HealthPredicateRunner {
 
       return { result: HealthResultType.PASS };
     } catch (error) {
-      return { result: HealthResultType.TRANSIENT_FAIL, detail: `Fetch error: ${error}` };
+      return { result: HealthResultType.TRANSIENT_FAIL, detail: `Request error: ${error}` };
     }
   }
 }

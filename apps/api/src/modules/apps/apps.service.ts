@@ -16,6 +16,7 @@ import {
   ExportPolicy,
   NotificationConfig,
 } from '@browser-hitl/shared';
+import { APP_SELECTABLE_FIELDS, AppSelectableField } from './apps.dto';
 
 interface CreateAppInput {
   name: string;
@@ -111,9 +112,24 @@ export class AppsService {
     tenantId: string,
     limit: number,
     offset: number,
-  ): Promise<{ data: ApplicationEntity[]; total: number; limit: number; offset: number }> {
+    fields?: string,
+  ): Promise<{ data: Partial<ApplicationEntity>[]; total: number; limit: number; offset: number }> {
+    let select: AppSelectableField[] | undefined;
+
+    if (fields) {
+      const requested = fields.split(',').map(f => f.trim()).filter(Boolean) as AppSelectableField[];
+      const invalid = requested.filter(f => !(APP_SELECTABLE_FIELDS as readonly string[]).includes(f));
+      if (invalid.length > 0) {
+        throw new BadRequestException(
+          `Unknown field(s): ${invalid.join(', ')}. Allowed: ${APP_SELECTABLE_FIELDS.join(', ')}`,
+        );
+      }
+      select = requested;
+    }
+
     const [data, total] = await this.appRepo.findAndCount({
       where: { tenant_id: tenantId },
+      select: select as any,
       take: limit,
       skip: offset,
       order: { created_at: 'DESC' },

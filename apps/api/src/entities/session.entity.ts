@@ -70,4 +70,7 @@ export class SessionEntity {
   /** Barrier 3 (ADR-012): persisted timestamp for worker-side rate guard */
   @Column({ type: 'timestamptz', nullable: true })
   last_login_attempt_at: Date | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  pending_input_request: Record<string, unknown> | null;
 }

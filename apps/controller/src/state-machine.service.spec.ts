@@ -59,7 +59,6 @@ function createMockNatsPublisher() {
   return {
     publishStateChange: jest.fn().mockResolvedValue(undefined),
     publishHitlStarted: jest.fn().mockResolvedValue(undefined),
-    publishHitlOtpRequested: jest.fn().mockResolvedValue(undefined),
     publishHitlCompleted: jest.fn().mockResolvedValue(undefined),
   };
 }
@@ -325,12 +324,6 @@ describe('StateMachineService', () => {
         expect.arrayContaining([SessionState.LOGIN_IN_PROGRESS]),
       );
       expect(natsPublisher.publishHitlStarted).toHaveBeenCalled();
-      expect(natsPublisher.publishHitlOtpRequested).toHaveBeenCalledWith(
-        'tenant-1',
-        'session-1',
-        'app-1',
-        'Demo App',
-      );
     });
 
     it('attempts FAILED transition when hitl_pause_until is still active', async () => {

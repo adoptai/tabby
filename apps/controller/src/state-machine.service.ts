@@ -2,9 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, IsNull } from 'typeorm';
 import {
-  SessionState, HealthResultType,
+  SessionState, HealthResultType, InterventionType,
   isValidSessionTransition, SESSION_TIMEOUTS, RETRY_MATRIX, BACKOFF_DEFAULTS,
 } from '@browser-hitl/shared';
+import type { InputRequest } from '@browser-hitl/shared';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
 import { InterventionEntity } from './entities/intervention.entity';
@@ -210,12 +211,17 @@ export class StateMachineService {
       return;
     }
 
+    // Read pending input request from session (written by worker)
+    const inputRequest = session.pending_input_request as InputRequest | null;
+    const interventionType = this.mapInterventionType(inputRequest);
+
     // Create intervention record
     const intervention = this.interventionRepo.create({
       session_id: session.id,
       tenant_id: session.tenant_id,
       app_id: session.app_id,
-      type: 'MANUAL',
+      type: interventionType,
+      input_request_metadata: inputRequest as unknown as Record<string, unknown> ?? null,
     });
     const savedIntervention = await this.interventionRepo.save(intervention);
 
@@ -247,22 +253,19 @@ export class StateMachineService {
 
     const appName = await this.resolveAppName(session.app_id, session.tenant_id);
 
-    // Publish HITL started event
+    // Publish HITL started event (includes intervention metadata)
     await this.natsPublisher.publishHitlStarted(
       session.tenant_id,
       session.id,
       session.app_id,
       savedIntervention.id,
       appName,
+      interventionType,
+      inputRequest ?? undefined,
     );
 
-    // Publish deterministic OTP-requested event for operator channels/bots.
-    await this.natsPublisher.publishHitlOtpRequested(
-      session.tenant_id,
-      session.id,
-      session.app_id,
-      appName,
-    );
+    // Clear pending_input_request after publishing
+    await this.sessionRepo.update(session.id, { pending_input_request: null });
   }
 
   private async handleLoginInProgress(
@@ -285,6 +288,34 @@ export class StateMachineService {
         }
       }
 
+      return;
+    }
+
+    // Check if worker is requesting new human input (sequential input requests)
+    if (session.pending_input_request && healthResult === HealthResultType.AUTH_FAIL) {
+      const inputRequest = session.pending_input_request as any;
+      const appName = await this.resolveAppName(session.app_id, session.tenant_id);
+      const interventionType = this.mapInterventionType(inputRequest);
+
+      this.logger.log(
+        `Session ${session.id}: new input requested (type=${inputRequest?.input_type}, step=${inputRequest?.step_index})`,
+      );
+
+      await this.natsPublisher.publishHitlStarted(
+        session.tenant_id,
+        session.id,
+        session.app_id,
+        '', // no new intervention ID — reuses existing
+        appName,
+        interventionType,
+        inputRequest,
+      );
+
+      // Clear so we don't re-publish on next reconcile
+      await this.sessionRepo.update(session.id, { pending_input_request: null });
+
+      // Reset the login timeout since we're actively in a new input step
+      await this.sessionRepo.update(session.id, { last_login_at: new Date() });
       return;
     }
 
@@ -360,6 +391,19 @@ export class StateMachineService {
       outcome,
     });
     return { id: intervention.id };
+  }
+
+  private mapInterventionType(inputRequest: InputRequest | null): string {
+    if (!inputRequest) return InterventionType.MANUAL;
+    switch (inputRequest.input_type) {
+      case 'otp':
+      case 'verification_code':
+        return InterventionType.OTP;
+      case 'captcha':
+        return InterventionType.CAPTCHA;
+      default:
+        return InterventionType.INPUT_NEEDED;
+    }
   }
 
   /**

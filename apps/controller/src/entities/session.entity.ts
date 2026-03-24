@@ -66,4 +66,7 @@ export class SessionEntity {
 
   @Column({ type: 'integer', default: 0 })
   retry_count: number;
+
+  @Column({ type: 'jsonb', nullable: true })
+  pending_input_request: Record<string, unknown> | null;
 }

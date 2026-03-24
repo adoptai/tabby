@@ -1,32 +1,17 @@
 import {
   Controller, Post, Body, Param, Req, UseGuards, HttpCode, Headers,
-  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiHeader, ApiProperty } from '@nestjs/swagger';
 import {
+  IsInt,
   IsOptional,
   IsString,
-  Matches,
   MaxLength,
+  Min,
 } from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { HitlService } from './hitl.service';
 import { Throttle } from '@nestjs/throttler';
-
-class OtpDto {
-  @ApiProperty({ description: 'One-time password code (4-10 alphanumeric)', example: '123456', required: false })
-  @IsOptional()
-  @IsString()
-  @Matches(/^[A-Za-z0-9]{4,10}$/, { message: 'otp_value must be alphanumeric (4-10 chars)' })
-  otp_value?: string;
-
-  /** Alias for otp_value - accepts either field name. */
-  @ApiProperty({ description: 'Alias for otp_value', example: '123456', required: false })
-  @IsOptional()
-  @IsString()
-  @Matches(/^[A-Za-z0-9]{4,10}$/, { message: 'code must be alphanumeric (4-10 chars)' })
-  code?: string;
-}
 
 class AcknowledgeDto {
   @ApiProperty({ description: 'Operator note explaining the failure or retry reason', example: 'Retrying with updated credentials', required: false })
@@ -34,6 +19,21 @@ class AcknowledgeDto {
   @IsString()
   @MaxLength(2000)
   note?: string;
+}
+
+class InputDto {
+  @ApiProperty({ description: 'Type of input being submitted', example: 'otp' })
+  @IsString()
+  input_type: string;
+
+  @ApiProperty({ description: 'The input value', example: '123456' })
+  @IsString()
+  value: string;
+
+  @ApiProperty({ description: 'Step index that requested this input', example: 5 })
+  @IsInt()
+  @Min(0)
+  step_index: number;
 }
 
 @ApiTags('HITL')
@@ -101,28 +101,24 @@ export class HitlController {
     );
   }
 
-  @Post(':id/otp')
+  @Post(':id/input')
   @Roles('Admin', 'Operator')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Submit OTP code', description: 'Stores the OTP value in Redis (key: otp:{sessionId}, TTL: 60s). The worker polls this key every second and fills the OTP field when found. Accepts either otp_value or code field.' })
+  @ApiOperation({ summary: 'Submit human input', description: 'Stores a generic human input value in Redis (key: human_input:{sessionId}:{stepIndex}, TTL: 300s). Supports OTP, passwords, URLs, confirmations, etc.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
   @ApiHeader({ name: 'idempotency-key', required: false })
-  @ApiResponse({ status: 200, description: 'OTP delivered to Redis', schema: { example: { status: 'delivered' } } })
-  @ApiResponse({ status: 400, description: 'Either otp_value or code is required, must be 4-10 alphanumeric' })
-  @ApiResponse({ status: 409, description: 'Another OTP is already pending (NX flag)' })
-  async otp(
+  @ApiResponse({ status: 200, description: 'Input delivered to Redis', schema: { example: { status: 'delivered' } } })
+  async input(
     @Param('id') sessionId: string,
-    @Body() dto: OtpDto,
+    @Body() dto: InputDto,
     @Req() req: any,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const otpValue = dto.otp_value ?? dto.code;
-    if (!otpValue) {
-      throw new BadRequestException('Either otp_value or code is required');
-    }
-    return this.hitlService.submitOtp(
+    return this.hitlService.submitInput(
       sessionId,
-      otpValue,
+      dto.input_type,
+      dto.value,
+      dto.step_index,
       req.user.tenant_id,
       req.user.user_id,
       idempotencyKey,

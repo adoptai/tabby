@@ -2,6 +2,9 @@
 // NATS Subject Definitions (per spec section 11.4)
 // ============================================================
 
+import type { InputRequest } from './dsl.types';
+import type { InterventionType } from './enums';
+
 /**
  * NATS subject naming: action tokens are single tokens (no dots).
  * Hyphens for compound actions (e.g., otp-requested not otp.requested).
@@ -23,10 +26,6 @@ export const NATS_SUBJECTS = {
   /** HITL completed */
   hitlCompleted: (tenantId: string, sessionId: string) =>
     `hitl.completed.${tenantId}.${sessionId}`,
-
-  /** OTP needed from human */
-  hitlOtpRequested: (tenantId: string, sessionId: string) =>
-    `hitl.otp-requested.${tenantId}.${sessionId}`,
 } as const;
 
 // ============================================================
@@ -55,6 +54,8 @@ export interface HitlStartedEvent {
     app_name: string;
     reason: string;
     intervention_id: string;
+    intervention_type: InterventionType;
+    input_request?: InputRequest;
   };
 }
 
@@ -67,17 +68,6 @@ export interface HitlCompletedEvent {
     app_id: string;
     intervention_id: string;
     outcome: string;
-  };
-}
-
-export interface HitlOtpRequestedEvent {
-  type: 'hitl.otp-requested';
-  timestamp: string;
-  payload: {
-    session_id: string;
-    tenant_id: string;
-    app_id: string;
-    app_name: string;
   };
 }
 
@@ -99,5 +89,4 @@ export type NatsEvent =
   | SessionStateChangedEvent
   | HitlStartedEvent
   | HitlCompletedEvent
-  | HitlOtpRequestedEvent
   | AuthBundleExportedEvent;
