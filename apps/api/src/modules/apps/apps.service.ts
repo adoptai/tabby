@@ -138,8 +138,10 @@ export class AppsService {
     return { data, total, limit, offset };
   }
 
-  async findOne(id: string, tenantId: string): Promise<ApplicationEntity> {
-    const app = await this.appRepo.findOne({ where: { id, tenant_id: tenantId } });
+  async findOne(id: string, tenantId?: string): Promise<ApplicationEntity> {
+    const where: any = { id };
+    if (tenantId) where.tenant_id = tenantId;
+    const app = await this.appRepo.findOne({ where });
     if (!app) {
       throw new NotFoundException('Application not found');
     }
@@ -149,7 +151,7 @@ export class AppsService {
   async update(
     id: string,
     input: Partial<CreateAppInput>,
-    tenantId: string,
+    tenantId: string | undefined,
     actorId: string,
   ): Promise<ApplicationEntity> {
     const app = await this.findOne(id, tenantId);
@@ -179,7 +181,7 @@ export class AppsService {
     const saved = await this.appRepo.save(app);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: saved.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app.updated',
@@ -191,7 +193,7 @@ export class AppsService {
 
   async deactivate(
     id: string,
-    tenantId: string,
+    tenantId: string | undefined,
     actorId: string,
   ): Promise<{ app_id: string; desired_session_count: number }> {
     const app = await this.findOne(id, tenantId);
@@ -200,7 +202,7 @@ export class AppsService {
     await this.appRepo.save(app);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: app.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app.deactivated',

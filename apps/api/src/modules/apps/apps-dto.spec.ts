@@ -190,3 +190,59 @@ describe('C3 source verification', () => {
     expect(source).toContain('@IsOptional()');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tenant isolation (FDE integration)
+// ---------------------------------------------------------------------------
+
+describe('CreateAppDto tenant_id field', () => {
+  const validPayload = {
+    name: 'My App',
+    target_urls: ['https://example.com'],
+    login_config: { steps: [] },
+    keepalive_config: { action: 'reload' },
+    export_policy: { format: 'har' },
+    notification_config: { channel: 'slack' },
+  };
+
+  it('accepts payload without tenant_id (backwards compatible)', async () => {
+    const dto = toDto(CreateAppDto, validPayload);
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+    expect(dto.tenant_id).toBeUndefined();
+  });
+
+  it('accepts payload with valid UUID tenant_id', async () => {
+    const uuid = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+    const dto = toDto(CreateAppDto, { ...validPayload, tenant_id: uuid });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+    expect(dto.tenant_id).toBe(uuid);
+  });
+
+  it('rejects non-UUID tenant_id', async () => {
+    const dto = toDto(CreateAppDto, { ...validPayload, tenant_id: 'not-a-uuid' });
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors[0].property).toBe('tenant_id');
+  });
+});
+
+describe('apps.controller.ts resolveTenantId', () => {
+  it('controller uses resolveTenantId for create', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'apps.controller.ts'),
+      'utf-8',
+    );
+    expect(source).toContain('resolveTenantId');
+    expect(source).toContain('dto.tenant_id');
+  });
+
+  it('controller bypasses tenant filter for Admin on UUID ops', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'apps.controller.ts'),
+      'utf-8',
+    );
+    expect(source).toContain("req.user.role === 'Admin' ? undefined");
+  });
+});
