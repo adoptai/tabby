@@ -685,6 +685,7 @@ Complex setup with automated credential fill, human confirmation, multi-domain e
     "extract_urls": {"*/apex/sb*": "https://aainc--qas--sbqq.sandbox.vf.force.com/apex/sb?id={{quote_id}}"},
     "custom_extractions": [
       {"key": "access_token", "type": "cookie", "cookie_name": "sid"},
+      {"key": "lightning_cookie", "type": "js_eval", "expression": "document.cookie"},
       {"key": "aura_token", "type": "js_eval", "expression": "localStorage.getItem('$AuraClientService.token$one:one') || ''"},
       {"key": "aura_context", "type": "js_eval", "expression": "(function(){ var html = document.documentElement.outerHTML; var fwuid = (html.match(/[\"']fwuid[\"']\\s*:\\s*[\"']([A-Za-z0-9_\\-+=/]+)[\"']/) || [])[1] || ''; var appM = (html.match(/[\"']app[\"']\\s*:\\s*[\"']([^\"']+)[\"']/) || [])[1] || 'one:one'; try { return JSON.stringify({mode:'PROD',fwuid:fwuid,app:appM}); } catch(e) { return ''; } })()"},
       {"key": "vf_vid", "type": "js_eval", "expression": "(function(){ var m = document.documentElement.innerHTML.match(/RemotingProviderImpl\\(({.*?})\\s*\\)/s); if (!m) return ''; try { return JSON.parse(m[1]).vf.vid; } catch(e) { return ''; } })()", "extract_on_url": "*/apex/sb*"},
@@ -695,7 +696,8 @@ Complex setup with automated credential fill, human confirmation, multi-domain e
       {"key": "vf_csrf_read", "type": "js_eval", "expression": "(function(){ var m = document.documentElement.innerHTML.match(/RemotingProviderImpl\\(({.*?})\\s*\\)/s); if (!m) return ''; try { var ms = JSON.parse(m[1]).actions['SBQQ.ServiceRouter'].ms; return ms.find(function(x){return x.name==='read'}).csrf; } catch(e) { return ''; } })()", "extract_on_url": "*/apex/sb*"},
       {"key": "vf_auth_read", "type": "js_eval", "expression": "(function(){ var m = document.documentElement.innerHTML.match(/RemotingProviderImpl\\(({.*?})\\s*\\)/s); if (!m) return ''; try { var ms = JSON.parse(m[1]).actions['SBQQ.ServiceRouter'].ms; return ms.find(function(x){return x.name==='read'}).authorization; } catch(e) { return ''; } })()", "extract_on_url": "*/apex/sb*"},
       {"key": "vf_csrf_search", "type": "js_eval", "expression": "(function(){ var m = document.documentElement.innerHTML.match(/RemotingProviderImpl\\(({.*?})\\s*\\)/s); if (!m) return ''; try { var ms = JSON.parse(m[1]).actions['SBQQ.ServiceRouter'].ms; var s = ms.find(function(x){return x.name==='search'}); return s ? s.csrf : ''; } catch(e) { return ''; } })()", "extract_on_url": "*/apex/sb*"},
-      {"key": "vf_auth_search", "type": "js_eval", "expression": "(function(){ var m = document.documentElement.innerHTML.match(/RemotingProviderImpl\\(({.*?})\\s*\\)/s); if (!m) return ''; try { var ms = JSON.parse(m[1]).actions['SBQQ.ServiceRouter'].ms; var s = ms.find(function(x){return x.name==='search'}); return s ? s.authorization : ''; } catch(e) { return ''; } })()", "extract_on_url": "*/apex/sb*"}
+      {"key": "vf_auth_search", "type": "js_eval", "expression": "(function(){ var m = document.documentElement.innerHTML.match(/RemotingProviderImpl\\(({.*?})\\s*\\)/s); if (!m) return ''; try { var ms = JSON.parse(m[1]).actions['SBQQ.ServiceRouter'].ms; var s = ms.find(function(x){return x.name==='search'}); return s ? s.authorization : ''; } catch(e) { return ''; } })()", "extract_on_url": "*/apex/sb*"},
+      {"key": "vf_cookie", "type": "js_eval", "expression": "document.cookie", "extract_on_url": "*/apex/sb*"}
     ]
   },
   "notification_config": {"channels": ["slack:#tabby-experiments"]},
@@ -734,6 +736,7 @@ kubectl create secret generic salesforce-qas-creds \
     "csrf": null,
     "custom": [
       {"key": "access_token", "volatility": "SEMI_STABLE"},
+      {"key": "lightning_cookie", "volatility": "VOLATILE"},
       {"key": "aura_token", "volatility": "VOLATILE"},
       {"key": "aura_context", "volatility": "SEMI_STABLE"},
       {"key": "vf_vid", "volatility": "SEMI_STABLE"},
@@ -744,7 +747,8 @@ kubectl create secret generic salesforce-qas-creds \
       {"key": "vf_csrf_read", "volatility": "VOLATILE"},
       {"key": "vf_auth_read", "volatility": "VOLATILE"},
       {"key": "vf_csrf_search", "volatility": "VOLATILE"},
-      {"key": "vf_auth_search", "volatility": "VOLATILE"}
+      {"key": "vf_auth_search", "volatility": "VOLATILE"},
+      {"key": "vf_cookie", "volatility": "VOLATILE"}
     ]
   },
   "login_config": {},
