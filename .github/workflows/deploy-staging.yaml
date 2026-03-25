@@ -255,6 +255,7 @@ jobs:
       SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
       METRICS_AUTH_TOKEN: ${{ secrets.METRICS_AUTH_TOKEN }}
       NATS_AUTH_TOKEN: ${{ secrets.NATS_AUTH_TOKEN }}
+      AGENT_SECRET_HMAC_KEY: ${{ secrets.AGENT_SECRET_HMAC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:

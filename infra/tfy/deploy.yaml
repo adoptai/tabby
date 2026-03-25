@@ -226,6 +226,7 @@ values:
     slackAppToken: "${SLACK_APP_TOKEN}"
     metricsAuthToken: "${METRICS_AUTH_TOKEN}"
     natsAuthToken: "${NATS_AUTH_TOKEN}"
+    agentSecretHmacKey: "${AGENT_SECRET_HMAC_KEY}"
 
   virtualServices:
     api:
