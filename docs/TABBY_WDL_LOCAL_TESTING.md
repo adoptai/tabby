@@ -53,7 +53,25 @@ adoptai-workflows expects SingleStore (and related config) to be available for p
 temporal server start-dev --db-filename ~/temporal.db
 ```
 
-### Tabby infra (Postgres, NATS, MinIO, Redis)
+### Tabby — full Kind cluster (recommended)
+
+For end-to-end testing (real sessions, VNC, credential extraction), use the full Kind stack:
+
+```bash
+cd ~/work/tabby
+pnpm install --frozen-lockfile
+make kind-create        # one-time: creates "tabby-dev" Kind cluster
+make kind-reload-all    # clean + build + docker-build + load + helm upgrade (~3-5 min first time)
+make k8s-port-forward   # API:18080, Admin UI:13000, Postgres:25432, Redis:16379, MinIO:19000, NATS:4222
+```
+
+Verify: `curl -s http://localhost:18080/health/live`
+
+All Tabby config (secrets, DB, Redis, NATS, MinIO) is baked into `charts/browser-hitl/values-local.yaml` — no manual env vars needed for Kind.
+
+### Tabby — API-only (docker compose, no workers)
+
+If you only need the API (no browser sessions / VNC / credential extraction):
 
 ```bash
 cd ~/work/tabby && docker compose up -d
@@ -100,15 +118,24 @@ pnpm --filter @browser-hitl/api start:dev
 
 ## Start services (order)
 
-### 1. Tabby API — port 8000
+### 1. Tabby — port 18080 (Kind) or 8000 (API-only)
+
+**Kind (recommended):** Already running from infra setup above. Verify:
+
+```bash
+curl -s http://localhost:18080/health/live
+make k8s-status   # all pods should be Running
+```
+
+Swagger: [http://localhost:18080/api/docs](http://localhost:18080/api/docs)
+
+**API-only (docker compose):** If not using Kind:
 
 ```bash
 cd ~/work/tabby && pnpm run build && pnpm --filter @browser-hitl/api start:dev
 ```
 
 Swagger: [http://localhost:8000/api/docs](http://localhost:8000/api/docs)
-
-Health: `curl -s http://localhost:8000/health/live`
 
 ### 2. adoptai-workflows API — port 8001 + Temporal worker
 
@@ -145,7 +172,7 @@ cd ~/work/adoptwebui/frontend && yarn start
 
 ## Test flow
 
-1. **Tabby admin login** — `POST /login` with bootstrap admin (see `STARTUP.md`), then use Swagger or curl with `Authorization: Bearer <token>`.
+1. **Tabby admin login** — `POST /login` with bootstrap admin (see `STARTUP.md`), then use Swagger or curl with `Authorization: Bearer <token>`. Use `http://localhost:18080` for Kind or `http://localhost:8000` for API-only.
 
 2. **Tenant** — `POST /admin/tenants` if you need a dedicated tenant; note `tenant_id`.
 
@@ -193,7 +220,7 @@ Optional: `force_refresh`, `force_refresh_wait_seconds` (capped at 30 server-sid
   {
     "operation": "TABBY",
     "id": "tabby_creds",
-    "tabby_url": "http://localhost:8000",
+    "tabby_url": "http://localhost:18080",
     "client_id": "{{TABBY_CLIENT_ID}}",
     "client_secret": "{{TABBY_CLIENT_SECRET}}",
     "profile_id": "my-profile-id",
@@ -228,7 +255,7 @@ Other `action` values supported by the same operation: `authenticate` (returns t
 | Credentials empty or decryption wrong | Missing / mismatched `TENANT_ENCRYPTION_KEY` on API | Set 64 hex chars; same key as worker if using K8s workers |
 | Cannot log into Postgres after changing password in compose | Postgres data volume keeps old password | `docker compose down -v` (wipes DB) or align password with volume |
 | `POST /apps` rejects `notification_config` | Invalid channel string | Use `slack:…`, `teams:…`, or `agent:<ref>` (e.g. `agent:poll`) |
-| Session never leaves `STARTING`, no VNC | No worker/controller | Start full Tabby stack (e.g. Kind) per `STARTUP.md` |
+| Session never leaves `STARTING`, no VNC | No worker/controller | Use full Kind setup: `make kind-reload-all && make k8s-port-forward` |
 | Agent token fails | `AGENT_SECRET_HMAC_KEY` unset or client mis-scoped | Set HMAC key; `allowed_profiles` must include profile id |
 
 ### Ports and Redis
@@ -251,11 +278,16 @@ Other `action` values supported by the same operation: `authenticate` (returns t
 
 | Component | Check |
 |-----------|--------|
-| Tabby API | `curl -s http://localhost:8000/health/live` |
-| Postgres | `docker compose exec postgres pg_isready -U browser_hitl` (from `~/work/tabby`) |
-| Redis | `docker compose exec redis redis-cli ping` |
+| Tabby API (Kind) | `curl -s http://localhost:18080/health/live` |
+| Tabby API (compose) | `curl -s http://localhost:8000/health/live` |
+| Tabby pods (Kind) | `make k8s-status` or `kubectl get pods -n browser-hitl` |
+| Postgres (Kind) | `kubectl exec -n browser-hitl svc/browser-hitl-postgres -- pg_isready -U browser_hitl` |
+| Postgres (compose) | `docker compose exec postgres pg_isready -U browser_hitl` (from `~/work/tabby`) |
+| Redis (Kind) | `kubectl exec -n browser-hitl svc/browser-hitl-redis -- redis-cli ping` |
+| Redis (compose) | `docker compose exec redis redis-cli ping` |
 | NATS | `curl -s http://localhost:8222/healthz` |
-| MinIO | Console [http://localhost:9001](http://localhost:9001) (default `minioadmin` / `minioadmin`) |
+| MinIO (Kind) | Console http://localhost:19000 |
+| MinIO (compose) | Console [http://localhost:9001](http://localhost:9001) (default `minioadmin` / `minioadmin`) |
 | adoptai-workflows | OpenAPI [http://localhost:8001/docs](http://localhost:8001/docs) (if enabled) |
 | Temporal | `temporal workflow list --address localhost:7233` |
 | Worker | Logs from `poetry run python -m src.worker` |
