@@ -1,7 +1,7 @@
 import {
-  Body, Controller, Headers, HttpCode, Post, Req, UseGuards,
+  Body, Controller, Get, Headers, HttpCode, Param, Post, Req, UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiHeader, ApiProperty } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiHeader, ApiParam, ApiProperty } from '@nestjs/swagger';
 import {
   IsArray,
   IsBoolean,
@@ -110,6 +110,25 @@ export class AgentController {
       req.user.tenant_id,
       req.user.user_id,
       idempotencyKey,
+    );
+  }
+
+  @Get('session-status/:profileId')
+  @Roles('Admin', 'Operator', 'Agent')
+  @ApiOperation({ summary: 'Get session status for a profile', description: 'Returns the most recent session status for a service profile, including HITL state and VNC stream URL when applicable.' })
+  @ApiParam({ name: 'profileId', description: 'Service profile semantic name (e.g., "salesforce-main")' })
+  @ApiResponse({ status: 200, description: 'Session status' })
+  @ApiResponse({ status: 403, description: 'Agent not authorized for this profile' })
+  @ApiResponse({ status: 404, description: 'No session or profile found' })
+  async getSessionStatus(
+    @Param('profileId') profileId: string,
+    @Req() req: any,
+  ) {
+    return this.agentService.getSessionStatus(
+      profileId,
+      req.user.tenant_id,
+      req.user.allowed_profiles || [],
+      req.user.role,
     );
   }
 }

@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   GatewayTimeoutException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -15,6 +17,7 @@ import { SessionEntity } from '../../entities';
 import { AppsService } from '../apps/apps.service';
 import { SessionsService } from '../sessions/sessions.service';
 import { HitlService } from '../hitl/hitl.service';
+import { CredentialsService } from '../credentials/credentials.service';
 import { RunUrlDto } from './agent.controller';
 
 type IdempotencyRecord = {
@@ -36,6 +39,7 @@ export class AgentService implements OnModuleDestroy {
     private readonly appsService: AppsService,
     private readonly sessionsService: SessionsService,
     private readonly hitlService: HitlService,
+    private readonly credentialsService: CredentialsService,
   ) {
     this.redis = new Redis(requireEnv('REDIS_URL', {
       testDefault: 'redis://localhost:6379',
@@ -65,6 +69,55 @@ export class AgentService implements OnModuleDestroy {
     }
 
     return this.executeRunUrl(dto, tenantId, actorId);
+  }
+
+  async getSessionStatus(
+    profileId: string,
+    tenantId: string,
+    allowedProfiles: string[],
+    role: string,
+  ): Promise<Record<string, unknown>> {
+    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+      throw new ForbiddenException(`Agent is not authorized for profile "${profileId}"`);
+    }
+
+    const profile = await this.credentialsService.resolveActiveProfile(tenantId, profileId);
+
+    const session = await this.sessionRepo.findOne({
+      where: { tenant_id: tenantId, app_id: profile.app_id! },
+      order: { started_at: 'DESC' },
+      relations: ['application'],
+    });
+
+    if (!session) {
+      throw new NotFoundException('No session found for profile');
+    }
+
+    const hitlActive = session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED';
+
+    let vncStream: { url: string; expires_at: string } | null = null;
+    if (hitlActive) {
+      try {
+        vncStream = await this.hitlService.generateStreamUrl(session.id, tenantId, `agent:${profileId}`);
+      } catch {
+        vncStream = null;
+      }
+    }
+
+    return {
+      session_id: session.id,
+      state: session.state,
+      profile_id: profileId,
+      app_id: session.app_id,
+      app_name: session.application?.name ?? null,
+      pending_input_request: session.pending_input_request ?? null,
+      hitl_active: hitlActive,
+      vnc_stream: vncStream,
+      health_result_type: session.health_result_type ?? null,
+      intervention_count: session.intervention_count,
+      retry_count: session.retry_count,
+      last_login_at: session.last_login_at?.toISOString() ?? null,
+    };
   }
 
   private async runUrlWithIdempotency(

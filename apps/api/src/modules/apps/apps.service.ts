@@ -24,7 +24,7 @@ interface CreateAppInput {
   login_config: Record<string, unknown>;
   keepalive_config: Record<string, unknown>;
   export_policy: Record<string, unknown>;
-  notification_config: Record<string, unknown>;
+  notification_config?: Record<string, unknown>;
   desired_session_count?: number;
   browser_policy?: Record<string, unknown>;
 }
@@ -91,7 +91,7 @@ export class AppsService {
       login_config: input.login_config,
       keepalive_config: input.keepalive_config,
       export_policy: input.export_policy,
-      notification_config: input.notification_config,
+      notification_config: input.notification_config ?? { channels: [] },
       desired_session_count: input.desired_session_count ?? 1,
       browser_policy: input.browser_policy ?? { downloads: false, clipboard: false, file_chooser: false },
     });

@@ -1154,3 +1154,74 @@ Use case: You need fresh credentials NOW and can tolerate a longer API call. Typ
 - `profile_id` (required) -- Which profile's credentials to return
 - `force_refresh` (optional, default false) -- Trigger immediate re-extraction by the worker
 - `wait_seconds` (optional, default 0, range 1-30) -- Block until fresh credentials arrive or timeout. Only meaningful with `force_refresh: true`. Without `wait_seconds`, force_refresh is fire-and-forget.
+
+---
+
+## TABBY WDL Operation — Agent-to-Browser Integration
+
+### Overview
+
+The **TABBY** WDL operation lets AI agents in ProjectA3 talk to Tabby’s browser HITL stack directly. Use it for on‑premise setups where agents must pull browser credentials (cookies, headers, CSRF tokens) and still route human steps (OTP, CAPTCHA, passwords) through the adoptwebui pipeline UI instead of Slack or Teams alone.
+
+### Tabby API Changes
+
+1. **`notification_config` optional** — Apps can be created without Slack/Teams channels. A new **`agent`** notification provider is supported. Empty channels mean silent / agent‑poll mode (no chat notifications).
+2. **JWT strategy** — Agent JWTs surface **`allowed_profiles`** and **`token_type`** on `req.user` for authorization and routing.
+3. **Agent role on session endpoints** — Agent JWTs may call **`GET /sessions/:id`**, **`POST /sessions/:id/stream`**, and **`POST /sessions/:id/input`** (same human-input flow as admins, scoped by tenant/session rules).
+4. **`GET /agent/session-status/:profileId`** — Returns session state, HITL status, VNC URL, and any pending input request. **`profileId`** is the semantic profile name (e.g. `salesforce-standard`), consistent with **`POST /credentials/request`**’s `profile_id`.
+
+### TABBY WDL Operation (ProjectA3)
+
+- **Enum:** `WorkflowOperationType.TABBY`.
+- **Handler:** `actionbot/operations/tabby_operation.py` — `TabbyClient` with token caching, refresh, and retries.
+- **Actions:** `authenticate`, `check_session`, `request_credentials`.
+- **HITL pause:** On human input needed, the step yields **`AWAITING_HUMAN_INPUT`** with VNC URL and input-type metadata for the UI.
+- **Credentials for REST:** Cookies, headers, and CSRF-style fields are flattened into **`security_params`** for downstream **`REST_API`** blocks.
+- **Executor:** An `elif` branch in `_execute_internal` (same pattern as **`ESCALATE`**).
+
+### adoptai-workflows Changes
+
+- **`tabby_hitl_data`** is read from **`result.metadata`**, propagated into **`self.results`** and **`hitl_metadata`**.
+- The frontend loads it through existing pipeline run queries.
+
+### adoptwebui Changes
+
+- **`TabbyHITLPanel`** — VNC open action, session summary, countdown where applicable, **Mark as Resolved** (confirm-style HITL).
+- Wired into **`PipelineDetail.jsx`** and **`RunsTab.jsx`**.
+- **Resolve:** Calls **`pipelineService.resolvePipelineRun`**; the workflow resumes and the TABBY step runs again (e.g. to finish `request_credentials` after the human completes the browser step).
+
+### End-to-End Flow
+
+```mermaid
+sequenceDiagram
+  participant Agent as ProjectA3 / TABBY op
+  participant Tabby as Tabby API and worker
+  participant WF as adoptai-workflows
+  participant UI as adoptwebui
+
+  Agent->>Tabby: authenticate, check_session
+  Tabby-->>WF: HITL needed, AWAITING_HUMAN_INPUT + metadata
+  WF-->>UI: tabby_hitl_data on run
+  UI->>UI: TabbyHITLPanel (VNC, resolve)
+  UI->>WF: resolvePipelineRun
+  WF->>Agent: workflow resumes, TABBY step re-executes
+  Agent->>Tabby: request_credentials
+  Tabby-->>Agent: credentials into security_params
+```
+
+Plain sequence: agent authenticates → checks session → HITL detected → workflow pauses → frontend shows VNC panel → human resolves → workflow resumes → TABBY step re-executes → credentials extracted.
+
+### Configuration for On-Premise (No Slack)
+
+- Create the app with **`notification_config: { "channels": [] }`** or **`{ "channels": ["agent:poll"] }`** so there is no reliance on Slack/Teams for notifications.
+- Register an agent client with **`allowed_profiles`** limited to the profiles that TABBY should use.
+- Poll **`GET /agent/session-status/:profileId`** (or equivalent client logic in `TabbyClient`) instead of waiting for Slack notifications.
+
+### Feature Branches
+
+| Repo | Branch |
+|------|--------|
+| tabby | `feat/tabby-wdl-agent-api` |
+| ProjectA3 | `feat/tabby-wdl-operation` |
+| adoptai-workflows | `feat/tabby-hitl-metadata` |
+| adoptwebui | `feat/tabby-hitl-panel` |
