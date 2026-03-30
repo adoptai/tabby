@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, MoreThan, Repository } from 'typeorm';
 import {
@@ -93,11 +93,18 @@ export class CredentialsService {
     includeVolatile?: boolean;
     waitSeconds?: number;
     requestId: string;
+    role?: string;
+    allowedProfiles?: string[];
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
       forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
+      role, allowedProfiles = [],
     } = params;
+
+    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+      throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
+    }
 
     // 1. Resolve ACTIVE (or CANARY fallback) profile
     const profile = await this.resolveActiveProfile(tenantId, profileId);

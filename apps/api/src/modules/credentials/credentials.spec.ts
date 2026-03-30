@@ -894,6 +894,58 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
   });
 
   // =========================================================================
+  // Agent allowed_profiles enforcement
+  // =========================================================================
+
+  describe('Agent allowed_profiles enforcement', () => {
+    it('should throw ForbiddenException when Agent token requests a profile not in allowed_profiles', async () => {
+      const { service } = buildService();
+
+      await expect(
+        service.requestCredentials({
+          tenantId: TEST_TENANT,
+          profileId: 'salesforce-standard',
+          requestId: 'req-1',
+          role: 'Agent',
+          allowedProfiles: ['hubspot-standard'],
+        }),
+      ).rejects.toThrow('Agent not authorized for profile "salesforce-standard"');
+    });
+
+    it('should allow Agent token to access a profile in allowed_profiles', async () => {
+      const { service, profileRepo, sessionRepo } = buildService();
+      profileRepo.find.mockResolvedValueOnce([TEST_PROFILE]);
+      sessionRepo.findOne.mockResolvedValueOnce(TEST_SESSION);
+
+      const envelope = await service.requestCredentials({
+        tenantId: TEST_TENANT,
+        profileId: 'salesforce-standard',
+        requestId: 'req-1',
+        role: 'Agent',
+        allowedProfiles: ['salesforce-standard', 'hubspot-standard'],
+      });
+
+      expect(envelope.profile_id).toBe('salesforce-standard');
+    });
+
+    it('should not enforce allowed_profiles for Admin role', async () => {
+      const { service, profileRepo, sessionRepo } = buildService();
+      profileRepo.find.mockResolvedValueOnce([TEST_PROFILE]);
+      sessionRepo.findOne.mockResolvedValueOnce(TEST_SESSION);
+
+      const envelope = await service.requestCredentials({
+        tenantId: TEST_TENANT,
+        profileId: 'salesforce-standard',
+        requestId: 'req-1',
+        role: 'Admin',
+        allowedProfiles: [],
+      });
+
+      expect(envelope.profile_id).toBe('salesforce-standard');
+    });
+  });
+
+  // =========================================================================
   // Tenant Isolation via app_id
   // =========================================================================
 
