@@ -943,6 +943,36 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
 
       expect(envelope.profile_id).toBe('salesforce-standard');
     });
+
+    it('should reject Agent with empty allowed_profiles', async () => {
+      const { service } = buildService();
+
+      await expect(
+        service.requestCredentials({
+          tenantId: TEST_TENANT,
+          profileId: 'salesforce-standard',
+          requestId: 'req-1',
+          role: 'Agent',
+          allowedProfiles: [],
+        }),
+      ).rejects.toThrow('Agent not authorized for profile');
+    });
+
+    it('should not enforce allowed_profiles for Operator role', async () => {
+      const { service, profileRepo, sessionRepo } = buildService();
+      profileRepo.find.mockResolvedValueOnce([TEST_PROFILE]);
+      sessionRepo.findOne.mockResolvedValueOnce(TEST_SESSION);
+
+      const envelope = await service.requestCredentials({
+        tenantId: TEST_TENANT,
+        profileId: 'salesforce-standard',
+        requestId: 'req-1',
+        role: 'Operator',
+        allowedProfiles: [],
+      });
+
+      expect(envelope.profile_id).toBe('salesforce-standard');
+    });
   });
 
   // =========================================================================
