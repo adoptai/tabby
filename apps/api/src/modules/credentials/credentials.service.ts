@@ -473,7 +473,20 @@ export class CredentialsService {
     let csrf: CsrfCredential | undefined;
 
     // Build cookies from credential_types, merging real values
-    if (credTypes.cookies && Array.isArray(credTypes.cookies)) {
+    if (credTypes.cookies === 'ALL') {
+      // Return all extracted cookies
+      for (const [, real] of cookieValues) {
+        cookies.push({
+          name: real.name || '',
+          value: real.value ?? '',
+          domain: real.domain ?? '',
+          path: real.path ?? '/',
+          secure: real.secure ?? true,
+          httpOnly: real.httpOnly ?? true,
+          volatility: CredentialVolatility.SEMI_STABLE,
+        });
+      }
+    } else if (Array.isArray(credTypes.cookies)) {
       for (const cookie of credTypes.cookies) {
         const volatility = (cookie.volatility as CredentialVolatility) || CredentialVolatility.STABLE;
         if (!includeVolatile && volatility === CredentialVolatility.VOLATILE) {
@@ -493,15 +506,28 @@ export class CredentialsService {
     }
 
     // Build headers from credential_types, merging real values
-    if (credTypes.headers && Array.isArray(credTypes.headers)) {
+    if (credTypes.headers === 'ALL') {
+      // Return all extracted headers
+      for (const [name, value] of headerValues) {
+        headers.push({
+          name,
+          value,
+          volatility: CredentialVolatility.SEMI_STABLE,
+        });
+      }
+    } else if (Array.isArray(credTypes.headers)) {
       for (const header of credTypes.headers) {
-        const volatility = (header.volatility as CredentialVolatility) || CredentialVolatility.SEMI_STABLE;
+        // Support both object format {"name": "x"} and string format "x"
+        const headerName = typeof header === 'string' ? header : header.name;
+        const volatility = typeof header === 'string'
+          ? CredentialVolatility.SEMI_STABLE
+          : (header.volatility as CredentialVolatility) || CredentialVolatility.SEMI_STABLE;
         if (!includeVolatile && volatility === CredentialVolatility.VOLATILE) {
           continue;
         }
         headers.push({
-          name: header.name || '',
-          value: headerValues.get((header.name || '').toLowerCase()) ?? '',
+          name: headerName || '',
+          value: headerValues.get((headerName || '').toLowerCase()) ?? '',
           volatility,
         });
       }
