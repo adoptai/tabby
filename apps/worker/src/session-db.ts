@@ -89,12 +89,18 @@ export class SessionDb {
     sessionId: string,
     metadata: Record<string, unknown>,
   ): Promise<void> {
-    if (!this.pool) return;
+    if (!this.pool) {
+      console.warn('[SessionDb] writePendingInputRequest: pool not connected');
+      return;
+    }
+    const json = JSON.stringify(metadata);
+    console.log(`[SessionDb] writePendingInputRequest: sessionId=${sessionId}, payload=${json}`);
     await this.withSession(async (client) => {
-      await client.query(
+      const result = await client.query(
         `UPDATE sessions SET pending_input_request = $1 WHERE id = $2`,
-        [JSON.stringify(metadata), sessionId],
+        [json, sessionId],
       );
+      console.log(`[SessionDb] writePendingInputRequest: rowCount=${result.rowCount}`);
     });
   }
 

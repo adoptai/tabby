@@ -196,7 +196,9 @@ async function main() {
         allowEvaluate: allowDslEvaluate,
         // Signal controller that human input is needed.
         onInputRequested: async (request) => {
+          console.log(`[HITL] onInputRequested called: sessionId=${sessionId}, request=${JSON.stringify(request)}`);
           await db.writePendingInputRequest(sessionId, request as unknown as Record<string, unknown>);
+          console.log(`[HITL] writePendingInputRequest done for sessionId=${sessionId}`);
           await db.updateHealthResult(sessionId, 'AUTH_FAIL');
         },
       },
