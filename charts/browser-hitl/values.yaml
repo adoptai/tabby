@@ -182,7 +182,7 @@ postgres:
   enabled: true
   image:
     repository: postgres
-    tag: "16-alpine"
+    tag: "16.8-alpine"
     pullPolicy: IfNotPresent
   replicas: 1
   port: 5432
@@ -213,7 +213,7 @@ redis:
   enabled: true
   image:
     repository: redis
-    tag: "7-alpine"
+    tag: "7.4-alpine"
     pullPolicy: IfNotPresent
   replicas: 1
   port: 6379
@@ -241,7 +241,7 @@ nats:
   enabled: true
   image:
     repository: nats
-    tag: "2.10-alpine"
+    tag: "2.10.24-alpine"
     pullPolicy: IfNotPresent
   replicas: 1
   port: 4222
@@ -278,7 +278,7 @@ minio:
   enabled: true
   image:
     repository: minio/minio
-    tag: "latest"
+    tag: "RELEASE.2025-03-12T18-04-18Z"
     pullPolicy: IfNotPresent
   replicas: 1
   port: 9000
@@ -309,7 +309,7 @@ egressProxy:
   enabled: true
   image:
     repository: node
-    tag: "20-alpine"
+    tag: "20.18.1-alpine"
     pullPolicy: IfNotPresent
   port: 3128
   adminPort: 8095

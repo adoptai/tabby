@@ -19,6 +19,10 @@ spec:
     spec:
       {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "browser-hitl.fullname" . }}-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: controller
           image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.controller) }}
@@ -68,6 +72,10 @@ spec:
                   optional: true
             - name: TENANT_KEY_VERSION
               value: "v1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           livenessProbe:

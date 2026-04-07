@@ -19,6 +19,10 @@ spec:
         app.kubernetes.io/component: teams-bot
     spec:
       {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: teams-bot
           image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.teamsBot) }}
@@ -62,6 +66,10 @@ spec:
                   optional: true
             - name: PORT
               value: {{ .Values.teamsBot.port | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.teamsBot.resources | nindent 12 }}
           livenessProbe:
