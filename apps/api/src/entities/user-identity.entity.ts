@@ -23,7 +23,7 @@ export class UserIdentityEntity {
   @JoinColumn({ name: 'tenant_id' })
   tenant: TenantEntity;
 
-  @Column({ type: 'enum', enum: ['slack', 'teams'] })
+  @Column({ type: 'enum', enum: ['slack', 'teams', 'oidc', 'saml'] })
   provider: string;
 
   @Column({ type: 'varchar' })

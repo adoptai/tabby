@@ -21,8 +21,8 @@ export class AddOwnerUserIds1708300000011 implements MigrationInterface {
     `);
 
     // Extend user_identities provider enum to include oidc and saml
-    await queryRunner.query(`ALTER TYPE user_identities_provider_enum ADD VALUE IF NOT EXISTS 'oidc'`);
-    await queryRunner.query(`ALTER TYPE user_identities_provider_enum ADD VALUE IF NOT EXISTS 'saml'`);
+    await queryRunner.query(`ALTER TYPE identity_provider ADD VALUE IF NOT EXISTS 'oidc'`);
+    await queryRunner.query(`ALTER TYPE identity_provider ADD VALUE IF NOT EXISTS 'saml'`);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
