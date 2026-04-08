@@ -29,6 +29,7 @@ import { CredentialsService } from './credentials.service';
 function createMockSessionRepo() {
   return {
     findOne: jest.fn().mockResolvedValue(null),
+    update: jest.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -102,6 +103,8 @@ function buildService(overrides: {
   (service as any).consumptionRepo = consumptionRepo;
   (service as any).healthMonitor = healthMonitor;
   (service as any).minioProvisioner = minioProvisioner;
+  (service as any).appRepo = { create: jest.fn(), save: jest.fn() };
+  (service as any).templateRepo = { findOne: jest.fn().mockResolvedValue(null) };
   (service as any).redis = mockRedis;
   (service as any).credentialCache = new Map();
   (service as any).logger = {

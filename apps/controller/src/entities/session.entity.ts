@@ -69,4 +69,10 @@ export class SessionEntity {
 
   @Column({ type: 'jsonb', nullable: true })
   pending_input_request: Record<string, unknown> | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  owner_user_id: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  last_credential_request_at: Date | null;
 }

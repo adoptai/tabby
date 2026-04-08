@@ -77,4 +77,8 @@ export class SessionEntity {
   /** External user ID for per-user session isolation (federated auth). Null = tenant-scoped (backward compat). */
   @Column({ type: 'varchar', nullable: true })
   owner_user_id: string | null;
+
+  /** Timestamp of last credential request — used for idle shutdown. */
+  @Column({ type: 'timestamptz', nullable: true })
+  last_credential_request_at: Date | null;
 }

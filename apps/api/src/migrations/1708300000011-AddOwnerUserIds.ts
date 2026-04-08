@@ -20,6 +20,9 @@ export class AddOwnerUserIds1708300000011 implements MigrationInterface {
       WHERE owner_user_id IS NOT NULL
     `);
 
+    // Add last_credential_request_at to sessions for idle shutdown tracking
+    await queryRunner.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_credential_request_at TIMESTAMPTZ`);
+
     // Extend user_identities provider enum to include oidc and saml
     await queryRunner.query(`ALTER TYPE identity_provider ADD VALUE IF NOT EXISTS 'oidc'`);
     await queryRunner.query(`ALTER TYPE identity_provider ADD VALUE IF NOT EXISTS 'saml'`);

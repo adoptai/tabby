@@ -276,12 +276,30 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       where: { state: SessionState.HEALTHY as any },
     });
 
+    const idleShutdownSeconds = parseInt(process.env.IDLE_SHUTDOWN_SECONDS || '0', 10);
+    const idleShutdownMs = idleShutdownSeconds * 1000;
+
     for (const session of healthySessions) {
       const age = now - new Date(session.started_at).getTime();
       if (age >= maxAgeMs) {
         this.logger.log(`Recycling session ${session.id} (age: ${Math.round(age / 3600000)}h)`);
         // Terminate and let reconcile recreate it
         await this.terminateSession(session);
+        continue;
+      }
+
+      // Idle shutdown: if session has owner_user_id (per-user) and hasn't been used
+      if (idleShutdownMs > 0 && session.owner_user_id && session.last_credential_request_at) {
+        const idleTime = now - new Date(session.last_credential_request_at).getTime();
+        if (idleTime >= idleShutdownMs) {
+          this.logger.log(
+            `Idle shutdown: session ${session.id} owner=${session.owner_user_id} ` +
+            `idle ${Math.round(idleTime / 60000)}min (threshold: ${idleShutdownSeconds}s)`,
+          );
+          // Set desired_session_count to 0 so it doesn't restart
+          await this.appRepo.update(session.app_id, { desired_session_count: 0 });
+          await this.terminateSession(session);
+        }
       }
     }
   }

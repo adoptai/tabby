@@ -5,6 +5,8 @@ import {
   ServiceProfileEntity,
   ArtifactBundleEntity,
   ArtifactConsumptionEntity,
+  ApplicationEntity,
+  AppTemplateEntity,
 } from '../../entities';
 import { CredentialsService } from './credentials.service';
 import { CredentialsController } from './credentials.controller';
@@ -17,6 +19,8 @@ import { TenantsModule } from '../tenants/tenants.module';
       ServiceProfileEntity,
       ArtifactBundleEntity,
       ArtifactConsumptionEntity,
+      ApplicationEntity,
+      AppTemplateEntity,
     ]),
     TenantsModule,
   ],

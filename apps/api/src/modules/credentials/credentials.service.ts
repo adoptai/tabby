@@ -24,6 +24,8 @@ import { SessionEntity } from '../../entities/session.entity';
 import { ServiceProfileEntity } from '../../entities/service-profile.entity';
 import { ArtifactBundleEntity } from '../../entities/artifact-bundle.entity';
 import { ArtifactConsumptionEntity } from '../../entities/artifact-consumption.entity';
+import { ApplicationEntity } from '../../entities/application.entity';
+import { AppTemplateEntity } from '../../entities/app-template.entity';
 import { RedisHealthMonitor } from '../redis/redis-health-monitor';
 import { MinioProvisionerService } from '../tenants/minio-provisioner.service';
 import Redis from 'ioredis';
@@ -69,6 +71,10 @@ export class CredentialsService {
     private readonly artifactRepo: Repository<ArtifactBundleEntity>,
     @InjectRepository(ArtifactConsumptionEntity)
     private readonly consumptionRepo: Repository<ArtifactConsumptionEntity>,
+    @InjectRepository(ApplicationEntity)
+    private readonly appRepo: Repository<ApplicationEntity>,
+    @InjectRepository(AppTemplateEntity)
+    private readonly templateRepo: Repository<AppTemplateEntity>,
     private readonly healthMonitor: RedisHealthMonitor,
     private readonly minioProvisioner: MinioProvisionerService,
   ) {
@@ -113,6 +119,9 @@ export class CredentialsService {
 
     // 2. Find healthy session via profile's app_id, scoped by owner if federated
     const session = await this.findHealthySession(tenantId, profile.app_id, ownerUserId);
+
+    // Update last_credential_request_at for idle shutdown tracking
+    await this.sessionRepo.update(session.id, { last_credential_request_at: new Date() });
 
     // 3. Force-refresh coalescing (RT-11)
     let freshness: CredentialFreshness = isCanary
@@ -211,12 +220,88 @@ export class CredentialsService {
     const profiles = await this.profileRepo.find({ where });
 
     if (profiles.length === 0) {
+      // Auto-provision from template if federated user has no profile yet
+      if (ownerUserId) {
+        const provisioned = await this.autoProvisionFromTemplate(tenantId, profileId, ownerUserId);
+        if (provisioned) {
+          return provisioned;
+        }
+      }
       throw new NotFoundException(`No active profile found for "${profileId}"`);
     }
 
     // Prefer ACTIVE over CANARY
     const active = profiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
     return active || profiles[0];
+  }
+
+  /**
+   * Auto-provision app + profile + session from a matching app template.
+   * Called when a federated user requests credentials but has no profile yet.
+   */
+  private async autoProvisionFromTemplate(
+    tenantId: string,
+    profileId: string,
+    ownerUserId: string,
+  ): Promise<ServiceProfileEntity | null> {
+    const template = await this.templateRepo.findOne({
+      where: { tenant_id: tenantId, profile_name_pattern: profileId },
+    });
+
+    if (!template) {
+      this.logger.warn(`No app template found for profile_name_pattern="${profileId}" in tenant ${tenantId}`);
+      return null;
+    }
+
+    this.logger.log(`Auto-provisioning from template "${template.name}" for user ${ownerUserId}`);
+
+    // 1. Create App from template
+    const app = this.appRepo.create({
+      tenant_id: tenantId,
+      name: `${template.name} — ${ownerUserId}`,
+      target_urls: (template.login_config as any)?.login_url
+        ? [(template.login_config as any).login_url]
+        : [],
+      login_config: template.login_config,
+      keepalive_config: template.keepalive_config,
+      export_policy: template.export_policy,
+      notification_config: template.notification_config,
+      browser_policy: template.browser_policy,
+      desired_session_count: 1,
+    });
+    const savedApp = await this.appRepo.save(app);
+
+    // 2. Create Profile linked to the app, scoped to this user
+    const profile = this.profileRepo.create({
+      tenant_id: tenantId,
+      app_id: savedApp.id,
+      profile_id: profileId,
+      version: '1.0.0',
+      version_state: ProfileVersionState.ACTIVE,
+      login_config: template.login_config,
+      credential_types: (template.export_policy as any)?.credential_types || {},
+      target_domains: (template.export_policy as any)?.target_domains || [],
+      owner_user_id: ownerUserId,
+    });
+    const savedProfile = await this.profileRepo.save(profile);
+
+    // 3. Create Session tagged with owner_user_id
+    // The controller reconcile loop will detect the new app with desired_session_count=1
+    // and create the worker pod automatically
+    const session = this.sessionRepo.create({
+      app_id: savedApp.id,
+      tenant_id: tenantId,
+      state: 'STARTING',
+      owner_user_id: ownerUserId,
+    });
+    await this.sessionRepo.save(session);
+
+    this.logger.log(
+      `Auto-provisioned: app=${savedApp.id} profile=${savedProfile.id} session=${session.id} ` +
+      `owner=${ownerUserId} template=${template.name}`,
+    );
+
+    return savedProfile;
   }
 
   // ---------------------------------------------------------------
