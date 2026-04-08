@@ -175,7 +175,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async createSession(app: ApplicationEntity): Promise<void> {
-    // Create session record
+    // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
       app_id: app.id,
       tenant_id: app.tenant_id,
@@ -184,6 +184,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       retry_count: 0,
       intervention_count: 0,
       hitl_attempt_count: 0,
+      owner_user_id: app.owner_user_id ?? null,
     });
     const savedSession = await this.sessionRepo.save(session);
 

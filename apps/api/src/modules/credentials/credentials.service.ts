@@ -277,6 +277,9 @@ export class CredentialsService {
       desired_session_count: 0, // Start with 0, scale up after profile is created
     }, tenantId, actorId);
 
+    // Set owner_user_id on app — controller will inherit this to sessions
+    await this.appRepo.update(app_id, { owner_user_id: ownerUserId });
+
     // 2. Create Profile via ProfilesService (full validation + audit + promote to ACTIVE)
     const savedProfile = await this.profilesService.create({
       profile_id: profileId,
@@ -336,15 +339,6 @@ export class CredentialsService {
     if (!session) {
       throw new NotFoundException('No healthy session available');
     }
-
-    // Claim ownership: if federated user found a session without owner (from auto-provisioning),
-    // stamp it so future requests are properly scoped
-    if (ownerUserId && !session.owner_user_id) {
-      await this.sessionRepo.update(session.id, { owner_user_id: ownerUserId });
-      session.owner_user_id = ownerUserId;
-      this.logger.log(`Claimed session ${session.id} for owner ${ownerUserId}`);
-    }
-
     return session;
   }
 
