@@ -290,15 +290,11 @@ export class CredentialsService {
       target_domains: (template.export_policy as any)?.target_domains || [],
     }, tenantId, actorId);
 
-    // Set owner_user_id on the profile (service doesn't know about this field yet)
-    await this.profileRepo.update(savedProfile.id, { owner_user_id: ownerUserId });
-
-    // Promote to ACTIVE so credential requests can find it
-    try {
-      await this.profilesService.promote(savedProfile.id, tenantId, actorId);
-    } catch {
-      // If promote fails (e.g., already active), just continue
-    }
+    // Set owner_user_id + promote directly to ACTIVE (skip canary for auto-provisioned profiles)
+    await this.profileRepo.update(savedProfile.id, {
+      owner_user_id: ownerUserId,
+      version_state: ProfileVersionState.ACTIVE,
+    });
 
     // 3. Scale to 1 session via SessionsService (controller creates pod + baton + service + network policy)
     await this.sessionsService.scale(app_id, 1, tenantId, actorId);
