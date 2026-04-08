@@ -328,8 +328,7 @@ export class CredentialsService {
       if (userSession) {
         return userSession;
       }
-      // Fall through to tenant-scoped (shared) session only if allow_shared_session_fallback
-      // For now, fall through to shared sessions as backward compat
+      // Fall through to tenant-scoped session (auto-provisioned apps create sessions without owner)
       delete where.owner_user_id;
     }
 
@@ -337,6 +336,15 @@ export class CredentialsService {
     if (!session) {
       throw new NotFoundException('No healthy session available');
     }
+
+    // Claim ownership: if federated user found a session without owner (from auto-provisioning),
+    // stamp it so future requests are properly scoped
+    if (ownerUserId && !session.owner_user_id) {
+      await this.sessionRepo.update(session.id, { owner_user_id: ownerUserId });
+      session.owner_user_id = ownerUserId;
+      this.logger.log(`Claimed session ${session.id} for owner ${ownerUserId}`);
+    }
+
     return session;
   }
 
