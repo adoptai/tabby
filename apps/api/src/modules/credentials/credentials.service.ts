@@ -95,23 +95,24 @@ export class CredentialsService {
     requestId: string;
     role?: string;
     allowedProfiles?: string[];
+    ownerUserId?: string | null;
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
       forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
-      role, allowedProfiles = [],
+      role, allowedProfiles = [], ownerUserId,
     } = params;
 
     if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
       throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
     }
 
-    // 1. Resolve ACTIVE (or CANARY fallback) profile
-    const profile = await this.resolveActiveProfile(tenantId, profileId);
+    // 1. Resolve ACTIVE (or CANARY fallback) profile, scoped by owner if federated
+    const profile = await this.resolveActiveProfile(tenantId, profileId, ownerUserId);
     const isCanary = profile.version_state === ProfileVersionState.CANARY;
 
-    // 2. Find healthy session via profile's app_id
-    const session = await this.findHealthySession(tenantId, profile.app_id);
+    // 2. Find healthy session via profile's app_id, scoped by owner if federated
+    const session = await this.findHealthySession(tenantId, profile.app_id, ownerUserId);
 
     // 3. Force-refresh coalescing (RT-11)
     let freshness: CredentialFreshness = isCanary
@@ -186,15 +187,28 @@ export class CredentialsService {
   // Profile Resolution
   // ---------------------------------------------------------------
 
-  async resolveActiveProfile(tenantId: string, profileId: string): Promise<ServiceProfileEntity> {
-    // Query for both ACTIVE and CANARY profiles, preferring ACTIVE
-    const profiles = await this.profileRepo.find({
-      where: {
-        tenant_id: tenantId,
-        profile_id: profileId,
-        version_state: In([ProfileVersionState.ACTIVE, ProfileVersionState.CANARY]),
-      },
-    });
+  async resolveActiveProfile(tenantId: string, profileId: string, ownerUserId?: string | null): Promise<ServiceProfileEntity> {
+    // Build where clause — add owner_user_id filter for federated users
+    const where: Record<string, any> = {
+      tenant_id: tenantId,
+      profile_id: profileId,
+      version_state: In([ProfileVersionState.ACTIVE, ProfileVersionState.CANARY]),
+    };
+
+    // If ownerUserId provided, try user-scoped profile first
+    if (ownerUserId) {
+      where.owner_user_id = ownerUserId;
+      const userProfiles = await this.profileRepo.find({ where });
+      if (userProfiles.length > 0) {
+        const active = userProfiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
+        return active || userProfiles[0];
+      }
+      // Fall through to tenant-scoped (shared) profiles
+      delete where.owner_user_id;
+    }
+
+    // Query for shared/tenant-scoped profiles (backward compat)
+    const profiles = await this.profileRepo.find({ where });
 
     if (profiles.length === 0) {
       throw new NotFoundException(`No active profile found for "${profileId}"`);
@@ -209,13 +223,25 @@ export class CredentialsService {
   // Session Resolution (now uses app_id for FK chain)
   // ---------------------------------------------------------------
 
-  async findHealthySession(tenantId: string, appId?: string | null): Promise<SessionEntity> {
+  async findHealthySession(tenantId: string, appId?: string | null, ownerUserId?: string | null): Promise<SessionEntity> {
     const where: Record<string, any> = {
       tenant_id: tenantId,
       state: 'HEALTHY',
     };
     if (appId) {
       where.app_id = appId;
+    }
+
+    // If ownerUserId provided, try user-scoped session first
+    if (ownerUserId) {
+      where.owner_user_id = ownerUserId;
+      const userSession = await this.sessionRepo.findOne({ where });
+      if (userSession) {
+        return userSession;
+      }
+      // Fall through to tenant-scoped (shared) session only if allow_shared_session_fallback
+      // For now, fall through to shared sessions as backward compat
+      delete where.owner_user_id;
     }
 
     const session = await this.sessionRepo.findOne({ where });

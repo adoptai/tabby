@@ -64,6 +64,7 @@ export class CredentialsController {
       requestId: randomUUID(),
       role: req.user.role,
       allowedProfiles: req.user.allowed_profiles,
+      ownerUserId: req.user.owner_user_id ?? null,
     });
   }
 }
