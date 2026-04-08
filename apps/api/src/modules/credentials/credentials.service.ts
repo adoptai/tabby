@@ -26,6 +26,9 @@ import { ArtifactBundleEntity } from '../../entities/artifact-bundle.entity';
 import { ArtifactConsumptionEntity } from '../../entities/artifact-consumption.entity';
 import { ApplicationEntity } from '../../entities/application.entity';
 import { AppTemplateEntity } from '../../entities/app-template.entity';
+import { AppsService } from '../apps/apps.service';
+import { ProfilesService } from '../profiles/profiles.service';
+import { SessionsService } from '../sessions/sessions.service';
 import { RedisHealthMonitor } from '../redis/redis-health-monitor';
 import { MinioProvisionerService } from '../tenants/minio-provisioner.service';
 import Redis from 'ioredis';
@@ -75,6 +78,9 @@ export class CredentialsService {
     private readonly appRepo: Repository<ApplicationEntity>,
     @InjectRepository(AppTemplateEntity)
     private readonly templateRepo: Repository<AppTemplateEntity>,
+    private readonly appsService: AppsService,
+    private readonly profilesService: ProfilesService,
+    private readonly sessionsService: SessionsService,
     private readonly healthMonitor: RedisHealthMonitor,
     private readonly minioProvisioner: MinioProvisionerService,
   ) {
@@ -255,50 +261,48 @@ export class CredentialsService {
 
     this.logger.log(`Auto-provisioning from template "${template.name}" for user ${ownerUserId}`);
 
-    // 1. Create App from template
-    const app = this.appRepo.create({
-      tenant_id: tenantId,
+    const actorId = `federated:${ownerUserId}`;
+
+    // 1. Create App via AppsService (full validation + audit)
+    const { app_id } = await this.appsService.create({
       name: `${template.name} — ${ownerUserId}`,
       target_urls: (template.login_config as any)?.login_url
         ? [(template.login_config as any).login_url]
         : [],
-      login_config: template.login_config,
-      keepalive_config: template.keepalive_config,
-      export_policy: template.export_policy,
-      notification_config: template.notification_config,
-      browser_policy: template.browser_policy,
-      desired_session_count: 1,
-    });
-    const savedApp = await this.appRepo.save(app);
+      login_config: template.login_config as any,
+      keepalive_config: template.keepalive_config as any,
+      export_policy: template.export_policy as any,
+      notification_config: template.notification_config as any,
+      browser_policy: template.browser_policy as any,
+      desired_session_count: 0, // Start with 0, scale up after profile is created
+    }, tenantId, actorId);
 
-    // 2. Create Profile linked to the app, scoped to this user
-    const profile = this.profileRepo.create({
-      tenant_id: tenantId,
-      app_id: savedApp.id,
+    // 2. Create Profile via ProfilesService (full validation + audit + promote to ACTIVE)
+    const savedProfile = await this.profilesService.create({
       profile_id: profileId,
+      app_id,
       version: '1.0.0',
-      version_state: ProfileVersionState.ACTIVE,
-      login_config: template.login_config,
+      login_config: template.login_config as any,
       credential_types: (template.export_policy as any)?.credential_types || {},
       target_domains: (template.export_policy as any)?.target_domains || [],
-      owner_user_id: ownerUserId,
-    });
-    const savedProfile = await this.profileRepo.save(profile);
+    }, tenantId, actorId);
 
-    // 3. Create Session tagged with owner_user_id
-    // The controller reconcile loop will detect the new app with desired_session_count=1
-    // and create the worker pod automatically
-    const session = this.sessionRepo.create({
-      app_id: savedApp.id,
-      tenant_id: tenantId,
-      state: 'STARTING',
-      owner_user_id: ownerUserId,
-    });
-    await this.sessionRepo.save(session);
+    // Set owner_user_id on the profile (service doesn't know about this field yet)
+    await this.profileRepo.update(savedProfile.id, { owner_user_id: ownerUserId });
+
+    // Promote to ACTIVE so credential requests can find it
+    try {
+      await this.profilesService.promote(savedProfile.id, tenantId, actorId);
+    } catch {
+      // If promote fails (e.g., already active), just continue
+    }
+
+    // 3. Scale to 1 session via SessionsService (controller creates pod + baton + service + network policy)
+    await this.sessionsService.scale(app_id, 1, tenantId, actorId);
 
     this.logger.log(
-      `Auto-provisioned: app=${savedApp.id} profile=${savedProfile.id} session=${session.id} ` +
-      `owner=${ownerUserId} template=${template.name}`,
+      `Auto-provisioned: app=${app_id} profile=${savedProfile.id} ` +
+      `owner=${ownerUserId} template=${template.name} — session scaling to 1`,
     );
 
     return savedProfile;

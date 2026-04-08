@@ -11,6 +11,9 @@ import {
 import { CredentialsService } from './credentials.service';
 import { CredentialsController } from './credentials.controller';
 import { TenantsModule } from '../tenants/tenants.module';
+import { AppsModule } from '../apps/apps.module';
+import { ProfilesModule } from '../profiles/profiles.module';
+import { SessionsModule } from '../sessions/sessions.module';
 
 @Module({
   imports: [
@@ -23,6 +26,9 @@ import { TenantsModule } from '../tenants/tenants.module';
       AppTemplateEntity,
     ]),
     TenantsModule,
+    AppsModule,
+    ProfilesModule,
+    SessionsModule,
   ],
   providers: [CredentialsService],
   controllers: [CredentialsController],
