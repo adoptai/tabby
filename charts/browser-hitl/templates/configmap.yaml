@@ -10,7 +10,7 @@ metadata:
 {{- $novncImage := include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.novnc) }}
 data:
   # Per spec section 15.4 - Runtime Configuration (Env Vars)
-  {{- $dbPassword := .Values.secrets.postgresPassword | default "changeme" }}
+  {{- $dbPassword := .Values.secrets.postgresPassword | default "changeme" | urlquery }}
   {{- $defaultDatabaseUrl := printf "postgresql://%s:%s@%s-postgres:%v/%s" .Values.postgres.auth.username $dbPassword (include "browser-hitl.fullname" .) (.Values.postgres.port | int) .Values.postgres.auth.database }}
   DATABASE_URL: {{ default $defaultDatabaseUrl .Values.config.databaseUrl | quote }}
   {{- $defaultRedisUrl := printf "redis://%s-redis:%v" (include "browser-hitl.fullname" .) (.Values.redis.port | int) }}
