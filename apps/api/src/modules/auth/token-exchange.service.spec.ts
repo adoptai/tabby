@@ -175,7 +175,7 @@ describe('TokenExchangeService', () => {
         default_role: 'Viewer',
       });
 
-      tenantRepo.findOne.mockResolvedValue({ id: 'org-123', name: 'AA Inc' });
+      tenantRepo.findOne.mockResolvedValue({ id: 'uuid-tenant-aa', external_id: 'org-123', name: 'AA Inc' });
       jwksService.getPublicKey.mockResolvedValue('mock-pem');
       (jwt.verify as jest.Mock).mockReturnValue({
         iss: 'https://auth.example.com',
@@ -190,9 +190,9 @@ describe('TokenExchangeService', () => {
       });
 
       expect(result.owner_user_id).toBe('user-abc');
-      expect(tenantRepo.findOne).toHaveBeenCalledWith({ where: { id: 'org-123' } });
+      expect(tenantRepo.findOne).toHaveBeenCalledWith({ where: { external_id: 'org-123' } });
       expect(auditService.log).toHaveBeenCalledWith(
-        expect.objectContaining({ tenant_id: 'org-123' }),
+        expect.objectContaining({ tenant_id: 'uuid-tenant-aa' }),
       );
     });
 
@@ -221,7 +221,7 @@ describe('TokenExchangeService', () => {
       await expect(service.exchange({
         subject_token: fakeJwt,
         subject_token_type: 'oidc_jwt',
-      })).rejects.toThrow('Tenant not found');
+      })).rejects.toThrow('Tenant not found for external_id');
     });
   });
 

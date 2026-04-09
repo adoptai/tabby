@@ -1,7 +1,6 @@
 import { Injectable, ConflictException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import * as crypto from 'crypto';
 import { TenantEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 import { MinioProvisionerService } from './minio-provisioner.service';
@@ -17,20 +16,20 @@ export class TenantsService {
     private readonly minioProvisioner: MinioProvisionerService,
   ) {}
 
-  async create(name: string, actorId: string, id?: string): Promise<{ tenant_id: string }> {
+  async create(name: string, actorId: string, externalId?: string): Promise<{ tenant_id: string; external_id?: string }> {
     const existing = await this.tenantRepo.findOne({ where: { name } });
     if (existing) {
       throw new ConflictException('Tenant name already exists');
     }
 
-    if (id) {
-      const existingId = await this.tenantRepo.findOne({ where: { id } });
-      if (existingId) {
-        throw new ConflictException('Tenant ID already exists');
+    if (externalId) {
+      const existingExt = await this.tenantRepo.findOne({ where: { external_id: externalId } });
+      if (existingExt) {
+        throw new ConflictException('Tenant external_id already exists');
       }
     }
 
-    const tenant = this.tenantRepo.create({ id: id || crypto.randomUUID(), name });
+    const tenant = this.tenantRepo.create({ name, external_id: externalId || null });
     const saved = await this.tenantRepo.save(tenant);
 
     // Provision a MinIO bucket for the new tenant's artifact storage
