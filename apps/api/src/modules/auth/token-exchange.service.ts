@@ -135,28 +135,9 @@ export class TokenExchangeService {
       throw new UnauthorizedException('JWT missing user identifier claim');
     }
 
-    // 6. Upsert user_identities record
-    try {
-      const existing = await this.identityRepo.findOne({
-        where: { tenant_id: idp.tenant_id, provider: 'oidc', external_id: ownerUserId },
-      });
-      if (!existing) {
-        const identity = this.identityRepo.create({
-          tenant_id: idp.tenant_id,
-          provider: 'oidc',
-          external_id: ownerUserId,
-          workspace_id: idp.id,
-          // user_id is required — but federated users may not have local accounts
-          // For now, use a placeholder that links to the external identity
-          user_id: ownerUserId,
-        });
-        await this.identityRepo.save(identity).catch(() => {
-          // Race condition: another request created it simultaneously — OK
-        });
-      }
-    } catch {
-      // Non-fatal: identity tracking is best-effort
-    }
+    // 6. Track external identity (best-effort, non-fatal)
+    // Skip if federated user doesn't have a local account — user_identities has FK to users
+    // This is for audit/tracking only, not required for auth flow
 
     // 7. Issue Tabby JWT
     const ttl = params.requested_ttl_seconds || 3600;
