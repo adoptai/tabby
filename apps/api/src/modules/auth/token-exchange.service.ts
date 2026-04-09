@@ -3,8 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const jwt = require('jsonwebtoken');
+import * as jwt from 'jsonwebtoken';
 import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
 import { UserIdentityEntity } from '../../entities/user-identity.entity';
 import { ExternalJwksService } from './external-jwks.service';
@@ -97,7 +96,7 @@ export class TokenExchangeService {
         ? await this.jwksService.getPublicKey(idp.issuer_url || issuer, kid)
         : await this.getFirstKey(idp.issuer_url || issuer);
 
-      // Use jsonwebtoken directly (not NestJS JwtService) to verify with external public key
+      // Use jsonwebtoken directly to verify with external JWKS public key
       verifiedPayload = jwt.verify(params.subject_token, publicKey, {
         algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'],
         issuer: idp.issuer_url || undefined,
