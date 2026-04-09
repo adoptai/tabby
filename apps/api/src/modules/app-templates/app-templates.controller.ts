@@ -8,6 +8,10 @@ import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard
 import { AppTemplatesService } from './app-templates.service';
 
 class CreateAppTemplateDto {
+  @ApiProperty({ required: false, description: 'Target tenant ID. Defaults to caller\'s tenant.' })
+  @IsOptional() @IsString()
+  tenant_id?: string;
+
   @ApiProperty({ example: 'Salesforce' })
   @IsString() @MinLength(1)
   name: string;
@@ -57,7 +61,8 @@ export class AppTemplatesController {
   @HttpCode(201)
   @ApiOperation({ summary: 'Create app template', description: 'Create a reusable app config template for auto-provisioning per-user sessions.' })
   async create(@Body() dto: CreateAppTemplateDto, @Req() req: any) {
-    return this.templateService.create(req.user.tenant_id, dto, req.user.user_id);
+    const tenantId = dto.tenant_id || req.user.tenant_id;
+    return this.templateService.create(tenantId, dto, req.user.user_id);
   }
 
   @Get()

@@ -8,7 +8,7 @@ export class ApplicationEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)

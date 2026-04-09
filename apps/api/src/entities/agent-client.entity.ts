@@ -34,7 +34,7 @@ export class AgentClientEntity {
   @Column({ type: 'varchar' })
   name: string;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)

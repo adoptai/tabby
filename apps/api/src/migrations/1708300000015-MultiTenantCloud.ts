@@ -4,17 +4,59 @@ export class MultiTenantCloud1708300000015 implements MigrationInterface {
   name = 'MultiTenantCloud1708300000015';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Add external_id to tenants for cross-system mapping (e.g., Frontegg org ID)
-    await queryRunner.query(`
-      ALTER TABLE "tenants"
-      ADD COLUMN IF NOT EXISTS "external_id" varchar NULL
-    `);
-    await queryRunner.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS "idx_tenants_external_id"
-      ON "tenants" ("external_id") WHERE "external_id" IS NOT NULL
-    `);
+    // Change tenants.id from uuid to varchar (allows custom IDs like Frontegg org IDs)
+    // All FK columns referencing tenants.id also need to change from uuid to varchar.
+    // In Postgres, uuid values are valid varchar values, so no data loss.
 
-    // Add tenant_id_claim to identity_providers for dynamic tenant routing from JWT
+    // 1. Drop FKs referencing tenants.id
+    const fkTables = [
+      'applications', 'sessions', 'service_profiles', 'agent_clients',
+      'users', 'identity_providers', 'app_templates', 'auth_requests',
+      'interventions', 'artifact_bundles', 'login_queue', 'user_identities',
+      'audit_events',
+    ];
+
+    for (const table of fkTables) {
+      // Find and drop FK constraint for tenant_id
+      const fks = await queryRunner.query(`
+        SELECT constraint_name FROM information_schema.table_constraints
+        WHERE table_name = '${table}' AND constraint_type = 'FOREIGN KEY'
+        AND constraint_name LIKE '%tenant%'
+      `);
+      for (const fk of fks) {
+        await queryRunner.query(`ALTER TABLE "${table}" DROP CONSTRAINT "${fk.constraint_name}"`);
+      }
+    }
+
+    // 2. Change tenants.id from uuid to varchar
+    await queryRunner.query(`ALTER TABLE "tenants" ALTER COLUMN "id" TYPE varchar(255) USING id::varchar`);
+
+    // 3. Change all tenant_id FK columns from uuid to varchar
+    for (const table of fkTables) {
+      const hasColumn = await queryRunner.query(`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'tenant_id'
+      `);
+      if (hasColumn.length > 0) {
+        await queryRunner.query(`ALTER TABLE "${table}" ALTER COLUMN "tenant_id" TYPE varchar(255) USING tenant_id::varchar`);
+      }
+    }
+
+    // 4. Re-add FK constraints
+    for (const table of fkTables) {
+      const hasColumn = await queryRunner.query(`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'tenant_id'
+      `);
+      if (hasColumn.length > 0) {
+        await queryRunner.query(`
+          ALTER TABLE "${table}" ADD CONSTRAINT "fk_${table}_tenant_id"
+          FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE
+        `);
+      }
+    }
+
+    // 5. Add tenant_id_claim to identity_providers for dynamic tenant routing from JWT
     await queryRunner.query(`
       ALTER TABLE "identity_providers"
       ADD COLUMN IF NOT EXISTS "tenant_id_claim" varchar NULL
@@ -23,7 +65,7 @@ export class MultiTenantCloud1708300000015 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`ALTER TABLE "identity_providers" DROP COLUMN IF EXISTS "tenant_id_claim"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_tenants_external_id"`);
-    await queryRunner.query(`ALTER TABLE "tenants" DROP COLUMN IF EXISTS "external_id"`);
+    // Note: reverting varchar back to uuid would fail if non-UUID IDs exist.
+    // This is intentionally not reversed.
   }
 }

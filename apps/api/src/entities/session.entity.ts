@@ -16,7 +16,7 @@ export class SessionEntity {
   @JoinColumn({ name: 'app_id' })
   application: ApplicationEntity;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)

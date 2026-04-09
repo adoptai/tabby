@@ -142,9 +142,9 @@ export class TokenExchangeService {
       if (!claimValue) {
         throw new UnauthorizedException(`JWT missing tenant claim: ${idp.tenant_id_claim}`);
       }
-      const tenant = await this.tenantRepo.findOne({ where: { external_id: claimValue } });
+      const tenant = await this.tenantRepo.findOne({ where: { id: claimValue } });
       if (!tenant) {
-        throw new UnauthorizedException(`Tenant not found for external_id: ${claimValue}`);
+        throw new UnauthorizedException(`Tenant not found: ${claimValue}`);
       }
       resolvedTenantId = tenant.id;
     }

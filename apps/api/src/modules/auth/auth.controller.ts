@@ -289,7 +289,7 @@ export class AuthController {
   @Get('admin/agent-clients/:tenantId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('Admin')
-  async listAgentClients(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
+  async listAgentClients(@Param('tenantId') tenantId: string) {
     const clients = await this.authService.listAgentClients(tenantId);
     // Never return secret hashes
     return clients.map(c => ({

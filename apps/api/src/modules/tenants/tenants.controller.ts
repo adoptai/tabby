@@ -13,10 +13,10 @@ class CreateTenantDto {
   @MinLength(1)
   name: string;
 
-  @ApiProperty({ required: false, example: '2b8edae2-8c45-417f-92bc-d2cf748966c1', description: 'External identifier (e.g., Frontegg org ID) for cross-system tenant mapping.' })
+  @ApiProperty({ required: false, example: '2b8edae2-8c45-417f-92bc-d2cf748966c1', description: 'Custom tenant ID (e.g., Frontegg org ID). If omitted, a UUID is generated.' })
   @IsOptional()
   @IsString()
-  external_id?: string;
+  id?: string;
 }
 
 @ApiTags('Tenants')
@@ -33,7 +33,7 @@ export class TenantsController {
   @ApiResponse({ status: 409, description: 'Tenant name already exists' })
   @HttpCode(201)
   async create(@Body() dto: CreateTenantDto, @Req() req: any) {
-    return this.tenantsService.create(dto.name, req.user.user_id, dto.external_id);
+    return this.tenantsService.create(dto.name, req.user.user_id, dto.id);
   }
 
   @Get()
