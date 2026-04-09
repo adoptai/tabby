@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const jwt = require('jsonwebtoken');
 import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
 import { UserIdentityEntity } from '../../entities/user-identity.entity';
 import { ExternalJwksService } from './external-jwks.service';
@@ -95,11 +97,9 @@ export class TokenExchangeService {
         ? await this.jwksService.getPublicKey(idp.issuer_url || issuer, kid)
         : await this.getFirstKey(idp.issuer_url || issuer);
 
-      const verified = crypto.createVerify(header.alg === 'RS256' ? 'RSA-SHA256' : 'RSA-SHA256');
-      // Use jsonwebtoken-style verification via jwtService
-      verifiedPayload = this.jwtService.verify(params.subject_token, {
+      // Use jsonwebtoken directly (not NestJS JwtService) to verify with external public key
+      verifiedPayload = jwt.verify(params.subject_token, publicKey, {
         algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'],
-        publicKey,
         issuer: idp.issuer_url || undefined,
         audience: idp.audience || undefined,
       }) as typeof unverifiedPayload;
@@ -110,9 +110,8 @@ export class TokenExchangeService {
         await this.jwksService.forceRefresh(idp.issuer_url || issuer);
         try {
           const refreshedKey = await this.jwksService.getPublicKey(idp.issuer_url || issuer, kid);
-          verifiedPayload = this.jwtService.verify(params.subject_token, {
+          verifiedPayload = jwt.verify(params.subject_token, refreshedKey, {
             algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'],
-            publicKey: refreshedKey,
             issuer: idp.issuer_url || undefined,
             audience: idp.audience || undefined,
           }) as typeof unverifiedPayload;
@@ -120,6 +119,7 @@ export class TokenExchangeService {
           throw new UnauthorizedException('JWT signature verification failed after JWKS refresh');
         }
       } else {
+        this.logger.error(`JWT verification failed for issuer ${issuer}: ${(err as Error).message}`);
         throw new UnauthorizedException(`JWT verification failed: ${(err as Error).message}`);
       }
     }
