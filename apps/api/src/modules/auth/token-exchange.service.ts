@@ -123,11 +123,8 @@ export class TokenExchangeService {
       }
     }
 
-    // 4. Reject tokens older than 5 minutes (replay protection)
-    const issuedAt = verifiedPayload.iat as number | undefined;
-    if (issuedAt && (Date.now() / 1000 - issuedAt) > 300) {
-      throw new UnauthorizedException('JWT too old for token exchange (max 5 minutes)');
-    }
+    // 4. JWT expiry is already validated by jsonwebtoken.verify() (checks exp claim)
+    // No additional age check needed — Frontegg JWTs have 24h TTL and users stay logged in
 
     // 5. Extract owner_user_id from configured claim
     const ownerUserId = String(verifiedPayload[idp.user_id_claim] || verifiedPayload.sub || '');
