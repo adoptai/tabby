@@ -320,15 +320,9 @@ export class CredentialsService {
       where.app_id = appId;
     }
 
-    // If ownerUserId provided, try user-scoped session first
+    // If ownerUserId provided, strict scoping — only return sessions owned by this user
     if (ownerUserId) {
       where.owner_user_id = ownerUserId;
-      const userSession = await this.sessionRepo.findOne({ where });
-      if (userSession) {
-        return userSession;
-      }
-      // Fall through to tenant-scoped session (auto-provisioned apps create sessions without owner)
-      delete where.owner_user_id;
     }
 
     const session = await this.sessionRepo.findOne({ where });
