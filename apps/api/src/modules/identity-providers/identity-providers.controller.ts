@@ -32,6 +32,10 @@ class CreateIdpDto {
   @IsOptional() @IsString()
   client_id?: string;
 
+  @ApiProperty({ required: false, example: 'tenantId', description: 'JWT claim containing the tenant ID. When set, enables dynamic tenant routing from the JWT instead of using the IdP\'s fixed tenant.' })
+  @IsOptional() @IsString()
+  tenant_id_claim?: string;
+
   @ApiProperty({ required: false, example: 'sub' })
   @IsOptional() @IsString()
   user_id_claim?: string;

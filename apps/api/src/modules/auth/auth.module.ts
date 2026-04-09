@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { UserEntity, AgentClientEntity, IdentityProviderEntity, UserIdentityEntity } from '../../entities';
+import { UserEntity, AgentClientEntity, IdentityProviderEntity, UserIdentityEntity, TenantEntity } from '../../entities';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
@@ -14,7 +14,7 @@ import { resolveJwtSigningKey } from './jwt-config';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity, AgentClientEntity, IdentityProviderEntity, UserIdentityEntity]),
+    TypeOrmModule.forFeature([UserEntity, AgentClientEntity, IdentityProviderEntity, UserIdentityEntity, TenantEntity]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: resolveJwtSigningKey(),

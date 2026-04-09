@@ -5,6 +5,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
 import * as jwt from 'jsonwebtoken';
 import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
+import { TenantEntity } from '../../entities/tenant.entity';
 import { UserIdentityEntity } from '../../entities/user-identity.entity';
 import { ExternalJwksService } from './external-jwks.service';
 import { JwtPayload } from './auth.service';
@@ -34,6 +35,8 @@ export class TokenExchangeService {
   constructor(
     @InjectRepository(IdentityProviderEntity)
     private readonly idpRepo: Repository<IdentityProviderEntity>,
+    @InjectRepository(TenantEntity)
+    private readonly tenantRepo: Repository<TenantEntity>,
     @InjectRepository(UserIdentityEntity)
     private readonly identityRepo: Repository<UserIdentityEntity>,
     private readonly jwksService: ExternalJwksService,
@@ -132,16 +135,26 @@ export class TokenExchangeService {
       throw new UnauthorizedException('JWT missing user identifier claim');
     }
 
-    // 6. Track external identity (best-effort, non-fatal)
-    // Skip if federated user doesn't have a local account — user_identities has FK to users
-    // This is for audit/tracking only, not required for auth flow
+    // 6. Resolve tenant — dynamic from JWT claim or static from IdP registration
+    let resolvedTenantId = idp.tenant_id;
+    if (idp.tenant_id_claim) {
+      const claimValue = String(verifiedPayload[idp.tenant_id_claim] || '');
+      if (!claimValue) {
+        throw new UnauthorizedException(`JWT missing tenant claim: ${idp.tenant_id_claim}`);
+      }
+      const tenant = await this.tenantRepo.findOne({ where: { id: claimValue } });
+      if (!tenant) {
+        throw new UnauthorizedException(`Tenant not found: ${claimValue}`);
+      }
+      resolvedTenantId = tenant.id;
+    }
 
     // 7. Issue Tabby JWT
     const ttl = params.requested_ttl_seconds || 3600;
     const jti = crypto.randomUUID();
     const payload: JwtPayload = {
       sub: `federated:${ownerUserId}`,
-      tenant_id: idp.tenant_id,
+      tenant_id: resolvedTenantId,
       role: idp.default_role,
       jti,
       kid: process.env.JWT_SIGNING_KEY_ID || 'v1',
@@ -153,11 +166,11 @@ export class TokenExchangeService {
     const token = this.jwtService.sign(payload, { expiresIn: ttl });
 
     await this.auditService.log({
-      tenant_id: idp.tenant_id,
+      tenant_id: resolvedTenantId,
       actor_type: 'system',
       actor_id: `federated:${ownerUserId}`,
       event_type: 'auth.token_exchange.issued',
-      payload: { idp_id: idp.id, owner_user_id: ownerUserId, mode: 'oidc_jwt' },
+      payload: { idp_id: idp.id, owner_user_id: ownerUserId, mode: 'oidc_jwt', resolved_tenant: resolvedTenantId },
     });
 
     return {

@@ -36,6 +36,9 @@ export class IdentityProviderEntity {
   client_id: string | null;
 
   // Claim mapping
+  @Column({ type: 'varchar', nullable: true })
+  tenant_id_claim: string | null;
+
   @Column({ type: 'varchar', default: 'sub' })
   user_id_claim: string;
 

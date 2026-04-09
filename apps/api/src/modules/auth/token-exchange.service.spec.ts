@@ -1,5 +1,11 @@
 import { UnauthorizedException } from '@nestjs/common';
 
+// Mock jsonwebtoken (used directly for external JWT verification)
+jest.mock('jsonwebtoken', () => ({
+  verify: jest.fn(),
+}));
+import * as jwt from 'jsonwebtoken';
+
 // Minimal mocks
 function createMockIdpRepo() {
   return { findOne: jest.fn() };
@@ -16,10 +22,14 @@ function createMockJwtService() {
 function createMockAuditService() {
   return { log: jest.fn().mockResolvedValue(undefined) };
 }
+function createMockTenantRepo() {
+  return { findOne: jest.fn() };
+}
 
 function buildService(overrides: Record<string, any> = {}) {
   const { TokenExchangeService } = require('./token-exchange.service');
   const idpRepo = overrides.idpRepo ?? createMockIdpRepo();
+  const tenantRepo = overrides.tenantRepo ?? createMockTenantRepo();
   const identityRepo = overrides.identityRepo ?? createMockIdentityRepo();
   const jwksService = overrides.jwksService ?? createMockJwksService();
   const jwtService = overrides.jwtService ?? createMockJwtService();
@@ -27,12 +37,13 @@ function buildService(overrides: Record<string, any> = {}) {
 
   const service = Object.create(TokenExchangeService.prototype);
   (service as any).idpRepo = idpRepo;
+  (service as any).tenantRepo = tenantRepo;
   (service as any).identityRepo = identityRepo;
   (service as any).jwksService = jwksService;
   (service as any).jwtService = jwtService;
   (service as any).auditService = auditService;
 
-  return { service, idpRepo, identityRepo, jwksService, jwtService, auditService };
+  return { service, idpRepo, tenantRepo, identityRepo, jwksService, jwtService, auditService };
 }
 
 describe('TokenExchangeService', () => {
@@ -120,11 +131,12 @@ describe('TokenExchangeService', () => {
     });
 
     it('verifies JWT and issues federated token', async () => {
-      const { service, idpRepo, jwtService, jwksService, identityRepo, auditService } = buildService();
+      const { service, idpRepo, jwtService, jwksService, auditService } = buildService();
 
       idpRepo.findOne.mockResolvedValue({
         id: 'idp-1',
         tenant_id: 'tenant-1',
+        tenant_id_claim: null,
         issuer_url: 'https://auth.example.com',
         audience: null,
         user_id_claim: 'sub',
@@ -132,15 +144,12 @@ describe('TokenExchangeService', () => {
       });
 
       jwksService.getPublicKey.mockResolvedValue('mock-pem');
-      jwtService.verify.mockReturnValue({
+      (jwt.verify as jest.Mock).mockReturnValue({
         iss: 'https://auth.example.com',
         sub: 'user-abc',
         exp: Math.floor(Date.now() / 1000) + 3600,
         iat: Math.floor(Date.now() / 1000),
       });
-      identityRepo.findOne.mockResolvedValue(null);
-      identityRepo.create.mockReturnValue({});
-      identityRepo.save.mockResolvedValue({});
 
       const result = await service.exchange({
         subject_token: fakeJwt,
@@ -151,6 +160,68 @@ describe('TokenExchangeService', () => {
       expect(result.owner_user_id).toBe('user-abc');
       expect(jwksService.getPublicKey).toHaveBeenCalledWith('https://auth.example.com', 'key-1');
       expect(auditService.log).toHaveBeenCalled();
+    });
+
+    it('resolves tenant dynamically from JWT claim when tenant_id_claim is set', async () => {
+      const { service, idpRepo, tenantRepo, jwksService, auditService } = buildService();
+
+      idpRepo.findOne.mockResolvedValue({
+        id: 'idp-1',
+        tenant_id: 'admin-tenant',
+        tenant_id_claim: 'tenantId',
+        issuer_url: 'https://auth.example.com',
+        audience: null,
+        user_id_claim: 'sub',
+        default_role: 'Viewer',
+      });
+
+      tenantRepo.findOne.mockResolvedValue({ id: 'org-123', name: 'AA Inc' });
+      jwksService.getPublicKey.mockResolvedValue('mock-pem');
+      (jwt.verify as jest.Mock).mockReturnValue({
+        iss: 'https://auth.example.com',
+        sub: 'user-abc',
+        tenantId: 'org-123',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const result = await service.exchange({
+        subject_token: fakeJwt,
+        subject_token_type: 'oidc_jwt',
+      });
+
+      expect(result.owner_user_id).toBe('user-abc');
+      expect(tenantRepo.findOne).toHaveBeenCalledWith({ where: { id: 'org-123' } });
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ tenant_id: 'org-123' }),
+      );
+    });
+
+    it('rejects when tenant_id_claim resolves to non-existent tenant', async () => {
+      const { service, idpRepo, tenantRepo, jwksService } = buildService();
+
+      idpRepo.findOne.mockResolvedValue({
+        id: 'idp-1',
+        tenant_id: 'admin-tenant',
+        tenant_id_claim: 'tenantId',
+        issuer_url: 'https://auth.example.com',
+        audience: null,
+        user_id_claim: 'sub',
+        default_role: 'Viewer',
+      });
+
+      tenantRepo.findOne.mockResolvedValue(null);
+      jwksService.getPublicKey.mockResolvedValue('mock-pem');
+      (jwt.verify as jest.Mock).mockReturnValue({
+        iss: 'https://auth.example.com',
+        sub: 'user-abc',
+        tenantId: 'non-existent-org',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      await expect(service.exchange({
+        subject_token: fakeJwt,
+        subject_token_type: 'oidc_jwt',
+      })).rejects.toThrow('Tenant not found');
     });
   });
 
