@@ -129,6 +129,7 @@ export class AgentController {
       req.user.tenant_id,
       req.user.allowed_profiles || [],
       req.user.role,
+      req.user.owner_user_id,
     );
   }
 }

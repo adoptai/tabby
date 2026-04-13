@@ -303,6 +303,25 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+
+    // Clean up FAILED sessions: terminate after half the idle TTL (or 30 min default)
+    if (idleShutdownMs > 0) {
+      const failedTtlMs = idleShutdownMs / 2;
+      const failedSessions = await this.sessionRepo.find({
+        where: { state: SessionState.FAILED as any },
+      });
+
+      for (const session of failedSessions) {
+        const age = now - new Date(session.started_at).getTime();
+        if (age >= failedTtlMs) {
+          this.logger.log(
+            `Cleaning up FAILED session ${session.id} (age: ${Math.round(age / 60000)}min, threshold: ${Math.round(failedTtlMs / 60000)}min)`,
+          );
+          await this.appRepo.update(session.app_id, { desired_session_count: 0 });
+          await this.terminateSession(session);
+        }
+      }
+    }
   }
 
   private async reconcileRuntimeDrift(): Promise<void> {

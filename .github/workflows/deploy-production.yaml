@@ -244,6 +244,7 @@ jobs:
       IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
       CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
       COMMIT_SHA: ${{ github.sha }}
+      DEPLOY_ENVIRONMENT: production
       # Managed service overrides (optional — defaults to in-cluster)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       REDIS_URL: ${{ secrets.REDIS_URL }}

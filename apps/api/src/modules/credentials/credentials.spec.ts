@@ -1003,4 +1003,112 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
       });
     });
   });
+
+  // =========================================================================
+  // owner_user_id scoping — multi-user isolation within a tenant
+  // =========================================================================
+
+  describe('resolveActiveProfile — owner_user_id scoping', () => {
+    const USER_A = 'user-a';
+    const USER_B = 'user-b';
+
+    it('returns user-scoped profile first when ownerUserId is provided', async () => {
+      const { service, profileRepo } = buildService();
+      const userProfile = { ...TEST_PROFILE, id: 'user-a-profile', owner_user_id: USER_A };
+      profileRepo.find.mockResolvedValueOnce([userProfile]);
+
+      const result = await service.resolveActiveProfile(TEST_TENANT, 'salesforce-standard', USER_A);
+
+      expect(result.id).toBe('user-a-profile');
+      // First (and only) call includes owner_user_id
+      expect(profileRepo.find).toHaveBeenCalledTimes(1);
+      expect(profileRepo.find).toHaveBeenCalledWith({
+        where: expect.objectContaining({ owner_user_id: USER_A }),
+      });
+    });
+
+    it('falls back to shared (owner_user_id IS NULL) when user has no profile', async () => {
+      const { service, profileRepo } = buildService();
+      const sharedProfile = { ...TEST_PROFILE, id: 'shared-profile', owner_user_id: null };
+      profileRepo.find
+        .mockResolvedValueOnce([])              // user-scoped lookup: empty
+        .mockResolvedValueOnce([sharedProfile]); // shared fallback
+
+      const result = await service.resolveActiveProfile(TEST_TENANT, 'salesforce-standard', USER_A);
+
+      expect(result.id).toBe('shared-profile');
+      // Second call must use IsNull(), not the other user's ID.
+      const secondCallArgs = profileRepo.find.mock.calls[1][0];
+      // TypeORM's IsNull() is a FindOperator — we just assert it's not a plain string user ID.
+      expect(secondCallArgs.where.owner_user_id).toBeDefined();
+      expect(typeof secondCallArgs.where.owner_user_id).not.toBe('string');
+    });
+
+    it('does NOT leak another user\'s profile in the shared fallback', async () => {
+      const { service, profileRepo } = buildService();
+      // User A has nothing; User B has a profile. The shared fallback must not match User B.
+      profileRepo.find
+        .mockResolvedValueOnce([])  // user-scoped for A
+        .mockResolvedValueOnce([]); // shared (IsNull) lookup — empty
+      // template lookup returns null → NotFoundException
+      const { templateRepo } = service as any;
+      (templateRepo as any).findOne = jest.fn().mockResolvedValue(null);
+
+      await expect(
+        service.resolveActiveProfile(TEST_TENANT, 'salesforce-standard', USER_A),
+      ).rejects.toThrow('No active profile');
+
+      // Critical: the second call did not pass USER_B (or any other user's ID)
+      const secondCallWhere = profileRepo.find.mock.calls[1][0].where;
+      expect(secondCallWhere.owner_user_id).not.toBe(USER_B);
+    });
+
+    it('prefers ACTIVE profile over CANARY in user-scoped results', async () => {
+      const { service, profileRepo } = buildService();
+      const canary = { ...TEST_PROFILE, id: 'canary', version_state: ProfileVersionState.CANARY };
+      const active = { ...TEST_PROFILE, id: 'active', version_state: ProfileVersionState.ACTIVE };
+      profileRepo.find.mockResolvedValueOnce([canary, active]);
+
+      const result = await service.resolveActiveProfile(TEST_TENANT, 'salesforce-standard', USER_A);
+      expect(result.id).toBe('active');
+    });
+  });
+
+  describe('findHealthySession — owner_user_id scoping', () => {
+    it('includes owner_user_id in WHERE when provided', async () => {
+      const { service, sessionRepo } = buildService();
+      sessionRepo.findOne.mockResolvedValueOnce({ ...TEST_SESSION, owner_user_id: 'user-a' });
+
+      const session = await service.findHealthySession(TEST_TENANT, TEST_APP_ID, 'user-a');
+
+      expect(session.id).toBe(TEST_SESSION.id);
+      expect(sessionRepo.findOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          tenant_id: TEST_TENANT,
+          app_id: TEST_APP_ID,
+          state: 'HEALTHY',
+          owner_user_id: 'user-a',
+        }),
+      });
+    });
+
+    it('omits owner_user_id when not provided (backward compat)', async () => {
+      const { service, sessionRepo } = buildService();
+      sessionRepo.findOne.mockResolvedValueOnce(TEST_SESSION);
+
+      await service.findHealthySession(TEST_TENANT, TEST_APP_ID);
+
+      const callWhere = sessionRepo.findOne.mock.calls[0][0].where;
+      expect(callWhere).not.toHaveProperty('owner_user_id');
+    });
+
+    it('throws NotFoundException when no matching session exists', async () => {
+      const { service, sessionRepo } = buildService();
+      sessionRepo.findOne.mockResolvedValueOnce(null);
+
+      await expect(
+        service.findHealthySession(TEST_TENANT, TEST_APP_ID, 'user-a'),
+      ).rejects.toThrow('No healthy session available');
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, MoreThan, Repository } from 'typeorm';
+import { In, IsNull, MoreThan, Repository } from 'typeorm';
 import {
   DEFAULTS,
   REDIS_KEYS,
@@ -124,7 +124,21 @@ export class CredentialsService {
     const isCanary = profile.version_state === ProfileVersionState.CANARY;
 
     // 2. Find healthy session via profile's app_id, scoped by owner if federated
-    const session = await this.findHealthySession(tenantId, profile.app_id, ownerUserId);
+    let session: SessionEntity;
+    try {
+      session = await this.findHealthySession(tenantId, profile.app_id, ownerUserId);
+    } catch (e) {
+      if (e instanceof NotFoundException && profile.app_id) {
+        // No healthy session — check if app was idle-shutdown (desired_session_count=0)
+        // If so, scale it back up so the controller creates a new session
+        const app = await this.appRepo.findOne({ where: { id: profile.app_id } });
+        if (app && app.desired_session_count === 0) {
+          this.logger.log(`Re-scaling app ${app.id} from idle shutdown for user ${ownerUserId || 'shared'}`);
+          await this.sessionsService.scale(app.id, 1, tenantId, `federated:${ownerUserId || 'system'}`);
+        }
+      }
+      throw e;
+    }
 
     // Update last_credential_request_at for idle shutdown tracking
     await this.sessionRepo.update(session.id, { last_credential_request_at: new Date() });
@@ -218,8 +232,8 @@ export class CredentialsService {
         const active = userProfiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
         return active || userProfiles[0];
       }
-      // Fall through to tenant-scoped (shared) profiles
-      delete where.owner_user_id;
+      // Fall through to shared profiles (owner_user_id IS NULL only, not other users' profiles)
+      where.owner_user_id = IsNull();
     }
 
     // Query for shared/tenant-scoped profiles (backward compat)
@@ -266,9 +280,10 @@ export class CredentialsService {
     // 1. Create App via AppsService (full validation + audit)
     const { app_id } = await this.appsService.create({
       name: `${template.name} — ${ownerUserId}`,
-      target_urls: (template.login_config as any)?.login_url
-        ? [(template.login_config as any).login_url]
-        : [],
+      target_urls: [
+        ...((template.login_config as any)?.login_url ? [(template.login_config as any).login_url] : []),
+        ...((template.export_policy as any)?.target_domains || []).map((d: string) => `https://${d}`),
+      ],
       login_config: template.login_config as any,
       keepalive_config: template.keepalive_config as any,
       export_policy: template.export_policy as any,

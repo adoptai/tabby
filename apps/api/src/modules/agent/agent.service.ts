@@ -78,15 +78,20 @@ export class AgentService implements OnModuleDestroy {
     tenantId: string,
     allowedProfiles: string[],
     role: string,
+    ownerUserId?: string | null,
   ): Promise<Record<string, unknown>> {
     if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
       throw new ForbiddenException(`Agent is not authorized for profile "${profileId}"`);
     }
 
-    const profile = await this.credentialsService.resolveActiveProfile(tenantId, profileId);
+    const profile = await this.credentialsService.resolveActiveProfile(tenantId, profileId, ownerUserId);
 
+    const where: Record<string, any> = { tenant_id: tenantId, app_id: profile.app_id! };
+    if (ownerUserId) {
+      where.owner_user_id = ownerUserId;
+    }
     const session = await this.sessionRepo.findOne({
-      where: { tenant_id: tenantId, app_id: profile.app_id! },
+      where,
       order: { started_at: 'DESC' },
       relations: ['application'],
     });

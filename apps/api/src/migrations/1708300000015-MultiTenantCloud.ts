@@ -61,6 +61,25 @@ export class MultiTenantCloud1708300000015 implements MigrationInterface {
       ALTER TABLE "identity_providers"
       ADD COLUMN IF NOT EXISTS "tenant_id_claim" varchar NULL
     `);
+
+    // 6. Fix unique indexes on service_profiles to include owner_user_id (multi-user support)
+    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_service_profiles_version_unique"`);
+    await queryRunner.query(`
+      CREATE UNIQUE INDEX "IDX_service_profiles_version_unique"
+      ON "service_profiles" ("tenant_id", "profile_id", "version", COALESCE("owner_user_id", ''))
+    `);
+    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_service_profiles_active_unique"`);
+    await queryRunner.query(`
+      CREATE UNIQUE INDEX "IDX_service_profiles_active_unique"
+      ON "service_profiles" ("tenant_id", "profile_id", COALESCE("owner_user_id", ''))
+      WHERE ("version_state" = 'ACTIVE')
+    `);
+    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_service_profiles_canary_unique"`);
+    await queryRunner.query(`
+      CREATE UNIQUE INDEX "IDX_service_profiles_canary_unique"
+      ON "service_profiles" ("tenant_id", "profile_id", COALESCE("owner_user_id", ''))
+      WHERE ("version_state" = 'CANARY')
+    `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
