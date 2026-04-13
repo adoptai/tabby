@@ -8,61 +8,57 @@ export class MultiTenantCloud1708300000015 implements MigrationInterface {
     // All FK columns referencing tenants.id also need to change from uuid to varchar.
     // In Postgres, uuid values are valid varchar values, so no data loss.
 
-    // 1. Drop FKs referencing tenants.id
-    const fkTables = [
-      'applications', 'sessions', 'service_profiles', 'agent_clients',
-      'users', 'identity_providers', 'app_templates', 'auth_requests',
-      'interventions', 'artifact_bundles', 'login_queue', 'user_identities',
-      'audit_events',
-    ];
+    // 1. Drop FKs referencing tenants.id — discovered dynamically by column + referenced table,
+    //    not by constraint name (name-based matching is fragile across TypeORM versions).
+    const fks = await queryRunner.query(`
+      SELECT kcu.table_name, kcu.constraint_name
+      FROM information_schema.key_column_usage kcu
+      JOIN information_schema.referential_constraints rc
+        ON kcu.constraint_name = rc.constraint_name
+        AND kcu.constraint_schema = rc.constraint_schema
+      JOIN information_schema.key_column_usage kcu2
+        ON rc.unique_constraint_name = kcu2.constraint_name
+        AND rc.unique_constraint_schema = kcu2.constraint_schema
+      WHERE kcu.column_name = 'tenant_id'
+        AND kcu2.table_name = 'tenants'
+        AND kcu2.column_name = 'id'
+        AND kcu.table_schema = 'public'
+    `);
 
-    for (const table of fkTables) {
-      // Find and drop FK constraint for tenant_id
-      const fks = await queryRunner.query(`
-        SELECT constraint_name FROM information_schema.table_constraints
-        WHERE table_name = '${table}' AND constraint_type = 'FOREIGN KEY'
-        AND constraint_name LIKE '%tenant%'
-      `);
-      for (const fk of fks) {
-        await queryRunner.query(`ALTER TABLE "${table}" DROP CONSTRAINT "${fk.constraint_name}"`);
-      }
+    const fkTables: string[] = [];
+    for (const fk of fks) {
+      await queryRunner.query(`ALTER TABLE "${fk.table_name}" DROP CONSTRAINT "${fk.constraint_name}"`);
+      if (!fkTables.includes(fk.table_name)) fkTables.push(fk.table_name);
     }
 
-    // 2. Change tenants.id from uuid to varchar
+    // 2. Drop default on tenants.id (InitialSchema sets DEFAULT gen_random_uuid() — some Postgres
+    //    versions reject ALTER COLUMN TYPE when a typed default exists), then change to varchar.
+    await queryRunner.query(`ALTER TABLE "tenants" ALTER COLUMN "id" DROP DEFAULT`);
     await queryRunner.query(`ALTER TABLE "tenants" ALTER COLUMN "id" TYPE varchar(255) USING id::varchar`);
 
     // 3. Change all tenant_id FK columns from uuid to varchar
     for (const table of fkTables) {
-      const hasColumn = await queryRunner.query(`
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = '${table}' AND column_name = 'tenant_id'
-      `);
-      if (hasColumn.length > 0) {
-        await queryRunner.query(`ALTER TABLE "${table}" ALTER COLUMN "tenant_id" TYPE varchar(255) USING tenant_id::varchar`);
-      }
+      await queryRunner.query(`ALTER TABLE "${table}" ALTER COLUMN "tenant_id" TYPE varchar(255) USING tenant_id::varchar`);
     }
 
     // 4. Re-add FK constraints
     for (const table of fkTables) {
-      const hasColumn = await queryRunner.query(`
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = '${table}' AND column_name = 'tenant_id'
+      await queryRunner.query(`
+        ALTER TABLE "${table}" ADD CONSTRAINT "fk_${table}_tenant_id"
+        FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE
       `);
-      if (hasColumn.length > 0) {
-        await queryRunner.query(`
-          ALTER TABLE "${table}" ADD CONSTRAINT "fk_${table}_tenant_id"
-          FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE
-        `);
-      }
     }
 
-    // 5. Add tenant_id_claim to identity_providers for dynamic tenant routing from JWT
+    // 5. Reindex composite indexes that include tenant_id (stats may drift after type change)
+    await queryRunner.query(`REINDEX INDEX CONCURRENTLY IF EXISTS "idx_auth_requests_tenant_app"`);
+
+    // 6. Add tenant_id_claim to identity_providers for dynamic tenant routing from JWT
     await queryRunner.query(`
       ALTER TABLE "identity_providers"
       ADD COLUMN IF NOT EXISTS "tenant_id_claim" varchar NULL
     `);
 
-    // 6. Fix unique indexes on service_profiles to include owner_user_id (multi-user support)
+    // 7. Fix unique indexes on service_profiles to include owner_user_id (multi-user support)
     await queryRunner.query(`DROP INDEX IF EXISTS "IDX_service_profiles_version_unique"`);
     await queryRunner.query(`
       CREATE UNIQUE INDEX "IDX_service_profiles_version_unique"
