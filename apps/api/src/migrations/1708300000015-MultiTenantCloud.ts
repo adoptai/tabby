@@ -50,7 +50,12 @@ export class MultiTenantCloud1708300000015 implements MigrationInterface {
     }
 
     // 5. Reindex composite indexes that include tenant_id (stats may drift after type change)
-    await queryRunner.query(`REINDEX INDEX CONCURRENTLY IF EXISTS "idx_auth_requests_tenant_app"`);
+    const idxExists = await queryRunner.query(`
+      SELECT 1 FROM pg_indexes WHERE indexname = 'idx_auth_requests_tenant_app'
+    `);
+    if (idxExists.length > 0) {
+      await queryRunner.query(`REINDEX INDEX "idx_auth_requests_tenant_app"`);
+    }
 
     // 6. Add tenant_id_claim to identity_providers for dynamic tenant routing from JWT
     await queryRunner.query(`
