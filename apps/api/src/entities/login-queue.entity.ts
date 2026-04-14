@@ -28,7 +28,7 @@ export class LoginQueueEntity {
   @JoinColumn({ name: 'auth_request_id' })
   auth_request: AuthRequestEntity;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @Column({ type: 'uuid' })

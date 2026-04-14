@@ -294,14 +294,12 @@ export function validateExportPolicy(config: ExportPolicy): ValidationResult {
 
 export function validateNotificationConfig(config: NotificationConfig): ValidationResult {
   const errors: ValidationError[] = [];
-  const channelPattern = /^(slack|teams):.+$/;
+  const channelPattern = /^(slack|teams|agent):.+$/;
 
-  if (!config.channels || !Array.isArray(config.channels) || config.channels.length === 0) {
-    errors.push({ path: 'channels', message: 'channels cannot be empty' });
-  } else {
+  if (config.channels && config.channels.length > 0) {
     for (let i = 0; i < config.channels.length; i++) {
       if (!channelPattern.test(config.channels[i])) {
-        errors.push({ path: `channels[${i}]`, message: 'Channel must match format {provider}:{reference} where provider is slack or teams' });
+        errors.push({ path: `channels[${i}]`, message: 'Channel must match format {provider}:{reference} where provider is slack, teams, or agent' });
       }
     }
   }

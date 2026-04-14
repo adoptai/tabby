@@ -301,11 +301,22 @@ export class StateMachineService {
         `Session ${session.id}: new input requested (type=${inputRequest?.input_type}, step=${inputRequest?.step_index})`,
       );
 
+      // Create a new intervention for each sequential input request
+      // so session-status endpoint can return the latest step_index
+      const intervention = this.interventionRepo.create({
+        session_id: session.id,
+        tenant_id: session.tenant_id,
+        app_id: session.app_id,
+        type: interventionType,
+        input_request_metadata: inputRequest as unknown as Record<string, unknown> ?? null,
+      });
+      const savedIntervention = await this.interventionRepo.save(intervention);
+
       await this.natsPublisher.publishHitlStarted(
         session.tenant_id,
         session.id,
         session.app_id,
-        '', // no new intervention ID — reuses existing
+        savedIntervention.id,
         appName,
         interventionType,
         inputRequest,

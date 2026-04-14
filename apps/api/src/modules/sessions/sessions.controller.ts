@@ -56,7 +56,7 @@ export class SessionsController {
   }
 
   @Get('sessions/:id')
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Operator', 'Viewer', 'Agent')
   @ApiOperation({ summary: 'Get session details', description: 'Returns full session entity including state, health result, intervention counts, and timestamps.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
   @ApiResponse({ status: 200, description: 'Session details' })

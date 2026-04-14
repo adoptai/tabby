@@ -92,7 +92,7 @@ export interface EscalationConfig {
 }
 
 export interface NotificationConfig {
-  channels: string[];           // Format: {provider}:{reference}
+  channels?: string[];           // Format: {provider}:{reference}. Empty/omitted = silent/poll-only.
   escalation?: EscalationConfig;
 }
 

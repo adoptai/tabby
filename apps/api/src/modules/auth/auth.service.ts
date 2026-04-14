@@ -8,15 +8,17 @@ import { UserEntity, AgentClientEntity } from '../../entities';
 import { DEFAULTS, PASSWORD_RULES } from '@browser-hitl/shared';
 
 export interface JwtPayload {
-  sub: string;        // user_id or agent client_id
+  sub: string;        // user_id or agent client_id or federated:external_id
   tenant_id: string;
   role: string;
   jti?: string;       // unique token ID for revocation
   kid?: string;       // key ID for rotation
-  token_type?: 'human' | 'service' | 'agent';
+  token_type?: 'human' | 'service' | 'agent' | 'federated';
   service_client_id?: string;
   agent_client_id?: string;
   allowed_profiles?: string[];
+  owner_user_id?: string;   // external user ID for per-user session isolation
+  idp_id?: string;          // identity provider that federated this token
   exp?: number;       // expiration timestamp (set by JWT library)
 }
 

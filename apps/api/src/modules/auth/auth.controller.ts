@@ -1,11 +1,12 @@
 import {
   Controller, Post, Get, Delete, Body, Param, HttpCode,
-  UseGuards, Req, ParseUUIDPipe,
+  UseGuards, Req, ParseUUIDPipe, UnauthorizedException,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { TokenBlacklistService } from './token-blacklist.service';
+import { TokenExchangeService } from './token-exchange.service';
 import {
   IsEmail, IsString, MinLength, IsUUID, IsOptional,
   IsArray, ArrayMinSize, IsInt, Min, Max, Matches,
@@ -100,6 +101,35 @@ class RegisterAgentClientDto {
   rate_limit_per_minute?: number;
 }
 
+class TokenExchangeDto {
+  @ApiProperty({ description: 'The external JWT or agent token to exchange' })
+  @IsString()
+  @MinLength(1)
+  subject_token: string;
+
+  @ApiProperty({ description: 'Token type: oidc_jwt or agent_assertion', example: 'oidc_jwt' })
+  @IsString()
+  @Matches(/^(oidc_jwt|agent_assertion)$/, { message: 'subject_token_type must be "oidc_jwt" or "agent_assertion"' })
+  subject_token_type: 'oidc_jwt' | 'agent_assertion';
+
+  @ApiProperty({ required: false, description: 'Hint which IdP to use (UUID)' })
+  @IsOptional()
+  @IsUUID()
+  idp_id?: string;
+
+  @ApiProperty({ required: false, description: 'Target user ID for agent_assertion mode' })
+  @IsOptional()
+  @IsString()
+  target_user_id?: string;
+
+  @ApiProperty({ required: false, description: 'Requested token TTL in seconds (300-3600)', example: 3600 })
+  @IsOptional()
+  @IsInt()
+  @Min(300)
+  @Max(3600)
+  requested_ttl_seconds?: number;
+}
+
 // =====================================================================
 // Controller
 // =====================================================================
@@ -112,6 +142,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
     private readonly tokenBlacklist: TokenBlacklistService,
+    private readonly tokenExchangeService: TokenExchangeService,
   ) {}
 
   // =================================================================
@@ -258,7 +289,7 @@ export class AuthController {
   @Get('admin/agent-clients/:tenantId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('Admin')
-  async listAgentClients(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
+  async listAgentClients(@Param('tenantId') tenantId: string) {
     const clients = await this.authService.listAgentClients(tenantId);
     // Never return secret hashes
     return clients.map(c => ({
@@ -314,5 +345,47 @@ export class AuthController {
     });
 
     return result;
+  }
+
+  // =================================================================
+  // Token Exchange (OIDC JWT / Agent Assertion)
+  // =================================================================
+
+  @ApiOperation({
+    summary: 'Exchange external token for Tabby user-scoped token',
+    description: 'RFC 8693-inspired token exchange. Accepts an external OIDC JWT or an agent assertion to issue a user-scoped Tabby JWT with owner_user_id for session isolation.',
+  })
+  @ApiResponse({ status: 200, description: 'Federated token issued' })
+  @ApiResponse({ status: 401, description: 'Token validation failed' })
+  @Post('auth/token-exchange')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async tokenExchange(@Body() dto: TokenExchangeDto, @Req() req: any): Promise<{ access_token: string; token_type: string; expires_in: number; owner_user_id: string }> {
+    // For agent_assertion, extract the agent's JWT from Authorization header
+    let agentPayload = undefined;
+    let tenantId: string | undefined;
+
+    if (dto.subject_token_type === 'agent_assertion') {
+      // The request must carry a valid agent JWT in Authorization header
+      const authHeader = req.headers?.authorization;
+      if (!authHeader?.startsWith('Bearer ')) {
+        throw new UnauthorizedException('agent_assertion requires Bearer token in Authorization header');
+      }
+      try {
+        agentPayload = this.authService.verifyToken(authHeader.slice(7));
+        tenantId = agentPayload.tenant_id;
+      } catch {
+        throw new UnauthorizedException('Invalid agent token');
+      }
+    }
+
+    return this.tokenExchangeService.exchange({
+      subject_token: dto.subject_token,
+      subject_token_type: dto.subject_token_type,
+      idp_id: dto.idp_id,
+      target_user_id: dto.target_user_id,
+      requested_ttl_seconds: dto.requested_ttl_seconds,
+      agent_payload: agentPayload,
+    }, tenantId);
   }
 }

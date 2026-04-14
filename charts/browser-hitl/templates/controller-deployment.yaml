@@ -70,6 +70,8 @@ spec:
               value: "v1"
             - name: RELEASE_INSTANCE
               value: {{ include "browser-hitl.fullname" . | quote }}
+            - name: DEPLOY_ENVIRONMENT
+              value: {{ .Values.config.deployEnvironment | default "" | quote }}
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           livenessProbe:

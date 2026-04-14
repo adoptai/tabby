@@ -394,6 +394,8 @@ config:
   # Agent wrapper defaults (POST /agent/run-url)
   agentDefaultCredentialRef: ""
   agentDefaultSlackChannel: ""
+  # Environment label for worker pods (e.g. "staging", "production")
+  deployEnvironment: ""
   # Bypass proxy for in-cluster/local endpoints while keeping external egress on proxy.
   egressProxyBypassList: "localhost;127.0.0.1;::1;*.svc;*.svc.cluster.local;*.cluster.local;test-harness;browser-hitl-test-harness"
   # Egress proxy
