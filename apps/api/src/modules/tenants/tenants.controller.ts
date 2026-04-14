@@ -2,7 +2,7 @@ import {
   Controller, Post, Get, Body, Query, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty } from '@nestjs/swagger';
-import { IsString, MinLength } from 'class-validator';
+import { IsString, MinLength, IsOptional } from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { TenantsService } from './tenants.service';
@@ -12,6 +12,11 @@ class CreateTenantDto {
   @IsString()
   @MinLength(1)
   name: string;
+
+  @ApiProperty({ required: false, example: '2b8edae2-8c45-417f-92bc-d2cf748966c1', description: 'Custom tenant ID (e.g., Frontegg org ID). If omitted, a UUID is generated.' })
+  @IsOptional()
+  @IsString()
+  id?: string;
 }
 
 @ApiTags('Tenants')
@@ -28,7 +33,7 @@ export class TenantsController {
   @ApiResponse({ status: 409, description: 'Tenant name already exists' })
   @HttpCode(201)
   async create(@Body() dto: CreateTenantDto, @Req() req: any) {
-    return this.tenantsService.create(dto.name, req.user.user_id);
+    return this.tenantsService.create(dto.name, req.user.user_id, dto.id);
   }
 
   @Get()

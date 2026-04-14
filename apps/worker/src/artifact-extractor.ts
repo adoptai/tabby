@@ -158,16 +158,12 @@ export class ArtifactExtractor {
   }
 
   /**
-   * Extract cookies filtered to target domains (spec section 10.8).
-   * Falls back to all cookies if URL-based filtering returns empty
-   * (e.g., when target_urls scheme/hostname differs from actual visit URL).
+   * Extract ALL cookies from the browser context.
+   * Playwright's context.cookies(urls) misses broad-domain cookies (e.g., .salesforce.com)
+   * that don't exactly match the target URLs. Always return all cookies to ensure
+   * auth cookies on parent domains are included.
    */
-  private async extractCookies(targetUrls: string[]): Promise<unknown> {
-    if (targetUrls.length > 0) {
-      const filtered = await this.context.cookies(targetUrls);
-      if (filtered.length > 0) return filtered;
-    }
-    // Fallback: return all cookies from the browser context
+  private async extractCookies(_targetUrls: string[]): Promise<unknown> {
     return this.context.cookies();
   }
 

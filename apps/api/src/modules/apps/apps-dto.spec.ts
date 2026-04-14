@@ -112,11 +112,11 @@ describe('CreateAppDto validation (C3)', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
-  it('rejects missing notification_config', async () => {
+  it('accepts missing notification_config (agent-poll mode)', async () => {
     const { notification_config, ...rest } = validPayload;
     const dto = toDto(CreateAppDto, rest);
     const errors = await validate(dto);
-    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.length).toBe(0);
   });
 
   it('rejects negative desired_session_count', async () => {

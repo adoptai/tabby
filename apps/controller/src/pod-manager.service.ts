@@ -15,12 +15,14 @@ export class PodManagerService {
   private readonly logger = new Logger(PodManagerService.name);
   private readonly namespace: string;
   private readonly releaseInstance: string;
+  private readonly environment: string;
   private readonly coreApi: k8s.CoreV1Api;
   private readonly networkingApi: k8s.NetworkingV1Api;
 
   constructor() {
     this.namespace = process.env.WORKER_NAMESPACE || 'browser-hitl';
     this.releaseInstance = (process.env.RELEASE_INSTANCE || '').trim();
+    this.environment = (process.env.DEPLOY_ENVIRONMENT || '').trim();
     const kubeConfig = new k8s.KubeConfig();
 
     if (process.env.KUBERNETES_SERVICE_HOST) {
@@ -402,6 +404,7 @@ export class PodManagerService {
           'tenant-id': session.tenant_id,
           'streaming-mode': streamingMode,
           ...(this.releaseInstance ? { 'release-instance': this.releaseInstance } : {}),
+          ...(this.environment ? { environment: this.environment } : {}),
         },
       },
       spec: {

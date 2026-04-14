@@ -140,6 +140,7 @@ config:
   streamProtocol: "ws"
   serviceAuthAllowedTenantIds: "*"
   serviceAuthAllowWildcardTenantScope: "true"
+  idleShutdownSeconds: "3600"  # Auto-stop per-user sessions after 1h idle
 
 # Development secrets (NEVER use in production)
 secrets:

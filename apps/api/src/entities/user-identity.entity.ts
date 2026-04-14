@@ -16,14 +16,14 @@ export class UserIdentityEntity {
   @JoinColumn({ name: 'user_id' })
   user: UserEntity;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)
   @JoinColumn({ name: 'tenant_id' })
   tenant: TenantEntity;
 
-  @Column({ type: 'enum', enum: ['slack', 'teams'] })
+  @Column({ type: 'enum', enum: ['slack', 'teams', 'oidc', 'saml'] })
   provider: string;
 
   @Column({ type: 'varchar' })

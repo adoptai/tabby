@@ -28,6 +28,7 @@ data:
   DEFAULT_KEEPALIVE_SECONDS: {{ .Values.config.defaultKeepaliveSeconds | quote }}
   RECONCILE_INTERVAL_SECONDS: {{ .Values.config.reconcileIntervalSeconds | quote }}
   MAX_SESSION_AGE_HOURS: {{ .Values.config.maxSessionAgeHours | quote }}
+  IDLE_SHUTDOWN_SECONDS: {{ .Values.config.idleShutdownSeconds | default "0" | quote }}
   PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
   STREAM_HOST: {{ .Values.config.streamHost | quote }}
   STREAM_PROTOCOL: {{ .Values.config.streamProtocol | quote }}

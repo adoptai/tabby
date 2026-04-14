@@ -222,6 +222,7 @@ jobs:
       IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
       CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
       COMMIT_SHA: ${{ github.sha }}
+      DEPLOY_ENVIRONMENT: staging
       # TrueFoundry config (from environment secrets)
       TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
       TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}

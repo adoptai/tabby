@@ -191,8 +191,8 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
       expect(ctrlSrc).toContain('@UseGuards(JwtAuthGuard, RolesGuard)');
     });
 
-    it('should restrict stream to Admin, Operator, Viewer', () => {
-      expect(ctrlSrc).toContain("@Roles('Admin', 'Operator', 'Viewer')");
+    it('should restrict stream to Admin, Operator, Viewer, Agent', () => {
+      expect(ctrlSrc).toContain("@Roles('Admin', 'Operator', 'Viewer', 'Agent')");
     });
 
     it('should restrict takeover to Admin, Operator', () => {

@@ -314,6 +314,18 @@ kind-reload-all: clean build docker-build ## Clean + build source + images, load
 		--timeout 3m
 	@echo "All services rebuilt and deployed with local images."
 
+.PHONY: kind-stop
+kind-stop: ## Scale all deployments and statefulsets to 0 replicas (stop pods without deleting)
+	kubectl scale deployment --all --replicas=0 -n $(HELM_NAMESPACE)
+	kubectl scale statefulset --all --replicas=0 -n $(HELM_NAMESPACE)
+	@echo "All pods scaled to 0 in namespace '$(HELM_NAMESPACE)'."
+
+.PHONY: kind-start
+kind-start: ## Scale all deployments and statefulsets back to 1 replica
+	kubectl scale deployment --all --replicas=1 -n $(HELM_NAMESPACE)
+	kubectl scale statefulset --all --replicas=1 -n $(HELM_NAMESPACE)
+	@echo "All pods scaled to 1 in namespace '$(HELM_NAMESPACE)'."
+
 .PHONY: kind-delete
 kind-delete: ## Delete the Kind cluster
 	kind delete cluster --name $(KIND_CLUSTER)
