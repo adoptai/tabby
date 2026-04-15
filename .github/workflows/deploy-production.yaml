@@ -276,6 +276,9 @@ jobs:
       METRICS_AUTH_TOKEN: ${{ secrets.METRICS_AUTH_TOKEN }}
       NATS_AUTH_TOKEN: ${{ secrets.NATS_AUTH_TOKEN }}
       AGENT_SECRET_HMAC_KEY: ${{ secrets.AGENT_SECRET_HMAC_KEY }}
+      # Session lifecycle (from environment secrets)
+      IDLE_SHUTDOWN_SECONDS: ${{ secrets.IDLE_SHUTDOWN_SECONDS }}
+      MAX_SESSION_AGE_HOURS: ${{ secrets.MAX_SESSION_AGE_HOURS }}
     steps:
       - uses: actions/checkout@v4
         with:
