@@ -18,7 +18,7 @@ trap cleanup EXIT
 if ! curl -fsS "${API_URL}${API_CHECK_PATH}" >/dev/null 2>&1; then
   if [[ "${API_URL}" =~ ^http://(localhost|127\.0\.0\.1):([0-9]+)$ ]]; then
     local_port="${BASH_REMATCH[2]}"
-    kubectl -n "${UAT_NAMESPACE}" port-forward svc/browser-hitl-api "${local_port}:8080" >/tmp/e2e-uat-22-4-port-forward.log 2>&1 &
+    kubectl -n "${UAT_NAMESPACE}" port-forward svc/browser-hitl-api "${local_port}:8000" >/tmp/e2e-uat-22-4-port-forward.log 2>&1 &
     PF_PID=$!
     for _ in $(seq 1 30); do
       if curl -fsS "${API_URL}${API_CHECK_PATH}" >/dev/null 2>&1; then

@@ -1,0 +1,351 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'deploy' to confirm production deployment"
+        required: true
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io/adoptai/tabby
+  CHART_REGISTRY: ghcr.io/adoptai/charts
+  TFY_HOST: https://adoptai.truefoundry.cloud
+
+jobs:
+  # ── Manual trigger guard ──────────────────────────────────────────────────────
+  guard:
+    name: Deployment Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
+            echo "::error::You must type 'deploy' to confirm. Got: '${{ github.event.inputs.confirm }}'"
+            exit 1
+          fi
+
+  # ── Quality Gates ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: browser_hitl
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: browser_hitl
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://browser_hitl:testpass@localhost:5432/browser_hitl
+      REDIS_URL: redis://localhost:6379
+      NATS_URL: nats://localhost:4222
+      JWT_SIGNING_KEY: ci-test-jwt-key-minimum-32-characters-long
+      TENANT_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      AGENT_SECRET_HMAC_KEY: ci-test-hmac-key
+      MINIO_ENDPOINT: localhost
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      ADMIN_BOOTSTRAP_EMAIL: admin@test.local
+      ADMIN_BOOTSTRAP_PASSWORD: TestPass123
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run test
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Audit dependencies (high/critical must pass)
+        run: pnpm audit --audit-level=high
+
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    needs: [guard]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+      - run: helm lint charts/browser-hitl/
+
+  # ── Build & Push Docker Images ────────────────────────────────────────────────
+  build-images:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, test, security-audit, helm-lint]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - service: api
+            dockerfile: infra/docker/Dockerfile.api
+          - service: controller
+            dockerfile: infra/docker/Dockerfile.controller
+          - service: worker
+            dockerfile: infra/docker/Dockerfile.worker
+          - service: novnc
+            dockerfile: infra/docker/Dockerfile.novnc
+          - service: slack-bot
+            dockerfile: infra/docker/Dockerfile.slack-bot
+          - service: teams-bot
+            dockerfile: infra/docker/Dockerfile.teams-bot
+          - service: admin-ui
+            dockerfile: infra/docker/Dockerfile.admin-ui
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=prod-
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Package & Push Helm Chart ────────────────────────────────────────────────
+  push-chart:
+    name: Push Helm Chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-images]
+    permissions:
+      packages: write
+    outputs:
+      chart_version: ${{ steps.version.outputs.version }}
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Get chart version
+        id: version
+        run: echo "version=$(grep '^version:' charts/browser-hitl/Chart.yaml | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Get image tag
+        id: tag
+        run: echo "tag=prod-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push chart
+        run: |
+          helm package charts/browser-hitl/
+          helm push browser-hitl-${{ steps.version.outputs.version }}.tgz oci://${{ env.CHART_REGISTRY }} || echo "Chart version already exists"
+
+  # ── Deploy to TrueFoundry Production ──────────────────────────────────────────
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [push-chart]
+    environment: production
+    env:
+      IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
+      CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
+      COMMIT_SHA: ${{ github.sha }}
+      DEPLOY_ENVIRONMENT: production
+      # Managed service overrides (optional — defaults to in-cluster)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+      NATS_URL: ${{ secrets.NATS_URL }}
+      MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+      POSTGRES_ENABLED: ${{ secrets.POSTGRES_ENABLED || 'true' }}
+      REDIS_ENABLED: ${{ secrets.REDIS_ENABLED || 'true' }}
+      NATS_ENABLED: ${{ secrets.NATS_ENABLED || 'true' }}
+      MINIO_ENABLED: ${{ secrets.MINIO_ENABLED || 'true' }}
+      TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
+      TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}
+      API_HOST: ${{ secrets.API_HOST }}
+      ADMIN_HOST: ${{ secrets.ADMIN_HOST }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      JWT_SIGNING_KEY: ${{ secrets.JWT_SIGNING_KEY }}
+      TENANT_ENCRYPTION_KEY: ${{ secrets.TENANT_ENCRYPTION_KEY }}
+      MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+      MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+      ADMIN_BOOTSTRAP_PASSWORD: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
+      EGRESS_PROXY_ADMIN_TOKEN: ${{ secrets.EGRESS_PROXY_ADMIN_TOKEN }}
+      EGRESS_PROXY_SESSION_KEY: ${{ secrets.EGRESS_PROXY_SESSION_KEY }}
+      SERVICE_AUTH_CLIENT_ID: ${{ secrets.SERVICE_AUTH_CLIENT_ID }}
+      SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
+      SERVICE_AUTH_ALLOWED_TENANT_IDS: ${{ secrets.SERVICE_AUTH_ALLOWED_TENANT_IDS }}
+      SVC_AUTH_WILDCARD_SCOPE: ${{ secrets.SVC_AUTH_WILDCARD_SCOPE }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+      SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+      METRICS_AUTH_TOKEN: ${{ secrets.METRICS_AUTH_TOKEN }}
+      NATS_AUTH_TOKEN: ${{ secrets.NATS_AUTH_TOKEN }}
+      AGENT_SECRET_HMAC_KEY: ${{ secrets.AGENT_SECRET_HMAC_KEY }}
+      # Session lifecycle (from environment secrets)
+      IDLE_SHUTDOWN_SECONDS: ${{ secrets.IDLE_SHUTDOWN_SECONDS }}
+      MAX_SESSION_AGE_HOURS: ${{ secrets.MAX_SESSION_AGE_HOURS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install "truefoundry<1.0.0"
+
+      - name: Login to TrueFoundry
+        run: tfy login --host ${{ env.TFY_HOST }} --api-key ${{ secrets.TFY_API_KEY }}
+
+      - name: Generate manifest from template
+        run: envsubst < infra/tfy/deploy.yaml > /tmp/tfy-manifest.yaml
+
+      - name: Deploy to TrueFoundry
+        run: tfy apply -f /tmp/tfy-manifest.yaml
+
+  # ── Post-Deploy Health Check ──────────────────────────────────────────────────
+  health-check:
+    name: Production Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy]
+    environment: production
+    steps:
+      - name: Wait for rollout
+        run: sleep 90
+
+      - name: Check API health
+        run: |
+          PROD_URL="${{ secrets.API_HOST }}"
+          if [ -z "$PROD_URL" ]; then
+            echo "::warning::API_HOST secret not set — skipping health check"
+            exit 0
+          fi
+          for i in 1 2 3 4 5 6; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "https://${PROD_URL}/health/live" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Production API healthy (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 20s..."
+            sleep 20
+          done
+          echo "::error::Production API health check failed after 6 attempts"
+          exit 1
+
+  # ── Notify ────────────────────────────────────────────────────────────────────
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [health-check]
+    if: always()
+    steps:
+      - name: Deployment summary
+        run: |
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          if [ "${{ needs.health-check.result }}" = "success" ]; then
+            echo "## Production deployment successful" >> $GITHUB_STEP_SUMMARY
+            echo "Commit: \`${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "Deployed by: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Production deployment FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "Commit: \`${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "Check the workflow run for details." >> $GITHUB_STEP_SUMMARY
+          fi

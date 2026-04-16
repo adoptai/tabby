@@ -36,6 +36,12 @@ export interface CsrfCredential {
   volatility: CredentialVolatility;
 }
 
+export interface CustomCredential {
+  key: string;
+  value: string;
+  volatility: CredentialVolatility;
+}
+
 // ============================================================
 // Credential Set — grouped credentials for a session
 // ============================================================
@@ -44,6 +50,7 @@ export interface CredentialSet {
   cookies: CookieCredential[];
   headers: HeaderCredential[];
   csrf?: CsrfCredential;
+  custom?: CustomCredential[];
   local_storage?: Record<string, string>;
   session_storage?: Record<string, string>;
 }

@@ -7,39 +7,98 @@
 #     --namespace browser-hitl --create-namespace
 # =============================================================================
 
-# Single replicas — no HA needed locally
+# Local images — built with `make docker-build`, loaded with `make kind-load-images`
+# Uses pullPolicy: Never so K8s only uses images loaded into Kind (no registry pulls)
+images:
+  api:
+    repository: browser-hitl/api
+    tag: "dev"
+    pullPolicy: Never
+  controller:
+    repository: browser-hitl/controller
+    tag: "dev"
+    pullPolicy: Never
+  worker:
+    repository: browser-hitl/worker
+    tag: "dev"
+    pullPolicy: Never
+  novnc:
+    repository: browser-hitl/novnc
+    tag: "dev"
+    pullPolicy: Never
+  slackBot:
+    repository: browser-hitl/slack-bot
+    tag: "dev"
+    pullPolicy: Never
+  teamsBot:
+    repository: browser-hitl/teams-bot
+    tag: "dev"
+    pullPolicy: Never
+  adminUi:
+    repository: browser-hitl/admin-ui
+    tag: "dev"
+    pullPolicy: Never
+
+# Single replicas, minimal resource requests for fast scheduling
 api:
   replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "2000m"
+      memory: "1Gi"
 controller:
   replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+worker:
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
-  replicas: 1
 teamsBot:
   enabled: false  # No Teams credentials locally — disable to avoid secret errors
-  replicas: 1
 adminUi:
   replicas: 1
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
 
-# Infrastructure: single replica, relaxed resources
+# Infrastructure: minimal requests, generous limits
 postgres:
   replicas: 1
   resources:
     requests:
-      cpu: "250m"
+      cpu: "100m"
       memory: "256Mi"
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "1000m"
+      memory: "1Gi"
 
 redis:
   replicas: 1
   resources:
     requests:
-      cpu: "100m"
-      memory: "128Mi"
+      cpu: "50m"
+      memory: "64Mi"
     limits:
-      cpu: "250m"
+      cpu: "500m"
       memory: "256Mi"
 
 nats:
@@ -48,21 +107,21 @@ nats:
     enabled: false  # No auth needed locally
   resources:
     requests:
-      cpu: "100m"
-      memory: "128Mi"
+      cpu: "50m"
+      memory: "64Mi"
     limits:
-      cpu: "250m"
+      cpu: "500m"
       memory: "256Mi"
 
 minio:
   replicas: 1
   resources:
     requests:
-      cpu: "100m"
+      cpu: "50m"
       memory: "128Mi"
     limits:
-      cpu: "250m"
-      memory: "256Mi"
+      cpu: "500m"
+      memory: "512Mi"
 
 # No TLS locally
 ingress:
@@ -74,18 +133,30 @@ ingress:
 networkPolicies:
   enabled: false
 
+# Local config overrides
+config:
+  publicBaseUrl: "http://localhost:18080"
+  streamHost: "localhost:18080"
+  streamProtocol: "ws"
+  serviceAuthAllowedTenantIds: "*"
+  serviceAuthAllowWildcardTenantScope: "true"
+  idleShutdownSeconds: "3600"  # Auto-stop per-user sessions after 1h idle
+
 # Development secrets (NEVER use in production)
 secrets:
   postgresPassword: "localdev"
   jwtSigningKey: "localdev-jwt-key-at-least-32-characters-long"
   minioAccessKey: "minioadmin"
   minioSecretKey: "minioadmin"
+  agentSecretHmacKey: "fb81bb3c58e6b9ad111c460e00cd059a8beaa7ee025b3d71bce933221a1df4c0" # just for local development
   adminBootstrapPassword: "LocalDev123!@#"
   egressProxyAdminToken: "localdev-egress-token"
   egressProxySessionKey: "localdev-egress-session-key"
+  serviceAuthClientId: "phase4-bot"
+  serviceAuthClientSecret: "phase4-secret"
   metricsAuthToken: ""  # Open access locally
   natsAuthToken: ""
-  tenantEncryptionKey: ""  # Generate with: openssl rand -hex 32
+  tenantEncryptionKey: "4ab15ef3f3c527603482702f1eab5bd8c9ea98b8dfd5076332ea216c26226149"  # Generate with: openssl rand -hex 32
 
 egressProxy:
   defaultAllowlist:
@@ -178,6 +249,8 @@ egressProxy:
     - ".hscollectedforms.net"
     - ".hsadspixel.net"
     - ".hsstatic.net"
+    - ".ably.io"
+    - ".ably-realtime.com"
     # --- Google (shared auth/CDN/analytics) ---
     - ".googleapis.com"
     - ".gstatic.com"
@@ -198,6 +271,23 @@ egressProxy:
     - ".jsdelivr.net"
     - ".unpkg.com"
     - ".amazonaws.com"
+    # --- Salesforce ---
+    - ".salesforce.com"
+    - ".force.com"
+    # --- Automation Anywhere ---
+    - ".automationanywhere.digital"
+    - ".automationanywhere.com"
+    # --- Salesforce analytics (Pendo) ---
+    - ".pendo.io"
+    - ".pendo-static-5673999629942784.storage.googleapis.com"
+    - ".pendo-io-static.storage.googleapis.com"
+    # --- Salesforce docs (ZoomIn) ---
+    - ".zoominsoftware.io"
+    # --- Microsoft (Teams SDK) ---
+    - ".cdn.office.net"
+    # --- Workday ---
+    - ".workday.com"
+    - ".workdaycdn.com"
     # --- Dev/test ---
     - ".dontpad.com"
     - ".api.dontpad.com"

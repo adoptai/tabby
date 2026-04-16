@@ -1,0 +1,242 @@
+type: helm
+name: "${TFY_APP_NAME}"
+workspace_fqn: "${TFY_WORKSPACE_FQN}"
+source:
+  type: oci-repo
+  oci_chart_url: oci://ghcr.io/adoptai/charts/browser-hitl
+  version: "${CHART_VERSION}"
+values:
+  images:
+    api:
+      repository: ghcr.io/adoptai/tabby/api
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+    controller:
+      repository: ghcr.io/adoptai/tabby/controller
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+    worker:
+      repository: ghcr.io/adoptai/tabby/worker
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+    novnc:
+      repository: ghcr.io/adoptai/tabby/novnc
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+    slackBot:
+      repository: ghcr.io/adoptai/tabby/slack-bot
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+    teamsBot:
+      repository: ghcr.io/adoptai/tabby/teams-bot
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+    adminUi:
+      repository: ghcr.io/adoptai/tabby/admin-ui
+      tag: "${IMAGE_TAG}"
+      pullPolicy: Always
+
+  api:
+    replicas: 1
+    port: 8000
+
+  controller:
+    replicas: 1
+
+  slackBot:
+    enabled: true
+    slackDefaultChannel: "tabby-experiments"
+
+  teamsBot:
+    enabled: false
+
+  adminUi:
+    enabled: true
+    port: 8000
+
+  config:
+    publicBaseUrl: "https://${API_HOST}"
+    streamHost: "${API_HOST}"
+    streamProtocol: "wss"
+    commitSha: "${COMMIT_SHA}"
+    deployEnvironment: "${DEPLOY_ENVIRONMENT}"
+    # Service-to-service auth (bots → API)
+    serviceAuthAllowedTenantIds: "${SERVICE_AUTH_ALLOWED_TENANT_IDS}"
+    serviceAuthAllowWildcardTenantScope: "${SVC_AUTH_WILDCARD_SCOPE}"
+    # Managed service overrides — when set, Helm uses these instead of constructing
+    # URLs from in-cluster service names. Leave empty to use in-cluster defaults.
+    databaseUrl: "${DATABASE_URL}"
+    redisUrl: "${REDIS_URL}"
+    natsUrl: "${NATS_URL}"
+    minioEndpoint: "${MINIO_ENDPOINT}"
+    maxSessionAgeHours: "${MAX_SESSION_AGE_HOURS}"
+    idleShutdownSeconds: "${IDLE_SHUTDOWN_SECONDS}"
+
+  postgres:
+    enabled: ${POSTGRES_ENABLED}
+    persistence:
+      size: 20Gi
+
+  redis:
+    enabled: ${REDIS_ENABLED}
+    persistence:
+      size: 5Gi
+
+  nats:
+    enabled: ${NATS_ENABLED}
+    persistence:
+      size: 10Gi
+
+  minio:
+    enabled: ${MINIO_ENABLED}
+    persistence:
+      size: 50Gi
+
+  egressProxy:
+    enabled: true
+    allowInsecureAdmin: true
+    allowInsecureSessionAllowlist: true
+    defaultAllowlist:
+      - ".apollo.io"
+      - ".transcend-cdn.com"
+      - ".wowscale.com"
+      - ".sentry.io"
+      - ".fullview.io"
+      - ".intercom.io"
+      - ".customer.io"
+      - ".6sense.com"
+      - ".6si.com"
+      - ".6sc.co"
+      - ".pendo.io"
+      - ".pendo-static-5698236162899968.storage.googleapis.com"
+      - ".descope.com"
+      - ".descopecdn.com"
+      - ".ingest-lr.com"
+      - ".logrocket.io"
+      - ".lr-in-prod.com"
+      - ".lr-ingest.com"
+      - ".lr-in.com"
+      - ".lr-ingest.io"
+      - ".datadoghq.com"
+      - ".rollbar.com"
+      - ".mxpnl.com"
+      - ".marketo.net"
+      - ".fontawesome.com"
+      - ".commandbar.com"
+      - ".wistia.com"
+      - ".wistia.net"
+      - ".hapag-lloyd.com"
+      - ".hlag.cloud"
+      - ".hlag.com"
+      - ".hlagwebprod.onmicrosoft.com"
+      - ".microsoftonline.com"
+      - ".login.live.com"
+      - ".windows.net"
+      - ".cookielaw.org"
+      - ".onetrust.com"
+      - ".dynatrace.com"
+      - ".bat.bing.com"
+      - ".cma-cgm.com"
+      - ".auth.cma-cgm.com"
+      - ".captcha-delivery.com"
+      - ".one-line.com"
+      - ".typekit.net"
+      - ".go-mpulse.net"
+      - ".akamaihd.net"
+      - ".akamaized.net"
+      - ".aar.org"
+      - ".auth0.com"
+      - ".cdn.auth0.com"
+      - ".heap-api.com"
+      - ".tailwindcss.com"
+      - ".object-assign.min.js"
+      - ".msc.com"
+      - ".mymsc.com"
+      - ".b2clogin.com"
+      - ".mscciam.b2clogin.com"
+      - ".identityserver.msc.com"
+      - ".onmicrosoft.com"
+      - ".greenxtrade.com"
+      - ".bluextrade.com"
+      - ".cookiehub.eu"
+      - ".bootstrapcdn.com"
+      - ".carrierxtrade.com"
+      - ".recaptcha.net"
+      - ".hubspot.com"
+      - ".hubspot.net"
+      - ".hsappstatic.net"
+      - ".hs-scripts.com"
+      - ".hs-analytics.net"
+      - ".hs-banner.com"
+      - ".hsforms.com"
+      - ".hscollectedforms.net"
+      - ".hsadspixel.net"
+      - ".hsstatic.net"
+      - ".ably.io"
+      - ".ably-realtime.com"
+      - ".googleapis.com"
+      - ".gstatic.com"
+      - ".google.com"
+      - ".google-analytics.com"
+      - ".googletagmanager.com"
+      - ".googlesyndication.com"
+      - ".cloudflare.com"
+      - ".challenges.cloudflare.com"
+      - ".cloudflareinsights.com"
+      - ".microsoft.com"
+      - ".msauth.net"
+      - ".msftauth.net"
+      - ".cloudfront.net"
+      - ".jsdelivr.net"
+      - ".unpkg.com"
+      - ".amazonaws.com"
+      - ".dontpad.com"
+      - ".api.dontpad.com"
+      # --- Salesforce ---
+      - ".salesforce.com"
+      - ".force.com"
+      # --- Automation Anywhere ---
+      - ".automationanywhere.digital"
+      - ".automationanywhere.com"
+      # --- Salesforce analytics (Pendo) ---
+      - ".pendo.io"
+      - ".pendo-static-5673999629942784.storage.googleapis.com"
+      - ".pendo-io-static.storage.googleapis.com"
+      # --- Salesforce docs (ZoomIn) ---
+      - ".zoominsoftware.io"
+      # --- Microsoft (Teams SDK) ---
+      - ".cdn.office.net"
+      # --- Workday ---
+      - ".workday.com"
+      - ".workdaycdn.com"
+
+  ingress:
+    enabled: false
+
+  secrets:
+    postgresPassword: "${POSTGRES_PASSWORD}"
+    jwtSigningKey: "${JWT_SIGNING_KEY}"
+    tenantEncryptionKey: "${TENANT_ENCRYPTION_KEY}"
+    minioAccessKey: "${MINIO_ACCESS_KEY}"
+    minioSecretKey: "${MINIO_SECRET_KEY}"
+    adminBootstrapPassword: "${ADMIN_BOOTSTRAP_PASSWORD}"
+    egressProxyAdminToken: "${EGRESS_PROXY_ADMIN_TOKEN}"
+    egressProxySessionKey: "${EGRESS_PROXY_SESSION_KEY}"
+    serviceAuthClientId: "${SERVICE_AUTH_CLIENT_ID}"
+    serviceAuthClientSecret: "${SERVICE_AUTH_CLIENT_SECRET}"
+    slackBotToken: "${SLACK_BOT_TOKEN}"
+    slackSigningSecret: "${SLACK_SIGNING_SECRET}"
+    slackAppToken: "${SLACK_APP_TOKEN}"
+    metricsAuthToken: "${METRICS_AUTH_TOKEN}"
+    natsAuthToken: "${NATS_AUTH_TOKEN}"
+    agentSecretHmacKey: "${AGENT_SECRET_HMAC_KEY}"
+
+  virtualServices:
+    api:
+      host: "${API_HOST}"
+      gateway: istio-system/tfy-wildcard
+      port: 8000
+    adminUi:
+      host: "${ADMIN_HOST}"
+      gateway: istio-system/tfy-wildcard
+      port: 8000

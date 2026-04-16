@@ -5,15 +5,29 @@ import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
 import { SessionDb } from './session-db';
 
 /**
+ * Custom extraction definition for export_policy.custom_extractions.
+ * Supports extracting values via JS evaluation or named cookie lookup.
+ */
+interface CustomExtraction {
+  key: string;
+  type: 'js_eval' | 'cookie';
+  expression?: string;       // JS expression to evaluate in page context (for js_eval)
+  cookie_name?: string;      // Cookie name to extract (for cookie type)
+  extract_on_url?: string;   // Only extract when current page URL matches this glob
+  description?: string;
+}
+
+/**
  * Artifact Extraction Pipeline per spec sections 9.8, 10.8.
  *
- * Extracts: cookies, headers, csrf_token, local_storage, session_storage.
+ * Extracts: cookies, headers, csrf_token, local_storage, session_storage, custom (js_eval).
  * Encrypts with AES-256-GCM per-tenant key.
  * Uploads encrypted blob to MinIO.
  * Publishes export metadata to NATS.
  */
 export class ArtifactExtractor {
   private capturedHeaders: Map<string, Record<string, string>> = new Map();
+  private dslVariables: Map<string, string> = new Map();
 
   constructor(
     private readonly page: Page,
@@ -24,6 +38,10 @@ export class ArtifactExtractor {
     private readonly appId: string,
     private readonly db: SessionDb,
   ) {}
+
+  setDslVariables(vars: Map<string, string>): void {
+    this.dslVariables = vars;
+  }
 
   /**
    * Register response header capture BEFORE login actions (spec section 10.8).
@@ -86,6 +104,26 @@ export class ArtifactExtractor {
       artifacts.session_storage = await this.extractSessionStorage();
     }
 
+    // Custom extractions (js_eval for aura tokens, VF remoting, etc.)
+    const customExtractions = exportPolicy?.custom_extractions as CustomExtraction[] | undefined;
+    if (customExtractions && customExtractions.length > 0) {
+      artifacts.custom = await this.extractCustom(customExtractions);
+    }
+
+    // Log extracted artifact summary (keys + value lengths, NOT values)
+    console.log('[Artifacts] Extracted:');
+    if (artifacts.cookies) {
+      const cookies = artifacts.cookies as any[];
+      console.log(`  cookies: ${cookies.length} cookies [${cookies.map((c: any) => `${c.name}=${String(c.value).length}chars`).join(', ')}]`);
+    }
+    if (artifacts.headers) console.log(`  headers: ${Object.keys(artifacts.headers as object).length} URLs captured`);
+    if (artifacts.local_storage) console.log(`  local_storage: ${String(artifacts.local_storage).length} chars`);
+    if (artifacts.session_storage) console.log(`  session_storage: ${String(artifacts.session_storage).length} chars`);
+    if (artifacts.custom) {
+      const custom = artifacts.custom as Record<string, string>;
+      console.log(`  custom: ${Object.keys(custom).map(k => `${k}=${custom[k]?.length || 0}chars`).join(', ')}`);
+    }
+
     // Encrypt the artifact bundle
     const plaintext = Buffer.from(JSON.stringify(artifacts), 'utf-8');
     const { encrypted, nonce, keyVersion } = await this.encrypt(plaintext);
@@ -120,16 +158,12 @@ export class ArtifactExtractor {
   }
 
   /**
-   * Extract cookies filtered to target domains (spec section 10.8).
-   * Falls back to all cookies if URL-based filtering returns empty
-   * (e.g., when target_urls scheme/hostname differs from actual visit URL).
+   * Extract ALL cookies from the browser context.
+   * Playwright's context.cookies(urls) misses broad-domain cookies (e.g., .salesforce.com)
+   * that don't exactly match the target URLs. Always return all cookies to ensure
+   * auth cookies on parent domains are included.
    */
-  private async extractCookies(targetUrls: string[]): Promise<unknown> {
-    if (targetUrls.length > 0) {
-      const filtered = await this.context.cookies(targetUrls);
-      if (filtered.length > 0) return filtered;
-    }
-    // Fallback: return all cookies from the browser context
+  private async extractCookies(_targetUrls: string[]): Promise<unknown> {
     return this.context.cookies();
   }
 
@@ -178,6 +212,113 @@ export class ArtifactExtractor {
    */
   private async extractSessionStorage(): Promise<string> {
     return this.page.evaluate(() => JSON.stringify(window.sessionStorage));
+  }
+
+  /**
+   * Run custom extractions defined in export_policy.custom_extractions.
+   * Supports js_eval (run arbitrary JS in page context) and cookie (named cookie lookup).
+   * Used for Salesforce aura tokens, VF Remoting tokens, and similar site-specific extractions.
+   */
+  private async extractCustom(extractions: CustomExtraction[]): Promise<Record<string, string>> {
+    const results: Record<string, string> = {};
+    const currentUrl = this.page.url();
+    const extractUrls: Record<string, string> = this.appConfig.export_policy?.extract_urls || {};
+
+    // Group extractions: those matching current page vs those needing a new tab
+    const mainPageExtractions: CustomExtraction[] = [];
+    const remoteGroups: Map<string, CustomExtraction[]> = new Map();
+
+    for (const extraction of extractions) {
+      if (!extraction.extract_on_url) {
+        mainPageExtractions.push(extraction);
+        continue;
+      }
+      const pattern = extraction.extract_on_url.replace(/\*/g, '.*');
+      if (new RegExp(pattern).test(currentUrl)) {
+        mainPageExtractions.push(extraction);
+      } else {
+        const group = remoteGroups.get(extraction.extract_on_url) || [];
+        group.push(extraction);
+        remoteGroups.set(extraction.extract_on_url, group);
+      }
+    }
+
+    // Run main page extractions on current page
+    for (const extraction of mainPageExtractions) {
+      try {
+        const value = await this.runSingleExtraction(this.page, extraction);
+        if (value) results[extraction.key] = value;
+      } catch (error) {
+        console.warn(`Custom extraction '${extraction.key}' failed: ${error}`);
+      }
+    }
+
+    // Run remote extractions in new tabs
+    for (const [urlPattern, group] of remoteGroups) {
+      const urlTemplate = extractUrls[urlPattern];
+      if (!urlTemplate) {
+        console.warn(`[Artifacts] No extract_urls mapping for pattern '${urlPattern}', skipping ${group.length} extractions`);
+        continue;
+      }
+      // Interpolate {{varname}} from DSL variables
+      const resolvedUrl = urlTemplate.replace(/\{\{(\w+)\}\}/g, (_, key) => this.dslVariables.get(key) ?? '');
+      if (!resolvedUrl || resolvedUrl.includes('{{')) {
+        console.warn(`[Artifacts] Unresolved variables in extract URL: ${resolvedUrl}`);
+        continue;
+      }
+
+      const remoteResults = await this.extractInNewTab(resolvedUrl, group);
+      Object.assign(results, remoteResults);
+    }
+
+    return results;
+  }
+
+  private async runSingleExtraction(page: Page, extraction: CustomExtraction): Promise<string | null> {
+    if (extraction.type === 'js_eval' && extraction.expression) {
+      const value = await page.evaluate(extraction.expression);
+      return value ? String(value) : null;
+    } else if (extraction.type === 'cookie' && extraction.cookie_name) {
+      const cookies = await this.context.cookies();
+      const match = cookies.find(c => c.name === extraction.cookie_name);
+      return match ? match.value : null;
+    }
+    return null;
+  }
+
+  /**
+   * Open a new tab, navigate to the given URL, run extractions, close the tab.
+   * Shares the same BrowserContext (cookies, proxy) as the main page.
+   */
+  private async extractInNewTab(url: string, extractions: CustomExtraction[]): Promise<Record<string, string>> {
+    const results: Record<string, string> = {};
+    let newPage: Page | null = null;
+
+    try {
+      newPage = await this.context.newPage();
+      console.log(`[Artifacts] Opening new tab for extraction: ${url}`);
+      await newPage.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' });
+      await newPage.waitForTimeout(8000);
+
+      for (const extraction of extractions) {
+        try {
+          const value = await this.runSingleExtraction(newPage, extraction);
+          if (value) results[extraction.key] = value;
+        } catch (error) {
+          console.warn(`Custom extraction '${extraction.key}' failed in new tab: ${error}`);
+        }
+      }
+
+      console.log(`[Artifacts] New tab extractions: ${Object.keys(results).map(k => `${k}=${results[k]?.length || 0}chars`).join(', ')}`);
+    } catch (error) {
+      console.error(`[Artifacts] New tab extraction failed for ${url}: ${error}`);
+    } finally {
+      if (newPage) {
+        try { await newPage.close(); } catch { /* best effort */ }
+      }
+    }
+
+    return results;
   }
 
   /**

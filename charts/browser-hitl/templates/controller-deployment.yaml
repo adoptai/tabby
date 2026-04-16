@@ -60,6 +60,18 @@ spec:
                 secretKeyRef:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: MINIO_SECRET_KEY
+            - name: TENANT_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: TENANT_ENCRYPTION_KEY
+                  optional: true
+            - name: TENANT_KEY_VERSION
+              value: "v1"
+            - name: RELEASE_INSTANCE
+              value: {{ include "browser-hitl.fullname" . | quote }}
+            - name: DEPLOY_ENVIRONMENT
+              value: {{ .Values.config.deployEnvironment | default "" | quote }}
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           livenessProbe:

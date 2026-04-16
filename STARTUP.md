@@ -85,11 +85,11 @@ pnpm --filter @browser-hitl/api start:dev
 ### 5. Verify
 
 ```bash
-curl http://localhost:8080/health/live
+curl http://localhost:8000/health/live
 # {"status":"ok"}
 
 # Swagger UI
-open http://localhost:8080/api/docs
+open http://localhost:8000/api/docs
 ```
 
 ### 6. Run tests
@@ -121,21 +121,16 @@ make kind-create
 # Creates cluster "tabby-dev"
 ```
 
-### 2. Build and load Docker images
+### 2. Build, load, and deploy
 
 ```bash
-make docker-build
-make kind-load-images
+make kind-reload-all
+# Builds all images, loads into Kind, and runs helm upgrade with values-local.yaml
 ```
 
-### 3. Deploy with Helm
+All local config (API URL, stream host, service auth, secrets) is baked into `values-local.yaml` — no manual `kubectl set env` needed.
 
-```bash
-make kind-deploy
-# Installs full stack with values-local.yaml (single replicas, no TLS, no network policies)
-```
-
-### 4. Check status
+### 3. Check status
 
 ```bash
 make k8s-status
@@ -148,32 +143,14 @@ Wait until all pods are `Running`:
 kubectl get pods -n browser-hitl -w
 ```
 
-#### 4.1 Fix Admin UI API URL
-
-The admin-ui is a simple Express server that bakes `NEXT_PUBLIC_API_URL` into the HTML `<script>` tag. The **browser** makes API calls directly to this URL, so it must be the localhost port-forward address (not the in-cluster service name).
-
-```bash
-kubectl -n browser-hitl set env deployment/browser-hitl-admin-ui \
-    NEXT_PUBLIC_API_URL=http://localhost:18080
-kubectl -n browser-hitl set env deployment/browser-hitl-api \
-    STREAM_HOST=localhost:18080
-kubectl -n browser-hitl set env deployment/browser-hitl-api \
-    SERVICE_AUTH_CLIENT_ID=phase4-bot \
-    SERVICE_AUTH_CLIENT_SECRET=phase4-secret \
-    SERVICE_AUTH_ALLOWED_TENANT_IDS='*' \
-    SERVICE_AUTH_ALLOW_WILDCARD_TENANT_SCOPE='true'
-```
-
-> **Note:** This must be re-run after every `helm upgrade --install`.
-
-### 5. Port-forward services
+### 4. Port-forward services
 
 ```bash
 # Admin UI (frontend)
-kubectl port-forward -n browser-hitl svc/browser-hitl-admin-ui 13000:3000 &
+kubectl port-forward -n browser-hitl svc/browser-hitl-admin-ui 13000:8000 &
 
 # API
-kubectl port-forward -n browser-hitl svc/browser-hitl-api 18080:8080 &
+kubectl port-forward -n browser-hitl svc/browser-hitl-api 18080:8000 &
 
 # Redis (for local scripts)
 kubectl port-forward -n browser-hitl svc/browser-hitl-redis 16379:6379 &
@@ -194,13 +171,13 @@ Or use the Makefile shortcut (API + test harness only):
 make k8s-port-forward
 ```
 
-### 6. Access the frontend
+### 5. Access the frontend
 
 ```bash
 open http://localhost:13000
 ```
 
-The Admin UI proxies API calls internally via `http://browser-hitl-api:8080` (set in step 4.1). Login with the bootstrap credentials:
+Login with the bootstrap credentials:
 
 
 | Field    | Value                      |
@@ -211,7 +188,7 @@ The Admin UI proxies API calls internally via `http://browser-hitl-api:8080` (se
 
 From the UI you can view sessions, request VNC stream URLs, and inspect session details.
 
-### 7. Verify API
+### 6. Verify API
 
 ```bash
 curl http://localhost:18080/health/live
@@ -254,7 +231,7 @@ Once the stack is running (either setup), follow these steps to create a session
 ### Step 1: Get an auth token
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:${API_PORT:-8080}/login \
+TOKEN=$(curl -s -X POST http://localhost:${API_PORT:-8000}/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@browser-hitl.local","password":"LocalDev123!@#"}' \
   | jq -r '.token')
@@ -264,35 +241,28 @@ echo $TOKEN
 
 ### Step 2: Create the application
 
-Example for HubSpot:
+Example for HubSpot (manual HITL — human logs in via VNC):
 
 ```bash
 curl -s -X POST http://localhost:${API_PORT:-18080}/apps \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "HubSpot Production",
+    "name": "HubSpot Manual Login",
     "target_urls": ["https://app-na2.hubspot.com"],
     "login_config": {
       "login_url": "https://app-na2.hubspot.com/login",
       "credential_ref": "k8s:secret/hubspot-creds",
       "steps": [
         {"action": "goto", "url": "https://app-na2.hubspot.com/login"},
-        {"action": "wait_for", "selector": "input#username", "timeout_ms": 30000},
-        {"action": "fill", "selector": "input#username", "value": "${USERNAME}"},
-        {"action": "click", "selector": "button[type=submit]"},
-        {"action": "sleep", "ms": 3000},
-        {"action": "wait_for", "selector": "input#password", "timeout_ms": 15000},
-        {"action": "fill", "selector": "input#password", "value": "${PASSWORD}", "sensitive": true},
-        {"action": "click", "selector": "button#loginBtn"},
-        {"action": "sleep", "ms": 5000},
-        {"action": "wait_for", "selector": "input#codeEntry", "sensitive": true, "timeout_ms": 120000},
+        {"action": "wait_for", "selector": "[data-test-id=\"email-input-field\"]", "timeout_ms": 30000},
+        {"action": "request_human_input", "input_type": "confirm", "label": "Log into HubSpot via VNC stream, then click Mark as Resolved", "timeout_ms": 300000},
         {"action": "screenshot"}
       ]
     },
     "keepalive_config": {
-      "interval_seconds": 600,
-      "actions": [{"action": "screenshot"}],
+      "interval_seconds": 60,
+      "actions": [{"action": "goto", "url": "https://app-na2.hubspot.com"}],
       "health_checks": [
         {"type": "dom_check", "selector": "body", "exists": true}
       ]
@@ -301,21 +271,24 @@ curl -s -X POST http://localhost:${API_PORT:-18080}/apps \
       "artifact_types": ["cookies", "headers", "local_storage"],
       "encryption": {"algo": "AES-256-GCM"},
       "ttl_seconds": 3600,
+      "refresh_interval_seconds": 120,
       "header_allowlist": ["authorization", "x-csrf-token"]
     },
     "notification_config": {
-      "channels": ["slack:#tabby-experiments"],
-      "escalation": { "after_minutes": 10, "notify": ["slack:#tabby-experiments"] }
+      "channels": ["slack:#tabby-experiments"]
     },
     "browser_policy": {
       "downloads": false,
       "clipboard": false,
-      "file_chooser": false,
-      "streaming_mode": "vnc"
+      "file_chooser": false
     },
     "desired_session_count": 1
   }' | jq .
 ```
+
+> **Keepalive note:** The keepalive uses `goto` (not `screenshot`) because `screenshot` only captures pixels without making HTTP requests. The server-side session would time out. `goto` triggers a real navigation that resets the session timer.
+
+> **Credential ref:** Use `"credential_ref": "manual:"` instead of `k8s:secret/...` when credentials cannot be stored (SSO, hardware tokens). The human provides everything via VNC.
 
 ### Step 3: Create the credentials secret (K8s only)
 
@@ -348,6 +321,32 @@ curl -s -X POST http://localhost:${API_PORT:-18080}/sessions/$SESSION_ID/stream 
 ```
 
 Open the returned URL in a browser to view the noVNC stream.
+
+### Step 6: Force refresh credentials
+
+Once the session is HEALTHY and you have a profile set up (see `tabby-abcd-integration-guide.md`), you can request credentials with on-demand refresh:
+
+```bash
+# Normal request (returns cached credentials)
+curl -s -X POST http://localhost:${API_PORT:-18080}/credentials/request \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile_id": "hubspot-production"}' | jq .
+
+# Force refresh: fire-and-forget (triggers re-extraction, returns current credentials)
+curl -s -X POST http://localhost:${API_PORT:-18080}/credentials/request \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile_id": "hubspot-production", "force_refresh": true}' | jq .
+
+# Force refresh: blocking (waits up to 15s for fresh credentials)
+curl -s -X POST http://localhost:${API_PORT:-18080}/credentials/request \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile_id": "hubspot-production", "force_refresh": true, "wait_seconds": 15}' | jq .
+```
+
+With `wait_seconds`, the API uses Redis BLPOP to block until the worker publishes fresh credentials or the timeout expires. Range: 1-30 seconds.
 
 ---
 
@@ -453,7 +452,7 @@ The soft bridge runs **outside** the cluster as a local Node process. It polls t
 SLACK_BOT_TOKEN=xoxb-YOUR-REAL-TOKEN
 SLACK_CHANNEL=tabby-experiments
 SLACK_SOFT_ALLOW_UNRESTRICTED_OPERATORS=true
-API_BASE_URL=http://localhost:8080
+API_BASE_URL=http://localhost:8000
 NATS_URL=nats://localhost:4222
 ```
 
@@ -669,8 +668,8 @@ Translated `login_config` (paste this as the value of the `login_config` field i
 | ----------------- | -------------------------------- | --------------------------------- |
 | Start infra       | `docker compose up -d`           | `make kind-deploy`                |
 | **Admin UI**      | N/A                              | `http://localhost:13000`          |
-| API URL           | `http://localhost:8080`          | `http://localhost:18080`          |
-| Swagger           | `http://localhost:8080/api/docs` | `http://localhost:18080/api/docs` |
+| API URL           | `http://localhost:8000`          | `http://localhost:18080`          |
+| Swagger           | `http://localhost:8000/api/docs` | `http://localhost:18080/api/docs` |
 | Runs workers?     | No                               | Yes                               |
 | Runs controller?  | No                               | Yes                               |
 | Browser sessions? | No                               | Yes                               |
@@ -751,28 +750,17 @@ kubectl logs -n browser-hitl deploy/browser-hitl-controller | grep "Connected to
 
 **Symptom:** The stream URL from `POST /sessions/:id/stream` points to `http://localhost/vnc/...` instead of `http://localhost:18080/vnc/...`.
 
-**Root cause:** `STREAM_HOST` is not set on the API deployment, so it defaults to `localhost` (port 80).
+**Root cause:** `config.streamHost` not set in Helm values.
 
-**Fix:**
-
-```bash
-kubectl -n browser-hitl set env deployment/browser-hitl-api STREAM_HOST=localhost:18080
-```
-
-> **Note:** This must be re-run after every `helm upgrade --install`, same as the admin-ui fix in step 4.1.
+**Fix:** Already configured in `values-local.yaml`. If using an older install, redeploy: `make kind-reload-all`
 
 ### Admin UI returns `api_unreachable` or `ERR_NAME_NOT_RESOLVED`
 
-**Symptom:** The admin UI at `http://localhost:13000` shows `{"error":"api_unreachable"}` or browser console shows `ERR_NAME_NOT_RESOLVED` for `browser-hitl-api:8080`.
+**Symptom:** The admin UI at `http://localhost:13000` shows `{"error":"api_unreachable"}` or browser console shows `ERR_NAME_NOT_RESOLVED` for `browser-hitl-api:8000`.
 
-**Root cause:** `NEXT_PUBLIC_API_URL` is baked into the HTML at render time and the **browser** calls the API directly (it's NOT a server-side proxy). If set to the in-cluster service name (`http://browser-hitl-api:8080`), your browser can't resolve it.
+**Root cause:** `NEXT_PUBLIC_API_URL` is baked into the HTML at render time and the **browser** calls the API directly. If set to the in-cluster service name, your browser can't resolve it.
 
-**Fix:** Must point to the localhost port-forward:
-
-```bash
-kubectl -n browser-hitl set env deployment/browser-hitl-admin-ui \
-  NEXT_PUBLIC_API_URL=http://localhost:18080
-```
+**Fix:** Already configured in `values-local.yaml` via `config.publicBaseUrl`. If using an older install, redeploy: `make kind-reload-all`
 
 ### Wrong OTP code doesn't trigger retry
 
@@ -786,21 +774,9 @@ kubectl -n browser-hitl set env deployment/browser-hitl-admin-ui \
 
 **Symptom:** The Slack soft bridge logs `service-token request failed (401): Service authentication is not configured` or `Invalid service client credentials`.
 
-**Root cause:** The API requires `SERVICE_AUTH_CLIENT_ID` and `SERVICE_AUTH_CLIENT_SECRET` env vars to validate service token requests. These must match what the Slack bot sends (configured in `.env.local`).
+**Root cause:** The API requires `SERVICE_AUTH_CLIENT_ID` and `SERVICE_AUTH_CLIENT_SECRET` env vars to validate service token requests. These must match what the Slack bot sends.
 
-**Fix:** Set the env vars on the API deployment to match your `.env.local` values:
-
-```bash
-# Check what your .env.local uses:
-grep SERVICE_AUTH .env.local
-
-# Set matching values on the API:
-kubectl -n browser-hitl set env deployment/browser-hitl-api \
-  SERVICE_AUTH_CLIENT_ID=<value-from-env-local> \
-  SERVICE_AUTH_CLIENT_SECRET=<value-from-env-local>
-```
-
-> **Note:** These are reset after every `helm upgrade --install`.
+**Fix:** Already configured in `values-local.yaml` (`secrets.serviceAuthClientId` / `serviceAuthClientSecret`). For the soft bridge, make sure `.env.local` uses the same values (`phase4-bot` / `phase4-secret`).
 
 ### "No pending HITL session tracked" when submitting OTP via Slack
 
@@ -828,24 +804,9 @@ pnpm --filter @browser-hitl/slack-bot start:soft
 
 **Symptom:** After running `helm upgrade --install`, things that were working stop (stream URL wrong, admin UI broken, service auth fails).
 
-**Root cause:** `helm upgrade` resets deployment env vars to what's in the chart templates. Manual `kubectl set env` overrides are lost.
+**Root cause:** Previous workflow used `kubectl set env` overrides which get wiped on `helm upgrade`.
 
-**Fix:** Re-apply all manual env var overrides after every `helm upgrade`:
-
-```bash
-# Admin UI API URL (must be localhost — browser makes calls directly)
-kubectl -n browser-hitl set env deployment/browser-hitl-admin-ui \
-  NEXT_PUBLIC_API_URL=http://localhost:18080
-
-# API stream host
-kubectl -n browser-hitl set env deployment/browser-hitl-api \
-  STREAM_HOST=localhost:18080
-
-# API service auth (match your .env.local)
-kubectl -n browser-hitl set env deployment/browser-hitl-api \
-  SERVICE_AUTH_CLIENT_ID=<your-client-id> \
-  SERVICE_AUTH_CLIENT_SECRET=<your-secret>
-```
+**Fix:** All local config is now in `values-local.yaml`. Use `make kind-reload-all` which always applies `values-local.yaml`. Never use `kubectl set env` for local development.
 
 ### Worker pods keep getting killed in a loop (controller `fetch failed`)
 

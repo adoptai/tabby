@@ -13,3 +13,5 @@ export { AgentClientEntity } from './agent-client.entity';
 export { AuthRequestEntity } from './auth-request.entity';
 export { LoginQueueEntity } from './login-queue.entity';
 export { ServiceProfileEntity } from './service-profile.entity';
+export { IdentityProviderEntity } from './identity-provider.entity';
+export { AppTemplateEntity } from './app-template.entity';

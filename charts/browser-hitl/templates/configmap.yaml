@@ -10,12 +10,16 @@ metadata:
 {{- $novncImage := include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.novnc) }}
 data:
   # Per spec section 15.4 - Runtime Configuration (Env Vars)
-  {{- $dbPassword := .Values.secrets.postgresPassword | default "changeme" }}
-  DATABASE_URL: {{ printf "postgresql://%s:%s@%s-postgres:%v/%s" .Values.postgres.auth.username $dbPassword (include "browser-hitl.fullname" .) (.Values.postgres.port | int) .Values.postgres.auth.database | quote }}
-  REDIS_URL: {{ .Values.config.redisUrl | quote }}
-  NATS_URL: {{ .Values.config.natsUrl | quote }}
+  {{- $dbPassword := .Values.secrets.postgresPassword | default "changeme" | urlquery }}
+  {{- $defaultDatabaseUrl := printf "postgresql://%s:%s@%s-postgres:%v/%s" .Values.postgres.auth.username $dbPassword (include "browser-hitl.fullname" .) (.Values.postgres.port | int) .Values.postgres.auth.database }}
+  DATABASE_URL: {{ default $defaultDatabaseUrl .Values.config.databaseUrl | quote }}
+  {{- $defaultRedisUrl := printf "redis://%s-redis:%v" (include "browser-hitl.fullname" .) (.Values.redis.port | int) }}
+  REDIS_URL: {{ default $defaultRedisUrl .Values.config.redisUrl | quote }}
+  {{- $defaultNatsUrl := printf "nats://%s-nats:%v" (include "browser-hitl.fullname" .) (.Values.nats.port | int) }}
+  NATS_URL: {{ default $defaultNatsUrl .Values.config.natsUrl | quote }}
   NATS_SYNC_INTERVAL: {{ .Values.config.natsSyncInterval | quote }}
-  MINIO_ENDPOINT: {{ .Values.config.minioEndpoint | quote }}
+  {{- $defaultMinioEndpoint := printf "%s-minio" (include "browser-hitl.fullname" .) }}
+  MINIO_ENDPOINT: {{ default $defaultMinioEndpoint .Values.config.minioEndpoint | quote }}
   JWT_SIGNING_KEY_ID: {{ .Values.config.jwtSigningKeyId | quote }}
   ADMIN_BOOTSTRAP_EMAIL: {{ .Values.config.adminBootstrapEmail | quote }}
   BOOTSTRAP_TENANT_NAME: {{ .Values.config.bootstrapTenantName | quote }}
@@ -24,6 +28,7 @@ data:
   DEFAULT_KEEPALIVE_SECONDS: {{ .Values.config.defaultKeepaliveSeconds | quote }}
   RECONCILE_INTERVAL_SECONDS: {{ .Values.config.reconcileIntervalSeconds | quote }}
   MAX_SESSION_AGE_HOURS: {{ .Values.config.maxSessionAgeHours | quote }}
+  IDLE_SHUTDOWN_SECONDS: {{ .Values.config.idleShutdownSeconds | default "0" | quote }}
   PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
   STREAM_HOST: {{ .Values.config.streamHost | quote }}
   STREAM_PROTOCOL: {{ .Values.config.streamProtocol | quote }}
@@ -56,3 +61,6 @@ data:
   CONTROLLER_PORT: {{ .Values.controller.port | quote }}
   WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}
   NOVNC_PORT: {{ .Values.worker.novnc.port | quote }}
+  # Version info (injected by CI)
+  CHART_VERSION: {{ .Chart.Version | quote }}
+  COMMIT_SHA: {{ .Values.config.commitSha | default "unknown" | quote }}

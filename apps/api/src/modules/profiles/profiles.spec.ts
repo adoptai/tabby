@@ -609,3 +609,43 @@ describe('ProfilesService (ADR-014)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tenant isolation (FDE integration)
+// ---------------------------------------------------------------------------
+
+describe('profiles controller tenant isolation', () => {
+  it('profiles.controller.ts uses resolveTenantId for create', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'profiles.controller.ts'),
+      'utf-8',
+    );
+    expect(source).toContain('resolveTenantId');
+    expect(source).toContain('dto.tenant_id');
+  });
+
+  it('profiles.controller.ts bypasses tenant filter for Admin on promote/rollback', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'profiles.controller.ts'),
+      'utf-8',
+    );
+    expect(source).toContain("req.user.role === 'Admin' ? undefined");
+  });
+
+  it('profiles.controller.ts CreateProfileDto has optional tenant_id', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'profiles.controller.ts'),
+      'utf-8',
+    );
+    expect(source).toContain('tenant_id');
+    expect(source).toContain('@IsUUID()');
+  });
+
+  it('profiles.service.ts findOne has optional tenantId parameter', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'profiles.service.ts'),
+      'utf-8',
+    );
+    expect(source).toContain('tenantId?: string');
+  });
+});

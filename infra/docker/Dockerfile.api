@@ -19,7 +19,7 @@ COPY apps/api/src ./apps/api/src
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/api build
 
-EXPOSE 8080
+EXPOSE 8000
 
 USER node
 

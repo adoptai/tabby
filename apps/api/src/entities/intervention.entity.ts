@@ -17,7 +17,7 @@ export class InterventionEntity {
   @JoinColumn({ name: 'session_id' })
   session: SessionEntity;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)
@@ -48,4 +48,7 @@ export class InterventionEntity {
 
   @Column({ type: 'jsonb', nullable: true })
   screenshots_ref: string[] | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  input_request_metadata: Record<string, unknown> | null;
 }
