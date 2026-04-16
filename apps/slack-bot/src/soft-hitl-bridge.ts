@@ -4,7 +4,6 @@ import {
   consumerOpts, AckPolicy, DeliverPolicy,
   RetentionPolicy, StorageType,
 } from 'nats';
-import { execSync } from 'child_process';
 import {
   HitlCompletedEvent,
   HitlStartedEvent,
@@ -97,93 +96,6 @@ async function postSlackMessage(
   }
   const result = await slackApi('chat.postMessage', params);
   return { channel: result.channel, ts: result.ts };
-}
-
-const k8sNamespace = process.env.K8S_NAMESPACE || 'browser-hitl';
-
-/**
- * Capture the latest screenshot from the worker pod.
- * The DSL runner saves screenshots to /tmp/screenshot-*.png in the worker container.
- */
-function captureWorkerScreenshot(sessionId: string): Buffer | null {
-  const podName = `worker-${sessionId}`;
-  try {
-    // Find the latest screenshot file in the worker pod
-    const latestFile = execSync(
-      `kubectl exec -n ${k8sNamespace} ${podName} -c worker -- sh -c "ls -t /tmp/screenshot-*.png 2>/dev/null | head -1"`,
-      { timeout: 10000 },
-    ).toString('utf8').trim();
-
-    if (!latestFile) {
-      console.warn(`[soft-hitl] no screenshot files found in ${podName}`);
-      return null;
-    }
-
-    // Read the file as base64 and decode
-    const b64 = execSync(
-      `kubectl exec -n ${k8sNamespace} ${podName} -c worker -- base64 ${latestFile}`,
-      { timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
-    ).toString('utf8').replace(/\s/g, '');
-
-    return Buffer.from(b64, 'base64');
-  } catch (error) {
-    console.error(`[soft-hitl] screenshot capture failed for ${sessionId}: ${error}`);
-    return null;
-  }
-}
-
-/**
- * Upload a screenshot image to Slack and share it in the active channel.
- */
-async function uploadScreenshotToSlack(
-  image: Buffer,
-  sessionId: string,
-  threadTs?: string,
-): Promise<void> {
-  const channel = activeChannelId || slackChannelTarget;
-
-  // Step 1: Get an upload URL
-  const getUrlResult = await slackApi('files.getUploadURLExternal', {
-    filename: `post-auth-${sessionId}.png`,
-    length: String(image.length),
-  });
-  if (!getUrlResult.ok || !getUrlResult.upload_url) {
-    console.error(`[soft-hitl] files.getUploadURLExternal failed:`, getUrlResult);
-    return;
-  }
-
-  // Step 2: Upload the file content to the URL
-  const uploadResp = await fetch(getUrlResult.upload_url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
-    body: image,
-  });
-  if (!uploadResp.ok) {
-    console.error(`[soft-hitl] file upload failed: ${uploadResp.status}`);
-    return;
-  }
-
-  // Step 3: Complete the upload and share to the channel
-  const channelStr = channel.replace(/^#/, '');
-  const completeBody: Record<string, any> = {
-    files: [{ id: getUrlResult.file_id, title: `Post-auth screenshot (${sessionId})` }],
-    channel_id: channelStr,
-  };
-  if (threadTs) {
-    completeBody.thread_ts = threadTs;
-  }
-  const completeResp = await fetch('https://slack.com/api/files.completeUploadExternal', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${slackToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(completeBody),
-  });
-  const completeResult = await completeResp.json() as any;
-  if (!completeResult.ok) {
-    console.error(`[soft-hitl] files.completeUploadExternal failed:`, completeResult);
-  }
 }
 
 async function getServiceToken(tenantId: string): Promise<string> {
@@ -406,21 +318,10 @@ async function handleStateChanged(data: SessionStateChangedEvent): Promise<void>
           },
         },
       ];
-      const sent = await postSlackMessage(
+      await postSlackMessage(
         'Thank You: Verification Complete ✅',
         blocks,
       );
-
-      // Capture and upload post-auth screenshot
-      try {
-        const screenshot = captureWorkerScreenshot(sessionId);
-        if (screenshot) {
-          await uploadScreenshotToSlack(screenshot, sessionId, sent.ts);
-          console.log(`[soft-hitl] post-auth screenshot uploaded for ${sessionId}`);
-        }
-      } catch (err) {
-        console.error(`[soft-hitl] post-auth screenshot error: ${err}`);
-      }
     } else {
       const blocks: SlackBlock[] = [
         {

@@ -19,6 +19,10 @@ spec:
         app.kubernetes.io/component: slack-bot
     spec:
       {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: slack-bot
           image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.slackBot) }}
@@ -61,6 +65,10 @@ spec:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: SERVICE_AUTH_CLIENT_SECRET
                   optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.slackBot.resources | nindent 12 }}
       {{- with .Values.slackBot.nodeSelector }}

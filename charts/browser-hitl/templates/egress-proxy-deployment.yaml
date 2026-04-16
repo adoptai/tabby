@@ -19,6 +19,10 @@ spec:
         app.kubernetes.io/component: egress-proxy
     spec:
       {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: egress-proxy
           image: "{{ .Values.egressProxy.image.repository }}:{{ .Values.egressProxy.image.tag }}"
@@ -70,6 +74,10 @@ spec:
               port: admin
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.egressProxy.resources | nindent 12 }}
           volumeMounts:

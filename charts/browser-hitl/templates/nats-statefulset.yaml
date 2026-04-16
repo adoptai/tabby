@@ -19,6 +19,20 @@ spec:
         {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: nats
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: fix-permissions
+          image: "{{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}"
+          command: ["sh", "-c", "chown -R 1000:1000 /data || true"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: nats
           image: "{{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}"
@@ -41,6 +55,10 @@ spec:
                   name: {{ include "browser-hitl.fullname" . }}-secrets
                   key: nats-auth-token
           {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.nats.resources | nindent 12 }}
           volumeMounts:

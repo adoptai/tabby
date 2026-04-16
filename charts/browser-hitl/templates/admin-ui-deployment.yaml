@@ -19,6 +19,10 @@ spec:
         app.kubernetes.io/component: admin-ui
     spec:
       {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: admin-ui
           image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.adminUi) }}
@@ -32,6 +36,10 @@ spec:
               value: {{ (.Values.config.publicBaseUrl | default (printf "http://%s-api:%v" (include "browser-hitl.fullname" .) .Values.api.port)) | quote }}
             - name: PORT
               value: {{ .Values.adminUi.port | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.adminUi.resources | nindent 12 }}
           livenessProbe:
