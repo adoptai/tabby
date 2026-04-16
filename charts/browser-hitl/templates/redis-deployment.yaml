@@ -23,6 +23,16 @@ spec:
         runAsNonRoot: true
         runAsUser: 999
         fsGroup: 999
+      initContainers:
+        - name: fix-permissions
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          command: ["sh", "-c", "chown -R 999:999 /data || true"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: redis
           image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
