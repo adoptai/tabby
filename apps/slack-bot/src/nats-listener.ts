@@ -4,7 +4,6 @@ import {
   consumerOpts, AckPolicy, DeliverPolicy,
   RetentionPolicy, StorageType,
 } from 'nats';
-import { execSync } from 'child_process';
 import { App } from '@slack/bolt';
 import {
   HitlStartedEvent,
@@ -217,21 +216,6 @@ export class NatsListener {
             ],
           });
 
-        try {
-          const screenshot = this.captureWorkerScreenshot(session_id);
-          if (screenshot) {
-            await this.uploadScreenshotToSlack(
-              screenshot,
-              session_id,
-              channelId,
-              sent.ts as string | undefined,
-            );
-            console.log(`[NatsListener] hitl.started screenshot uploaded for ${session_id}`);
-          }
-        } catch (err) {
-          console.error(`[NatsListener] hitl.started screenshot error: ${err}`);
-        }
-
         if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
       } catch (error) {
         console.error(`[NatsListener] Error processing hitl.started: ${error}`);
@@ -279,21 +263,6 @@ export class NatsListener {
             ],
           });
 
-          try {
-            const screenshot = this.captureWorkerScreenshot(session_id);
-            if (screenshot) {
-              await this.uploadScreenshotToSlack(
-                screenshot,
-                session_id,
-                channelId,
-                sent.ts as string | undefined,
-              );
-              console.log(`[NatsListener] post-auth screenshot uploaded for ${session_id}`);
-            }
-          } catch (err) {
-            console.error(`[NatsListener] post-auth screenshot error: ${err}`);
-          }
-
           if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
           continue;
         }
@@ -333,78 +302,6 @@ export class NatsListener {
       } catch (error) {
         console.error(`[NatsListener] Error processing session.state.changed: ${error}`);
       }
-    }
-  }
-
-  /**
-   * Capture the latest screenshot from the worker pod via kubectl exec.
-   */
-  private captureWorkerScreenshot(sessionId: string): Buffer | null {
-    const podName = `worker-${sessionId}`;
-    const namespace = process.env.K8S_NAMESPACE || 'browser-hitl';
-    try {
-      const latestFile = execSync(
-        `kubectl exec -n ${namespace} ${podName} -c worker -- sh -c "ls -t /tmp/screenshot-*.png 2>/dev/null | head -1"`,
-        { timeout: 10000 },
-      ).toString('utf8').trim();
-
-      if (!latestFile) {
-        console.warn(`[NatsListener] no screenshot files found in ${podName}`);
-        return null;
-      }
-
-      const b64 = execSync(
-        `kubectl exec -n ${namespace} ${podName} -c worker -- base64 ${latestFile}`,
-        { timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
-      ).toString('utf8').replace(/\s/g, '');
-
-      return Buffer.from(b64, 'base64');
-    } catch (error) {
-      console.error(`[NatsListener] screenshot capture failed for ${sessionId}: ${error}`);
-      return null;
-    }
-  }
-
-  /**
-   * Upload a screenshot image to Slack via the new files upload API.
-   */
-  private async uploadScreenshotToSlack(
-    image: Buffer,
-    sessionId: string,
-    channelId: string,
-    threadTs?: string,
-  ): Promise<void> {
-    try {
-      const getUrlResult = await this.slackApp.client.files.getUploadURLExternal({
-        filename: `post-auth-${sessionId}.png`,
-        length: image.length,
-      });
-
-      if (!getUrlResult.ok || !getUrlResult.upload_url) {
-        console.error('[NatsListener] files.getUploadURLExternal failed:', getUrlResult);
-        return;
-      }
-
-      const uploadResp = await fetch(getUrlResult.upload_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: image,
-      });
-      if (!uploadResp.ok) {
-        console.error(`[NatsListener] file upload failed: ${uploadResp.status}`);
-        return;
-      }
-
-      const completeResult = await this.slackApp.client.files.completeUploadExternal({
-        files: [{ id: getUrlResult.file_id!, title: `Post-auth screenshot (${sessionId})` }],
-        channel_id: channelId,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      });
-      if (!completeResult.ok) {
-        console.error('[NatsListener] files.completeUploadExternal failed:', completeResult);
-      }
-    } catch (error) {
-      console.error(`[NatsListener] screenshot upload failed for ${sessionId}: ${error}`);
     }
   }
 

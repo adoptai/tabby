@@ -19,6 +19,10 @@ spec:
         {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
       containers:
         - name: redis
           image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
@@ -35,6 +39,10 @@ spec:
             - --dir
             - /data
             {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
           volumeMounts:

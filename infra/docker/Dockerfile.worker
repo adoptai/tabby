@@ -7,7 +7,7 @@
 # (e.g. base image v1.58.2 but npm package 1.59.x pulled via caret range) will
 # cause "browser revision not found" errors at runtime.  Both versions should be
 # updated together.
-FROM mcr.microsoft.com/playwright:v1.58.2-noble
+FROM mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d
 
 # Install Xvfb and x11vnc for headed browser + VNC streaming
 RUN apt-get update && apt-get install -y --no-install-recommends \
