@@ -23,6 +23,10 @@ spec:
         app.kubernetes.io/component: api
     spec:
       {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: api
           image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.images.api) }}
@@ -80,6 +84,10 @@ spec:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: AGENT_SECRET_HMAC_KEY
                   optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           livenessProbe:
