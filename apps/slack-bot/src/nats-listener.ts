@@ -4,10 +4,10 @@ import {
   consumerOpts, AckPolicy, DeliverPolicy,
   RetentionPolicy, StorageType,
 } from 'nats';
+import { execSync } from 'child_process';
 import { App } from '@slack/bolt';
 import {
   HitlStartedEvent,
-  HitlOtpRequestedEvent,
   SessionStateChangedEvent,
 } from '@browser-hitl/shared';
 
@@ -20,7 +20,6 @@ type AnySubscription = Subscription | JetStreamSubscription;
  *
  * Subjects:
  *   hitl.started.{tenant_id}.{session_id}
- *   hitl.otp-requested.{tenant_id}.{session_id}
  *   session.state.changed.{tenant_id}.{session_id}
  */
 export class NatsListener {
@@ -55,7 +54,7 @@ export class NatsListener {
 
       const STREAM_MAX_AGE_NS = 24 * 60 * 60 * 1_000_000_000;
       for (const def of [
-        { name: 'HITL_EVENTS', subjects: ['hitl.started.>', 'hitl.completed.>', 'hitl.otp-requested.>'] },
+        { name: 'HITL_EVENTS', subjects: ['hitl.started.>', 'hitl.completed.>'] },
         { name: 'SESSION_EVENTS', subjects: ['session.state.changed.>', 'auth.bundle.exported.>'] },
       ]) {
         try { await jsm.streams.add({ name: def.name, subjects: def.subjects, retention: RetentionPolicy.Limits, storage: StorageType.File, max_age: STREAM_MAX_AGE_NS }); } catch { /* exists */ }
@@ -76,22 +75,18 @@ export class NatsListener {
       };
 
       const hitlStartedSub = await makeSub('hitl.started.>', 'slack-hitl-started', 'HITL_EVENTS');
-      const otpRequestedSub = await makeSub('hitl.otp-requested.>', 'slack-otp-requested', 'HITL_EVENTS');
       const stateChangedSub = await makeSub('session.state.changed.>', 'slack-state-changed', 'SESSION_EVENTS');
-      this.subscriptions.push(hitlStartedSub, otpRequestedSub, stateChangedSub);
+      this.subscriptions.push(hitlStartedSub, stateChangedSub);
       this.consumeHitlStarted(hitlStartedSub);
-      this.consumeOtpRequested(otpRequestedSub);
       this.consumeSessionStateChanged(stateChangedSub);
       mode = 'JetStream (durable)';
     } catch (err) {
       // Fallback to Core NATS (fire-and-forget)
       console.warn(`[NatsListener] JetStream unavailable, using Core NATS: ${err}`);
       const hitlStartedSub = this.nc.subscribe('hitl.started.>');
-      const otpRequestedSub = this.nc.subscribe('hitl.otp-requested.>');
       const stateChangedSub = this.nc.subscribe('session.state.changed.>');
-      this.subscriptions.push(hitlStartedSub, otpRequestedSub, stateChangedSub);
+      this.subscriptions.push(hitlStartedSub, stateChangedSub);
       this.consumeHitlStarted(hitlStartedSub);
-      this.consumeOtpRequested(otpRequestedSub);
       this.consumeSessionStateChanged(stateChangedSub);
       mode = 'Core NATS (no replay)';
     }
@@ -114,154 +109,132 @@ export class NatsListener {
 
   /**
    * Process hitl.started events.
-   * Posts an interactive message with Open Stream, Submit OTP, and Release Control buttons.
+   * Posts a dynamic interactive message based on input_request metadata.
+   * Single handler replaces both hitl.started and hitl.otp-requested.
    */
   private async consumeHitlStarted(sub: AnySubscription): Promise<void> {
     for await (const msg of sub) {
       try {
         const data = JSON.parse(this.sc.decode(msg.data)) as HitlStartedEvent;
-        const { session_id, tenant_id, app_id, reason, intervention_id } = data.payload;
+        const {
+          session_id, tenant_id, app_id, app_name,
+          reason, intervention_id, intervention_type, input_request,
+        } = data.payload;
         const channelId = this.resolveChannel(tenant_id);
 
         console.log(
-          `[NatsListener] hitl.started: session=${session_id} tenant=${tenant_id} reason=${reason}`,
+          `[NatsListener] hitl.started: session=${session_id} tenant=${tenant_id} type=${intervention_type || 'MANUAL'}`,
         );
 
-        await this.slackApp.client.chat.postMessage({
-          channel: channelId,
-          text: `Human intervention needed for session ${session_id}. Use Submit OTP when code is available.`,
-          blocks: [
-            {
-              type: 'header',
-              text: {
-                type: 'plain_text',
-                text: 'Human Intervention Required',
-              },
-            },
-            {
-              type: 'section',
-              fields: [
-                { type: 'mrkdwn', text: `*Session:*\n\`${session_id}\`` },
-                { type: 'mrkdwn', text: `*Application:*\n\`${app_id}\`` },
-                { type: 'mrkdwn', text: `*Reason:*\n${reason}` },
-                { type: 'mrkdwn', text: `*Intervention:*\n\`${intervention_id}\`` },
-              ],
-            },
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: 'Automation is paused. Click *Open Stream* to inspect the page, then use *Submit OTP* to continue.',
-              },
-            },
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Open Stream' },
-                  action_id: 'open_stream',
-                  value: JSON.stringify({ session_id, tenant_id }),
-                  style: 'primary',
-                },
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Submit OTP' },
-                  action_id: 'submit_otp',
-                  value: JSON.stringify({ session_id, tenant_id }),
-                },
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Release Control' },
-                  action_id: 'release_control',
-                  value: JSON.stringify({ session_id, tenant_id }),
-                  style: 'danger',
-                },
-              ],
-            },
-            {
-              type: 'context',
-              elements: [
-                {
-                  type: 'mrkdwn',
-                  text: `Tenant: \`${tenant_id}\` | Received: ${data.timestamp}`,
-                },
-              ],
-            },
-          ],
+        // Dynamic header based on input request
+        const headerText = input_request?.label
+          || (intervention_type === 'OTP' ? 'OTP Code Required' : 'Human Intervention Required');
+
+        // Dynamic description
+        const description = input_request?.label
+          ? `${app_name ? `*${app_name}*` : `\`${app_id}\``} needs your help: ${input_request.label}`
+          : `Automation is paused for ${app_name ? `*${app_name}*` : `\`${app_id}\``}. Click *Open Stream* to inspect the page.`;
+
+        // Build action buttons based on input type
+        const actionValue = JSON.stringify({
+          session_id,
+          tenant_id,
+          input_request: input_request || null,
         });
+
+        const actionElements: any[] = [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Open Stream' },
+            action_id: 'open_stream',
+            value: JSON.stringify({ session_id, tenant_id }),
+            style: 'primary',
+          },
+        ];
+
+        if (input_request?.input_type === 'confirm') {
+          actionElements.push({
+            type: 'button',
+            text: { type: 'plain_text', text: 'Mark as Resolved' },
+            action_id: 'confirm_resolved',
+            value: actionValue,
+          });
+        } else {
+          // Dynamic submit button text
+          const submitLabel = input_request
+            ? this.getSubmitLabel(input_request.input_type)
+            : 'Submit OTP';
+          actionElements.push({
+            type: 'button',
+            text: { type: 'plain_text', text: submitLabel },
+            action_id: 'submit_input',
+            value: actionValue,
+          });
+        }
+
+        actionElements.push({
+          type: 'button',
+          text: { type: 'plain_text', text: 'Release Control' },
+          action_id: 'release_control',
+          value: JSON.stringify({ session_id, tenant_id }),
+          style: 'danger',
+        });
+
+        const sent = await this.slackApp.client.chat.postMessage({
+            channel: channelId,
+            text: `${headerText} for session ${session_id}`,
+            blocks: [
+              {
+                type: 'header',
+                text: { type: 'plain_text', text: headerText },
+              },
+              {
+                type: 'section',
+                fields: [
+                  { type: 'mrkdwn', text: `*Session:*\n\`${session_id}\`` },
+                  { type: 'mrkdwn', text: `*Application:*\n\`${app_id}\`` },
+                  { type: 'mrkdwn', text: `*Type:*\n${intervention_type || 'MANUAL'}` },
+                  { type: 'mrkdwn', text: `*Intervention:*\n\`${intervention_id}\`` },
+                ],
+              },
+              {
+                type: 'section',
+                text: { type: 'mrkdwn', text: description },
+              },
+              {
+                type: 'actions',
+                elements: actionElements,
+              },
+              {
+                type: 'context',
+                elements: [
+                  {
+                    type: 'mrkdwn',
+                    text: `Tenant: \`${tenant_id}\` | Received: ${data.timestamp}`,
+                  },
+                ],
+              },
+            ],
+          });
+
+        try {
+          const screenshot = this.captureWorkerScreenshot(session_id);
+          if (screenshot) {
+            await this.uploadScreenshotToSlack(
+              screenshot,
+              session_id,
+              channelId,
+              sent.ts as string | undefined,
+            );
+            console.log(`[NatsListener] hitl.started screenshot uploaded for ${session_id}`);
+          }
+        } catch (err) {
+          console.error(`[NatsListener] hitl.started screenshot error: ${err}`);
+        }
+
         if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
       } catch (error) {
         console.error(`[NatsListener] Error processing hitl.started: ${error}`);
-      }
-    }
-  }
-
-  /**
-   * Process hitl.otp-requested events.
-   * Posts an OTP prompt message with a Submit OTP button.
-   */
-  private async consumeOtpRequested(sub: AnySubscription): Promise<void> {
-    for await (const msg of sub) {
-      try {
-        const data = JSON.parse(this.sc.decode(msg.data)) as HitlOtpRequestedEvent;
-        const { session_id, tenant_id, app_id, app_name } = data.payload;
-        const channelId = this.resolveChannel(tenant_id);
-
-        console.log(
-          `[NatsListener] hitl.otp-requested: session=${session_id} app=${app_name}`,
-        );
-
-        await this.slackApp.client.chat.postMessage({
-          channel: channelId,
-          text: `OTP required for ${app_name} (session ${session_id})`,
-          blocks: [
-            {
-              type: 'header',
-              text: {
-                type: 'plain_text',
-                text: 'OTP Code Required',
-              },
-            },
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `Application *${app_name}* (\`${app_id}\`) is requesting an OTP code.\nSession: \`${session_id}\``,
-              },
-            },
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Submit OTP' },
-                  action_id: 'submit_otp',
-                  value: JSON.stringify({ session_id, tenant_id }),
-                  style: 'primary',
-                },
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Open Stream' },
-                  action_id: 'open_stream',
-                  value: JSON.stringify({ session_id, tenant_id }),
-                },
-              ],
-            },
-            {
-              type: 'context',
-              elements: [
-                {
-                  type: 'mrkdwn',
-                  text: `Tenant: \`${tenant_id}\` | Received: ${data.timestamp}`,
-                },
-              ],
-            },
-          ],
-        });
-        if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
-      } catch (error) {
-        console.error(`[NatsListener] Error processing hitl.otp-requested: ${error}`);
       }
     }
   }
@@ -281,16 +254,13 @@ export class NatsListener {
 
         if (old_state === 'LOGIN_IN_PROGRESS' && new_state === 'HEALTHY') {
           const channelId = this.resolveChannel(tenant_id);
-          await this.slackApp.client.chat.postMessage({
+          const sent = await this.slackApp.client.chat.postMessage({
             channel: channelId,
             text: `Session ${session_id} recovered and automation resumed.`,
             blocks: [
               {
                 type: 'header',
-                text: {
-                  type: 'plain_text',
-                  text: 'Automation Resumed',
-                },
+                text: { type: 'plain_text', text: 'Automation Resumed' },
               },
               {
                 type: 'section',
@@ -303,14 +273,27 @@ export class NatsListener {
               {
                 type: 'context',
                 elements: [
-                  {
-                    type: 'mrkdwn',
-                    text: `Tenant: \`${tenant_id}\` | Event: ${data.timestamp}`,
-                  },
+                  { type: 'mrkdwn', text: `Tenant: \`${tenant_id}\` | Event: ${data.timestamp}` },
                 ],
               },
             ],
           });
+
+          try {
+            const screenshot = this.captureWorkerScreenshot(session_id);
+            if (screenshot) {
+              await this.uploadScreenshotToSlack(
+                screenshot,
+                session_id,
+                channelId,
+                sent.ts as string | undefined,
+              );
+              console.log(`[NatsListener] post-auth screenshot uploaded for ${session_id}`);
+            }
+          } catch (err) {
+            console.error(`[NatsListener] post-auth screenshot error: ${err}`);
+          }
+
           if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
           continue;
         }
@@ -323,10 +306,7 @@ export class NatsListener {
             blocks: [
               {
                 type: 'header',
-                text: {
-                  type: 'plain_text',
-                  text: 'Intervention Failed',
-                },
+                text: { type: 'plain_text', text: 'Intervention Failed' },
               },
               {
                 type: 'section',
@@ -338,24 +318,17 @@ export class NatsListener {
               },
               {
                 type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: 'Please inspect stream/context and re-attempt if appropriate.',
-                },
+                text: { type: 'mrkdwn', text: 'Please inspect stream/context and re-attempt if appropriate.' },
               },
               {
                 type: 'context',
                 elements: [
-                  {
-                    type: 'mrkdwn',
-                    text: `Tenant: \`${tenant_id}\` | Event: ${data.timestamp}`,
-                  },
+                  { type: 'mrkdwn', text: `Tenant: \`${tenant_id}\` | Event: ${data.timestamp}` },
                 ],
               },
             ],
           });
         }
-        // Ack regardless of branch (non-actionable state changes still consumed)
         if ('ack' in msg && typeof msg.ack === 'function') msg.ack();
       } catch (error) {
         console.error(`[NatsListener] Error processing session.state.changed: ${error}`);
@@ -364,11 +337,91 @@ export class NatsListener {
   }
 
   /**
+   * Capture the latest screenshot from the worker pod via kubectl exec.
+   */
+  private captureWorkerScreenshot(sessionId: string): Buffer | null {
+    const podName = `worker-${sessionId}`;
+    const namespace = process.env.K8S_NAMESPACE || 'browser-hitl';
+    try {
+      const latestFile = execSync(
+        `kubectl exec -n ${namespace} ${podName} -c worker -- sh -c "ls -t /tmp/screenshot-*.png 2>/dev/null | head -1"`,
+        { timeout: 10000 },
+      ).toString('utf8').trim();
+
+      if (!latestFile) {
+        console.warn(`[NatsListener] no screenshot files found in ${podName}`);
+        return null;
+      }
+
+      const b64 = execSync(
+        `kubectl exec -n ${namespace} ${podName} -c worker -- base64 ${latestFile}`,
+        { timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
+      ).toString('utf8').replace(/\s/g, '');
+
+      return Buffer.from(b64, 'base64');
+    } catch (error) {
+      console.error(`[NatsListener] screenshot capture failed for ${sessionId}: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Upload a screenshot image to Slack via the new files upload API.
+   */
+  private async uploadScreenshotToSlack(
+    image: Buffer,
+    sessionId: string,
+    channelId: string,
+    threadTs?: string,
+  ): Promise<void> {
+    try {
+      const getUrlResult = await this.slackApp.client.files.getUploadURLExternal({
+        filename: `post-auth-${sessionId}.png`,
+        length: image.length,
+      });
+
+      if (!getUrlResult.ok || !getUrlResult.upload_url) {
+        console.error('[NatsListener] files.getUploadURLExternal failed:', getUrlResult);
+        return;
+      }
+
+      const uploadResp = await fetch(getUrlResult.upload_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: image,
+      });
+      if (!uploadResp.ok) {
+        console.error(`[NatsListener] file upload failed: ${uploadResp.status}`);
+        return;
+      }
+
+      const completeResult = await this.slackApp.client.files.completeUploadExternal({
+        files: [{ id: getUrlResult.file_id!, title: `Post-auth screenshot (${sessionId})` }],
+        channel_id: channelId,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      });
+      if (!completeResult.ok) {
+        console.error('[NatsListener] files.completeUploadExternal failed:', completeResult);
+      }
+    } catch (error) {
+      console.error(`[NatsListener] screenshot upload failed for ${sessionId}: ${error}`);
+    }
+  }
+
+  private getSubmitLabel(inputType: string): string {
+    switch (inputType) {
+      case 'otp': return 'Submit OTP';
+      case 'verification_code': return 'Submit Code';
+      case 'email': return 'Submit Email';
+      case 'password': return 'Submit Password';
+      case 'captcha': return 'Submit CAPTCHA';
+      case 'url': return 'Submit URL';
+      default: return 'Submit Input';
+    }
+  }
+
+  /**
    * Resolve the Slack channel ID for a given tenant.
-   * In production, this would look up the notification_config for the tenant's app
-   * and extract the Slack channel reference. For now, falls back to default channel.
-   *
-   * notification_config.channels format: ["slack:#channel-name", "teams:channel-id"]
    */
   private resolveChannel(tenantId: string): string {
     const normalizedTenantToken = tenantId.toUpperCase().replace(/[^A-Z0-9]/g, '_');

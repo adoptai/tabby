@@ -14,11 +14,15 @@ import { CDP_PORTS, StreamingMode } from '@browser-hitl/shared';
 export class PodManagerService {
   private readonly logger = new Logger(PodManagerService.name);
   private readonly namespace: string;
+  private readonly releaseInstance: string;
+  private readonly environment: string;
   private readonly coreApi: k8s.CoreV1Api;
   private readonly networkingApi: k8s.NetworkingV1Api;
 
   constructor() {
     this.namespace = process.env.WORKER_NAMESPACE || 'browser-hitl';
+    this.releaseInstance = (process.env.RELEASE_INSTANCE || '').trim();
+    this.environment = (process.env.DEPLOY_ENVIRONMENT || '').trim();
     const kubeConfig = new k8s.KubeConfig();
 
     if (process.env.KUBERNETES_SERVICE_HOST) {
@@ -261,13 +265,16 @@ export class PodManagerService {
 
   async listWorkerPods(): Promise<Array<{ podName: string; sessionId: string | null }>> {
     const api: any = this.coreApi as any;
+    const selector = this.releaseInstance
+      ? `app=browser-worker,release-instance=${this.releaseInstance}`
+      : 'app=browser-worker';
     let result: any;
     try {
-      result = await api.listNamespacedPod(this.namespace, undefined, undefined, undefined, undefined, 'app=browser-worker');
+      result = await api.listNamespacedPod(this.namespace, undefined, undefined, undefined, undefined, selector);
     } catch {
       result = await api.listNamespacedPod({
         namespace: this.namespace,
-        labelSelector: 'app=browser-worker',
+        labelSelector: selector,
       });
     }
 
@@ -396,6 +403,8 @@ export class PodManagerService {
           'app-id': session.app_id,
           'tenant-id': session.tenant_id,
           'streaming-mode': streamingMode,
+          ...(this.releaseInstance ? { 'release-instance': this.releaseInstance } : {}),
+          ...(this.environment ? { environment: this.environment } : {}),
         },
       },
       spec: {

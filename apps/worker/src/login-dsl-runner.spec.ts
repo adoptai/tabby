@@ -53,28 +53,29 @@ function createMockBrowserContext() {
   return {};
 }
 
-function createMockOtpRelay() {
+function createMockInputRelay() {
   return {
-    waitForOtp: jest.fn().mockResolvedValue('123456'),
+    waitForInput: jest.fn().mockResolvedValue({ input_type: 'otp', value: '123456' }),
+    disconnect: jest.fn().mockResolvedValue(undefined),
   };
 }
 
 function buildRunner(overrides: Record<string, any> = {}) {
   const page = overrides.page ?? createMockPage();
   const context = overrides.context ?? createMockBrowserContext();
-  const otpRelay = overrides.otpRelay ?? createMockOtpRelay();
+  const inputRelay = overrides.otpRelay ?? overrides.inputRelay ?? createMockInputRelay();
 
   const runner = new LoginDslRunner(
     page as any,
     context as any,
-    otpRelay as any,
+    inputRelay as any,
     'session-1',
     'tenant-1',
     'app-1',
     overrides.options,
   );
 
-  return { runner, page, context, otpRelay };
+  return { runner, page, context, inputRelay };
 }
 
 // ---------------------------------------------------------------------------
@@ -191,15 +192,13 @@ describe('LoginDslRunner', () => {
   });
 
   // -----------------------------------------------------------------------
-  // OTP wait detection triggers relay polling
+  // Sensitive wait_for (legacy OTP path removed)
   // -----------------------------------------------------------------------
-  describe('OTP wait detection', () => {
-    it('triggers OTP relay polling when wait_for step is sensitive', async () => {
+  describe('sensitive wait_for', () => {
+    it('executes sensitive wait_for as a normal wait without OTP relay', async () => {
       const page = createMockPage();
-      const otpRelay = createMockOtpRelay();
-      otpRelay.waitForOtp.mockResolvedValue('789012');
-
-      const { runner } = buildRunner({ page, otpRelay });
+      const inputRelay = createMockInputRelay();
+      const { runner } = buildRunner({ page, inputRelay });
 
       const steps: DslStep[] = [
         {
@@ -212,70 +211,8 @@ describe('LoginDslRunner', () => {
 
       await runner.execute(steps, { username: '', password: '' });
 
-      // OTP relay should have been polled
-      expect(otpRelay.waitForOtp).toHaveBeenCalledWith(60000);
-
-      // OTP value should have been filled into the field
-      expect(page._locator.fill).toHaveBeenCalledWith('789012');
-    });
-
-    it('invokes OTP wait start callback before polling Redis', async () => {
-      const page = createMockPage();
-      const otpRelay = createMockOtpRelay();
-      const onOtpWaitStart = jest.fn().mockResolvedValue(undefined);
-      const { runner } = buildRunner({
-        page,
-        otpRelay,
-        options: { onOtpWaitStart },
-      });
-
-      const steps: DslStep[] = [
-        {
-          action: 'wait_for',
-          selector: '#otp-field',
-          sensitive: true,
-          timeout_ms: 60000,
-        },
-      ];
-
-      await runner.execute(steps, { username: '', password: '' });
-
-      expect(onOtpWaitStart).toHaveBeenCalledTimes(1);
-      expect(otpRelay.waitForOtp).toHaveBeenCalledWith(60000);
-    });
-
-    it('throws when OTP relay returns null (timeout)', async () => {
-      const page = createMockPage();
-      const otpRelay = createMockOtpRelay();
-      otpRelay.waitForOtp.mockResolvedValue(null);
-
-      const { runner } = buildRunner({ page, otpRelay });
-
-      const steps: DslStep[] = [
-        {
-          action: 'wait_for',
-          selector: '#otp-field',
-          sensitive: true,
-          timeout_ms: 5000,
-        },
-      ];
-
-      await expect(
-        runner.execute(steps, { username: '', password: '' }),
-      ).rejects.toThrow('OTP timeout');
-    });
-
-    it('does not trigger OTP relay for non-sensitive wait_for', async () => {
-      const otpRelay = createMockOtpRelay();
-      const { runner } = buildRunner({ otpRelay });
-
-      const steps: DslStep[] = [
-        { action: 'wait_for', selector: '#some-element', sensitive: false },
-      ];
-
-      await runner.execute(steps, { username: '', password: '' });
-
-      expect(otpRelay.waitForOtp).not.toHaveBeenCalled();
+      // wait_for should execute normally via locator.waitFor
+      expect(page._locator.waitFor).toHaveBeenCalled();
     });
   });
 

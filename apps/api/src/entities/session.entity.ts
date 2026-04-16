@@ -16,7 +16,7 @@ export class SessionEntity {
   @JoinColumn({ name: 'app_id' })
   application: ApplicationEntity;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)
@@ -70,4 +70,15 @@ export class SessionEntity {
   /** Barrier 3 (ADR-012): persisted timestamp for worker-side rate guard */
   @Column({ type: 'timestamptz', nullable: true })
   last_login_attempt_at: Date | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  pending_input_request: Record<string, unknown> | null;
+
+  /** External user ID for per-user session isolation (federated auth). Null = tenant-scoped (backward compat). */
+  @Column({ type: 'varchar', nullable: true })
+  owner_user_id: string | null;
+
+  /** Timestamp of last credential request — used for idle shutdown. */
+  @Column({ type: 'timestamptz', nullable: true })
+  last_credential_request_at: Date | null;
 }

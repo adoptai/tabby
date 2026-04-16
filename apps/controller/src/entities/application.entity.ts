@@ -48,6 +48,10 @@ export class ApplicationEntity {
   @Column({ type: 'integer', default: 90 })
   credential_rotation_reminder_days: number;
 
+  /** Owner user ID — if set, sessions created for this app are scoped to this user */
+  @Column({ type: 'varchar', nullable: true })
+  owner_user_id: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

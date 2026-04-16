@@ -16,6 +16,7 @@ import {
   ExportPolicy,
   NotificationConfig,
 } from '@browser-hitl/shared';
+import { APP_SELECTABLE_FIELDS, AppSelectableField } from './apps.dto';
 
 interface CreateAppInput {
   name: string;
@@ -23,7 +24,7 @@ interface CreateAppInput {
   login_config: Record<string, unknown>;
   keepalive_config: Record<string, unknown>;
   export_policy: Record<string, unknown>;
-  notification_config: Record<string, unknown>;
+  notification_config?: Record<string, unknown>;
   desired_session_count?: number;
   browser_policy?: Record<string, unknown>;
 }
@@ -90,7 +91,7 @@ export class AppsService {
       login_config: input.login_config,
       keepalive_config: input.keepalive_config,
       export_policy: input.export_policy,
-      notification_config: input.notification_config,
+      notification_config: input.notification_config ?? { channels: [] },
       desired_session_count: input.desired_session_count ?? 1,
       browser_policy: input.browser_policy ?? { downloads: false, clipboard: false, file_chooser: false },
     });
@@ -111,9 +112,24 @@ export class AppsService {
     tenantId: string,
     limit: number,
     offset: number,
-  ): Promise<{ data: ApplicationEntity[]; total: number; limit: number; offset: number }> {
+    fields?: string,
+  ): Promise<{ data: Partial<ApplicationEntity>[]; total: number; limit: number; offset: number }> {
+    let select: AppSelectableField[] | undefined;
+
+    if (fields) {
+      const requested = fields.split(',').map(f => f.trim()).filter(Boolean) as AppSelectableField[];
+      const invalid = requested.filter(f => !(APP_SELECTABLE_FIELDS as readonly string[]).includes(f));
+      if (invalid.length > 0) {
+        throw new BadRequestException(
+          `Unknown field(s): ${invalid.join(', ')}. Allowed: ${APP_SELECTABLE_FIELDS.join(', ')}`,
+        );
+      }
+      select = requested;
+    }
+
     const [data, total] = await this.appRepo.findAndCount({
       where: { tenant_id: tenantId },
+      select: select as any,
       take: limit,
       skip: offset,
       order: { created_at: 'DESC' },
@@ -122,8 +138,10 @@ export class AppsService {
     return { data, total, limit, offset };
   }
 
-  async findOne(id: string, tenantId: string): Promise<ApplicationEntity> {
-    const app = await this.appRepo.findOne({ where: { id, tenant_id: tenantId } });
+  async findOne(id: string, tenantId?: string): Promise<ApplicationEntity> {
+    const where: any = { id };
+    if (tenantId) where.tenant_id = tenantId;
+    const app = await this.appRepo.findOne({ where });
     if (!app) {
       throw new NotFoundException('Application not found');
     }
@@ -133,7 +151,7 @@ export class AppsService {
   async update(
     id: string,
     input: Partial<CreateAppInput>,
-    tenantId: string,
+    tenantId: string | undefined,
     actorId: string,
   ): Promise<ApplicationEntity> {
     const app = await this.findOne(id, tenantId);
@@ -163,7 +181,7 @@ export class AppsService {
     const saved = await this.appRepo.save(app);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: saved.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app.updated',
@@ -175,7 +193,7 @@ export class AppsService {
 
   async deactivate(
     id: string,
-    tenantId: string,
+    tenantId: string | undefined,
     actorId: string,
   ): Promise<{ app_id: string; desired_session_count: number }> {
     const app = await this.findOne(id, tenantId);
@@ -184,7 +202,7 @@ export class AppsService {
     await this.appRepo.save(app);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: app.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app.deactivated',

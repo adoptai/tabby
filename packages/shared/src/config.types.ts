@@ -17,7 +17,7 @@ export interface OtpPrompt {
 
 export interface LoginConfig {
   login_url: string;
-  credential_ref: string;       // Format: k8s:secret/{secret-name}
+  credential_ref: string;       // Format: k8s:secret/{secret-name} | manual: (human provides creds via HITL)
   screenshot_policy?: ScreenshotPolicy;
   steps: DslStep[];
   otp_prompt?: OtpPrompt;
@@ -92,7 +92,7 @@ export interface EscalationConfig {
 }
 
 export interface NotificationConfig {
-  channels: string[];           // Format: {provider}:{reference}
+  channels?: string[];           // Format: {provider}:{reference}. Empty/omitted = silent/poll-only.
   escalation?: EscalationConfig;
 }
 

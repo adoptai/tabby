@@ -13,6 +13,8 @@
     "prepare": "husky"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "nx": "^21.1.3",

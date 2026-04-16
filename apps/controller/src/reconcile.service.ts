@@ -175,7 +175,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async createSession(app: ApplicationEntity): Promise<void> {
-    // Create session record
+    // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
       app_id: app.id,
       tenant_id: app.tenant_id,
@@ -184,6 +184,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       retry_count: 0,
       intervention_count: 0,
       hitl_attempt_count: 0,
+      owner_user_id: app.owner_user_id ?? null,
     });
     const savedSession = await this.sessionRepo.save(session);
 
@@ -276,12 +277,49 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       where: { state: SessionState.HEALTHY as any },
     });
 
+    const idleShutdownSeconds = parseInt(process.env.IDLE_SHUTDOWN_SECONDS || '0', 10);
+    const idleShutdownMs = idleShutdownSeconds * 1000;
+
     for (const session of healthySessions) {
       const age = now - new Date(session.started_at).getTime();
       if (age >= maxAgeMs) {
         this.logger.log(`Recycling session ${session.id} (age: ${Math.round(age / 3600000)}h)`);
         // Terminate and let reconcile recreate it
         await this.terminateSession(session);
+        continue;
+      }
+
+      // Idle shutdown: if session has owner_user_id (per-user) and hasn't been used
+      if (idleShutdownMs > 0 && session.owner_user_id && session.last_credential_request_at) {
+        const idleTime = now - new Date(session.last_credential_request_at).getTime();
+        if (idleTime >= idleShutdownMs) {
+          this.logger.log(
+            `Idle shutdown: session ${session.id} owner=${session.owner_user_id} ` +
+            `idle ${Math.round(idleTime / 60000)}min (threshold: ${idleShutdownSeconds}s)`,
+          );
+          // Set desired_session_count to 0 so it doesn't restart
+          await this.appRepo.update(session.app_id, { desired_session_count: 0 });
+          await this.terminateSession(session);
+        }
+      }
+    }
+
+    // Clean up FAILED sessions: terminate after half the idle TTL (or 30 min default)
+    if (idleShutdownMs > 0) {
+      const failedTtlMs = idleShutdownMs / 2;
+      const failedSessions = await this.sessionRepo.find({
+        where: { state: SessionState.FAILED as any },
+      });
+
+      for (const session of failedSessions) {
+        const age = now - new Date(session.started_at).getTime();
+        if (age >= failedTtlMs) {
+          this.logger.log(
+            `Cleaning up FAILED session ${session.id} (age: ${Math.round(age / 60000)}min, threshold: ${Math.round(failedTtlMs / 60000)}min)`,
+          );
+          await this.appRepo.update(session.app_id, { desired_session_count: 0 });
+          await this.terminateSession(session);
+        }
       }
     }
   }

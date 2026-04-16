@@ -9,6 +9,7 @@ import {
   HitlCompletedEvent,
   HitlStartedEvent,
   SessionStateChangedEvent,
+  REDIS_KEYS,
 } from '@browser-hitl/shared';
 
 type AnySubscription = Subscription | JetStreamSubscription;
@@ -27,7 +28,7 @@ const tokenCache = new Map<string, { token: string; expiresAtMs: number }>();
 const slackToken = process.env.SLACK_BOT_TOKEN || '';
 const slackChannelTarget = process.env.SLACK_CHANNEL || '#tabby-experiments';
 const natsUrl = process.env.NATS_URL || 'nats://localhost:4222';
-const apiBaseUrl = (process.env.API_BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
+const apiBaseUrl = (process.env.API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 const serviceClientId = process.env.SERVICE_AUTH_CLIENT_ID || '';
 const serviceClientSecret = process.env.SERVICE_AUTH_CLIENT_SECRET || '';
 const pollIntervalMs = Number(process.env.SLACK_SOFT_POLL_INTERVAL_MS || '3000');
@@ -273,6 +274,28 @@ async function submitOtp(sessionId: string, otpValue: string, tenantId: string):
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`OTP submit failed (${response.status}): ${body}`);
+  }
+}
+
+async function submitInput(
+  sessionId: string,
+  inputType: string,
+  value: string,
+  stepIndex: number,
+  tenantId: string,
+): Promise<void> {
+  const token = await getServiceToken(tenantId);
+  const response = await fetch(`${apiBaseUrl}/sessions/${sessionId}/input`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ input_type: inputType, value, step_index: stepIndex }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Input submit failed (${response.status}): ${body}`);
   }
 }
 
@@ -648,6 +671,49 @@ async function pollSlackCommands(): Promise<void> {
         }
         if (/\bOPEN\b/i.test(text)) {
           await postSlackMessage('Could not parse OPEN command. Use: OPEN <session_id>');
+          continue;
+        }
+
+        // INPUT <session_id> <value> — generic human input (no format validation)
+        const inputMatch = text.match(/^INPUT\s+([A-Za-z0-9-]+)\s+(.+)$/i);
+        if (inputMatch) {
+          const sessionId = inputMatch[1];
+          const value = inputMatch[2].trim();
+          const pending = pendingSessions.get(sessionId);
+          if (!pending) {
+            await postSlackMessage(`No pending HITL session tracked for ${sessionId}.`);
+            continue;
+          }
+          try {
+            await submitInput(sessionId, 'unknown', value, 0, pending.tenantId);
+            pending.otpSubmittedAt = Date.now();
+            await postSlackMessage('Thanks. I received your input. Waiting for the agent to continue..');
+          } catch (error) {
+            await postSlackMessage(
+              `Input delivery failed for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          continue;
+        }
+
+        // RESOLVE <session_id> — confirm type resolution
+        const resolveMatch = text.match(/^RESOLVE\s+([A-Za-z0-9-]+)$/i);
+        if (resolveMatch) {
+          const sessionId = resolveMatch[1];
+          const pending = pendingSessions.get(sessionId);
+          if (!pending) {
+            await postSlackMessage(`No pending HITL session tracked for ${sessionId}.`);
+            continue;
+          }
+          try {
+            await submitInput(sessionId, 'confirm', 'resolved', 0, pending.tenantId);
+            await postSlackMessage(`Session ${sessionId} marked as resolved. Automation resuming.`);
+          } catch (error) {
+            await postSlackMessage(
+              `Resolve failed for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          continue;
         }
       }
     } catch (error) {
@@ -724,7 +790,7 @@ async function createSubscriptions(nc: NatsConnection): Promise<{
     // Ensure streams exist (idempotent - publisher may have created them already)
     const STREAM_MAX_AGE_NS = 24 * 60 * 60 * 1_000_000_000;
     const streamDefs = [
-      { name: 'HITL_EVENTS', subjects: ['hitl.started.>', 'hitl.completed.>', 'hitl.otp-requested.>'] },
+      { name: 'HITL_EVENTS', subjects: ['hitl.started.>', 'hitl.completed.>'] },
       { name: 'SESSION_EVENTS', subjects: ['session.state.changed.>', 'auth.bundle.exported.>'] },
     ];
     for (const { name, subjects } of streamDefs) {

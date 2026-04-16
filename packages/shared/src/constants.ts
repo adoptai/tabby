@@ -27,8 +27,8 @@ export const CHROMIUM_FLAGS = [
 // ============================================================
 
 export const PORTS = {
-  API: 8080,
-  API_WS: 8080,           // Same server, upgraded connection at /events
+  API: Number(process.env.API_PORT || 8000),
+  API_WS: Number(process.env.API_PORT || 8000),  // Same server, upgraded connection at /events
   CONTROLLER_HEALTH: 8090,
   WORKER_HEALTH: 8091,
   NOVNC: 6080,
@@ -62,18 +62,22 @@ export const CDP_LIMITS = {
 // ============================================================
 
 export const REDIS_KEYS = {
-  otp: (sessionId: string) => `otp:${sessionId}`,
+  humanInput: (sessionId: string, stepIndex: number) => `human_input:${sessionId}:${stepIndex}`,
   streamToken: (jti: string) => `stream_token:${jti}`,
   artifactToken: (tokenId: string) => `artifact_token:${tokenId}`,
   authReqLock: (tenantId: string, appId: string) => `auth_req_lock:${tenantId}:${appId}`,
   extractLock: (tenantId: string, profileId: string, credSetId: string) => `extract_lock:${tenantId}:${profileId}:${credSetId}`,
+  extractRequest: (sessionId: string) => `extract_request:${sessionId}`,
+  extractDone: (sessionId: string) => `extract_done:${sessionId}`,
 } as const;
 
 export const REDIS_TTL = {
-  OTP_SECONDS: 60,
+  HUMAN_INPUT_SECONDS: 300,
   STREAM_TOKEN_SECONDS: 600,
   ARTIFACT_TOKEN_SECONDS: 600,
   EXTRACT_LOCK_SECONDS: 30,
+  EXTRACT_REQUEST_SECONDS: 60,
+  EXTRACT_DONE_SECONDS: 10,
 } as const;
 
 // ============================================================

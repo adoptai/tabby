@@ -11,7 +11,7 @@ export class AuditEventEntity {
   @Column({ type: 'bigint', generated: 'increment', unique: true })
   sequence_num: number;
 
-  @Column({ type: 'uuid', nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   tenant_id: string | null;
 
   @ManyToOne(() => TenantEntity, { nullable: true })

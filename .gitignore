@@ -80,5 +80,21 @@ implementation_tracker/**/sbom/
 .Spotlight-V100
 .Trashes
 
+# --- Local reference docs (not for git) ---
+abcd-deep-dive.md
+tabby-deep-dive.md
+manual-credential-ref.md
+SF_TOKEN_EXTRACTION_GUIDE.md
+browser_agent_guide_token_extraction.md
+abcd-deep-dive.md
+adoptai-workflows-deep-dive.md
+adoptwebui-deep-dive.md
+BARE_BONE_FEASIBILITY.md
+BARE_BONE_IMPLEMENTATION.md
+PLATFORM_SETUP.md
+projecta3-deep-dive.md
+
 # --- Claude ---
 .claude
+
+docs/SALESFORCE_TEMPLATE_PAYLOAD.md

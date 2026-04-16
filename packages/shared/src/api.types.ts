@@ -124,6 +124,16 @@ export interface OtpResponse {
   status: 'delivered';
 }
 
+export interface InputSubmitRequest {
+  input_type: string;
+  value: string;
+  step_index: number;
+}
+
+export interface InputSubmitResponse {
+  status: 'delivered';
+}
+
 export interface AcknowledgeResponse {
   state: string;
 }

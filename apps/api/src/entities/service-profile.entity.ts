@@ -17,7 +17,7 @@ export class ServiceProfileEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)
@@ -88,4 +88,8 @@ export class ServiceProfileEntity {
 
   @UpdateDateColumn({ type: 'timestamptz' })
   updated_at: Date;
+
+  /** External user ID for per-user profile isolation (federated auth). Null = shared/tenant-scoped (backward compat). */
+  @Column({ type: 'varchar', nullable: true })
+  owner_user_id: string | null;
 }
