@@ -35,6 +35,30 @@ export class IdentityProviderEntity {
   @Column({ type: 'varchar', nullable: true })
   client_id: string | null;
 
+  /** Encrypted OAuth client secret (browser path only). Use IdentityProvidersService to set/read. */
+  @Column({ type: 'varchar', nullable: true })
+  client_secret: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  auth_url: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  token_url: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  userinfo_url: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  sign_out_url: string | null;
+
+  /** Comma-separated OAuth scopes, e.g. "openid,email,profile" */
+  @Column({ type: 'varchar', nullable: true })
+  scopes: string | null;
+
+  /** Email domains that get Admin role on auto-provision, e.g. ["adopt.ai"] */
+  @Column({ type: 'jsonb', nullable: true })
+  admin_domains: string[] | null;
+
   // Claim mapping
   @Column({ type: 'varchar', nullable: true })
   tenant_id_claim: string | null;
@@ -44,6 +68,9 @@ export class IdentityProviderEntity {
 
   @Column({ type: 'varchar', default: 'email' })
   email_claim: string;
+
+  @Column({ type: 'varchar', default: 'name' })
+  name_claim: string;
 
   @Column({ type: 'jsonb', nullable: true })
   claim_mappings: Record<string, string> | null;

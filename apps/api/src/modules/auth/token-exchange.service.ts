@@ -144,18 +144,32 @@ export class TokenExchangeService {
       }
       const tenant = await this.tenantRepo.findOne({ where: { id: claimValue } });
       if (!tenant) {
-        throw new UnauthorizedException(`Tenant not found: ${claimValue}`);
+        if (idp.allow_auto_provision) {
+          // Auto-provision tenant using claim value as ID
+          const created = this.tenantRepo.create({ id: claimValue, name: claimValue });
+          const saved = await this.tenantRepo.save(created);
+          this.logger.log(`Auto-provisioned tenant: ${saved.id}`);
+          resolvedTenantId = saved.id;
+        } else {
+          throw new UnauthorizedException(`Tenant not found: ${claimValue}`);
+        }
+      } else {
+        resolvedTenantId = tenant.id;
       }
-      resolvedTenantId = tenant.id;
     }
 
     // 7. Issue Tabby JWT
     const ttl = params.requested_ttl_seconds || 3600;
     const jti = crypto.randomUUID();
+    const email = String(verifiedPayload[idp.email_claim] || verifiedPayload.email || '');
+    const emailDomain = email.split('@')[1] || '';
+    const role = (idp.admin_domains?.length && emailDomain && idp.admin_domains.includes(emailDomain))
+      ? 'Admin'
+      : (idp.default_role || 'Operator');
     const payload: JwtPayload = {
       sub: `federated:${ownerUserId}`,
       tenant_id: resolvedTenantId,
-      role: idp.default_role,
+      role,
       jti,
       kid: process.env.JWT_SIGNING_KEY_ID || 'v1',
       token_type: 'federated',

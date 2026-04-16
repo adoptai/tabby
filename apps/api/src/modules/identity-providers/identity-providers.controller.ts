@@ -3,7 +3,7 @@ import {
   UseGuards, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse } from '@nestjs/swagger';
-import { IsString, MinLength, IsOptional, IsBoolean, IsIn } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsBoolean, IsIn, IsArray } from 'class-validator';
 import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard';
 import { IdentityProvidersService } from './identity-providers.service';
 
@@ -24,15 +24,45 @@ class CreateIdpDto {
   @IsOptional() @IsString()
   jwks_uri?: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty({ required: false, description: 'Platform\'s client_id registered at the IdP. Used as the expected aud claim value.' })
   @IsOptional() @IsString()
   audience?: string;
 
-  @ApiProperty({ required: false })
+  // ── Browser OAuth fields (admin-UI Generic OAuth) ──────────────────
+  @ApiProperty({ required: false, description: 'OAuth client_id registered for Tabby at the IdP.' })
   @IsOptional() @IsString()
   client_id?: string;
 
-  @ApiProperty({ required: false, example: 'tenantId', description: 'JWT claim containing the tenant ID. When set, enables dynamic tenant routing from the JWT instead of using the IdP\'s fixed tenant.' })
+  @ApiProperty({ required: false, description: 'OAuth client_secret (plaintext). Stored encrypted. Send only when setting/rotating.' })
+  @IsOptional() @IsString()
+  client_secret?: string;
+
+  @ApiProperty({ required: false, example: 'https://auth.adopt.ai/oauth/authorize' })
+  @IsOptional() @IsString()
+  auth_url?: string;
+
+  @ApiProperty({ required: false, example: 'https://auth.adopt.ai/oauth/token' })
+  @IsOptional() @IsString()
+  token_url?: string;
+
+  @ApiProperty({ required: false, example: 'https://auth.adopt.ai/identity/resources/users/v2/me' })
+  @IsOptional() @IsString()
+  userinfo_url?: string;
+
+  @ApiProperty({ required: false, example: 'https://auth.adopt.ai/oauth/account/logout' })
+  @IsOptional() @IsString()
+  sign_out_url?: string;
+
+  @ApiProperty({ required: false, example: 'openid,email,profile', description: 'Comma-separated OAuth scopes.' })
+  @IsOptional() @IsString()
+  scopes?: string;
+
+  @ApiProperty({ required: false, example: ['adopt.ai'], description: 'Email domains that are granted Admin role on auto-provision.' })
+  @IsOptional() @IsArray() @IsString({ each: true })
+  admin_domains?: string[];
+
+  // ── Claim mappings ─────────────────────────────────────────────────
+  @ApiProperty({ required: false, example: 'tenantId', description: 'JWT claim containing the tenant ID. Enables dynamic multi-tenant routing.' })
   @IsOptional() @IsString()
   tenant_id_claim?: string;
 
@@ -44,10 +74,15 @@ class CreateIdpDto {
   @IsOptional() @IsString()
   email_claim?: string;
 
+  @ApiProperty({ required: false, example: 'name' })
+  @IsOptional() @IsString()
+  name_claim?: string;
+
   @ApiProperty({ required: false })
   @IsOptional()
   claim_mappings?: Record<string, string>;
 
+  // ── Behavior ───────────────────────────────────────────────────────
   @ApiProperty({ required: false })
   @IsOptional() @IsBoolean()
   enabled?: boolean;
@@ -56,7 +91,7 @@ class CreateIdpDto {
   @IsOptional() @IsBoolean()
   allow_auto_provision?: boolean;
 
-  @ApiProperty({ required: false })
+  @ApiProperty({ required: false, example: 'Operator' })
   @IsOptional() @IsString()
   default_role?: string;
 
@@ -75,9 +110,10 @@ export class IdentityProvidersController {
   @Post()
   @Roles('Admin')
   @HttpCode(201)
-  @ApiOperation({ summary: 'Register an identity provider', description: 'Register an OIDC or SAML identity provider for tenant-scoped federated authentication.' })
+  @ApiOperation({ summary: 'Register an identity provider', description: 'Register an OIDC or SAML identity provider. Supports both API-path (JWKS validation) and browser-path (Generic OAuth) fields.' })
   async create(@Body() dto: CreateIdpDto, @Req() req: any) {
-    return this.idpService.create(req.user.tenant_id, dto, req.user.user_id);
+    const { client_secret, ...rest } = dto;
+    return this.idpService.create(req.user.tenant_id, { ...rest, client_secret_plaintext: client_secret } as any, req.user.user_id);
   }
 
   @Get()
@@ -98,7 +134,8 @@ export class IdentityProvidersController {
   @Roles('Admin')
   @ApiOperation({ summary: 'Update identity provider' })
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateIdpDto, @Req() req: any) {
-    return this.idpService.update(req.user.tenant_id, id, dto, req.user.user_id);
+    const { client_secret, ...rest } = dto;
+    return this.idpService.update(req.user.tenant_id, id, { ...rest, client_secret_plaintext: client_secret } as any, req.user.user_id);
   }
 
   @Delete(':id')

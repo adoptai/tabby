@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import { TenantEntity, UserEntity } from '../../entities';
 import { AuthService } from './auth.service';
@@ -42,7 +43,7 @@ export class BootstrapService implements OnModuleInit {
 
     this.logger.log(`Bootstrapping tenant: ${tenantName}, admin: ${adminEmail}`);
 
-    const tenant = this.tenantRepo.create({ name: tenantName });
+    const tenant = this.tenantRepo.create({ id: randomUUID(), name: tenantName });
     const savedTenant = await this.tenantRepo.save(tenant);
 
     const passwordHash = await this.authService.hashPassword(adminPassword);
