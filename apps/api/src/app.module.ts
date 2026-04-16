@@ -26,6 +26,8 @@ import { LoginSerializationModule } from './modules/login/login-serialization.mo
 import { LoginCoordinatorModule } from './modules/login/login-coordinator.module';
 import { ProfilesModule } from './modules/profiles/profiles.module';
 import { CredentialsModule } from './modules/credentials/credentials.module';
+import { IdentityProvidersModule } from './modules/identity-providers/identity-providers.module';
+import { AppTemplatesModule } from './modules/app-templates/app-templates.module';
 
 @Module({
   imports: [
@@ -54,6 +56,8 @@ import { CredentialsModule } from './modules/credentials/credentials.module';
     LoginCoordinatorModule,
     ProfilesModule,
     CredentialsModule,
+    IdentityProvidersModule,
+    AppTemplatesModule,
     HealthModule,
   ],
   providers: [

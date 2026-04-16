@@ -17,7 +17,7 @@ export class InterventionEntity {
   @JoinColumn({ name: 'session_id' })
   session: SessionEntity;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar' })
   tenant_id: string;
 
   @ManyToOne(() => TenantEntity)

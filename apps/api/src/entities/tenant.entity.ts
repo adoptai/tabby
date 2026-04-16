@@ -1,10 +1,10 @@
 import {
-  Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany,
+  Entity, PrimaryColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany,
 } from 'typeorm';
 
 @Entity('tenants')
 export class TenantEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn({ type: 'varchar', length: 255 })
   id: string;
 
   @Column({ type: 'varchar', unique: true })

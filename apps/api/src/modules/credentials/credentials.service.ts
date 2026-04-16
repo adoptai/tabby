@@ -1,6 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, MoreThan, Repository } from 'typeorm';
+import { In, IsNull, MoreThan, Repository } from 'typeorm';
 import {
   DEFAULTS,
   REDIS_KEYS,
@@ -24,6 +24,11 @@ import { SessionEntity } from '../../entities/session.entity';
 import { ServiceProfileEntity } from '../../entities/service-profile.entity';
 import { ArtifactBundleEntity } from '../../entities/artifact-bundle.entity';
 import { ArtifactConsumptionEntity } from '../../entities/artifact-consumption.entity';
+import { ApplicationEntity } from '../../entities/application.entity';
+import { AppTemplateEntity } from '../../entities/app-template.entity';
+import { AppsService } from '../apps/apps.service';
+import { ProfilesService } from '../profiles/profiles.service';
+import { SessionsService } from '../sessions/sessions.service';
 import { RedisHealthMonitor } from '../redis/redis-health-monitor';
 import { MinioProvisionerService } from '../tenants/minio-provisioner.service';
 import Redis from 'ioredis';
@@ -69,6 +74,13 @@ export class CredentialsService {
     private readonly artifactRepo: Repository<ArtifactBundleEntity>,
     @InjectRepository(ArtifactConsumptionEntity)
     private readonly consumptionRepo: Repository<ArtifactConsumptionEntity>,
+    @InjectRepository(ApplicationEntity)
+    private readonly appRepo: Repository<ApplicationEntity>,
+    @InjectRepository(AppTemplateEntity)
+    private readonly templateRepo: Repository<AppTemplateEntity>,
+    private readonly appsService: AppsService,
+    private readonly profilesService: ProfilesService,
+    private readonly sessionsService: SessionsService,
     private readonly healthMonitor: RedisHealthMonitor,
     private readonly minioProvisioner: MinioProvisionerService,
   ) {
@@ -93,18 +105,43 @@ export class CredentialsService {
     includeVolatile?: boolean;
     waitSeconds?: number;
     requestId: string;
+    role?: string;
+    allowedProfiles?: string[];
+    ownerUserId?: string | null;
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
       forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
+      role, allowedProfiles = [], ownerUserId,
     } = params;
 
-    // 1. Resolve ACTIVE (or CANARY fallback) profile
-    const profile = await this.resolveActiveProfile(tenantId, profileId);
+    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+      throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
+    }
+
+    // 1. Resolve ACTIVE (or CANARY fallback) profile, scoped by owner if federated
+    const profile = await this.resolveActiveProfile(tenantId, profileId, ownerUserId);
     const isCanary = profile.version_state === ProfileVersionState.CANARY;
 
-    // 2. Find healthy session via profile's app_id
-    const session = await this.findHealthySession(tenantId, profile.app_id);
+    // 2. Find healthy session via profile's app_id, scoped by owner if federated
+    let session: SessionEntity;
+    try {
+      session = await this.findHealthySession(tenantId, profile.app_id, ownerUserId);
+    } catch (e) {
+      if (e instanceof NotFoundException && profile.app_id) {
+        // No healthy session — check if app was idle-shutdown (desired_session_count=0)
+        // If so, scale it back up so the controller creates a new session
+        const app = await this.appRepo.findOne({ where: { id: profile.app_id } });
+        if (app && app.desired_session_count === 0) {
+          this.logger.log(`Re-scaling app ${app.id} from idle shutdown for user ${ownerUserId || 'shared'}`);
+          await this.sessionsService.scale(app.id, 1, tenantId, `federated:${ownerUserId || 'system'}`);
+        }
+      }
+      throw e;
+    }
+
+    // Update last_credential_request_at for idle shutdown tracking
+    await this.sessionRepo.update(session.id, { last_credential_request_at: new Date() });
 
     // 3. Force-refresh coalescing (RT-11)
     let freshness: CredentialFreshness = isCanary
@@ -179,17 +216,37 @@ export class CredentialsService {
   // Profile Resolution
   // ---------------------------------------------------------------
 
-  async resolveActiveProfile(tenantId: string, profileId: string): Promise<ServiceProfileEntity> {
-    // Query for both ACTIVE and CANARY profiles, preferring ACTIVE
-    const profiles = await this.profileRepo.find({
-      where: {
-        tenant_id: tenantId,
-        profile_id: profileId,
-        version_state: In([ProfileVersionState.ACTIVE, ProfileVersionState.CANARY]),
-      },
-    });
+  async resolveActiveProfile(tenantId: string, profileId: string, ownerUserId?: string | null): Promise<ServiceProfileEntity> {
+    // Build where clause — add owner_user_id filter for federated users
+    const where: Record<string, any> = {
+      tenant_id: tenantId,
+      profile_id: profileId,
+      version_state: In([ProfileVersionState.ACTIVE, ProfileVersionState.CANARY]),
+    };
+
+    // If ownerUserId provided, try user-scoped profile first
+    if (ownerUserId) {
+      where.owner_user_id = ownerUserId;
+      const userProfiles = await this.profileRepo.find({ where });
+      if (userProfiles.length > 0) {
+        const active = userProfiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
+        return active || userProfiles[0];
+      }
+      // Fall through to shared profiles (owner_user_id IS NULL only, not other users' profiles)
+      where.owner_user_id = IsNull();
+    }
+
+    // Query for shared/tenant-scoped profiles (backward compat)
+    const profiles = await this.profileRepo.find({ where });
 
     if (profiles.length === 0) {
+      // Auto-provision from template if federated user has no profile yet
+      if (ownerUserId) {
+        const provisioned = await this.autoProvisionFromTemplate(tenantId, profileId, ownerUserId);
+        if (provisioned) {
+          return provisioned;
+        }
+      }
       throw new NotFoundException(`No active profile found for "${profileId}"`);
     }
 
@@ -198,17 +255,89 @@ export class CredentialsService {
     return active || profiles[0];
   }
 
+  /**
+   * Auto-provision app + profile + session from a matching app template.
+   * Called when a federated user requests credentials but has no profile yet.
+   */
+  private async autoProvisionFromTemplate(
+    tenantId: string,
+    profileId: string,
+    ownerUserId: string,
+  ): Promise<ServiceProfileEntity | null> {
+    const template = await this.templateRepo.findOne({
+      where: { tenant_id: tenantId, profile_name_pattern: profileId },
+    });
+
+    if (!template) {
+      this.logger.warn(`No app template found for profile_name_pattern="${profileId}" in tenant ${tenantId}`);
+      return null;
+    }
+
+    this.logger.log(`Auto-provisioning from template "${template.name}" for user ${ownerUserId}`);
+
+    const actorId = `federated:${ownerUserId}`;
+
+    // 1. Create App via AppsService (full validation + audit)
+    const { app_id } = await this.appsService.create({
+      name: `${template.name} — ${ownerUserId}`,
+      target_urls: [
+        ...((template.login_config as any)?.login_url ? [(template.login_config as any).login_url] : []),
+        ...((template.export_policy as any)?.target_domains || []).map((d: string) => `https://${d}`),
+      ],
+      login_config: template.login_config as any,
+      keepalive_config: template.keepalive_config as any,
+      export_policy: template.export_policy as any,
+      notification_config: template.notification_config as any,
+      browser_policy: template.browser_policy as any,
+      desired_session_count: 0, // Start with 0, scale up after profile is created
+    }, tenantId, actorId);
+
+    // Set owner_user_id on app — controller will inherit this to sessions
+    await this.appRepo.update(app_id, { owner_user_id: ownerUserId });
+
+    // 2. Create Profile via ProfilesService (full validation + audit + promote to ACTIVE)
+    const savedProfile = await this.profilesService.create({
+      profile_id: profileId,
+      app_id,
+      version: '1.0.0',
+      login_config: template.login_config as any,
+      credential_types: (template.export_policy as any)?.credential_types || {},
+      target_domains: (template.export_policy as any)?.target_domains || [],
+    }, tenantId, actorId);
+
+    // Set owner_user_id + promote directly to ACTIVE (skip canary for auto-provisioned profiles)
+    await this.profileRepo.update(savedProfile.id, {
+      owner_user_id: ownerUserId,
+      version_state: ProfileVersionState.ACTIVE,
+    });
+
+    // 3. Scale to 1 session via SessionsService (controller creates pod + baton + service + network policy)
+    await this.sessionsService.scale(app_id, 1, tenantId, actorId);
+
+    this.logger.log(
+      `Auto-provisioned: app=${app_id} profile=${savedProfile.id} ` +
+      `owner=${ownerUserId} template=${template.name} — session scaling to 1`,
+    );
+
+    return savedProfile;
+  }
+
   // ---------------------------------------------------------------
   // Session Resolution (now uses app_id for FK chain)
   // ---------------------------------------------------------------
 
-  async findHealthySession(tenantId: string, appId?: string | null): Promise<SessionEntity> {
+  async findHealthySession(tenantId: string, appId?: string | null, ownerUserId?: string | null): Promise<SessionEntity> {
     const where: Record<string, any> = {
       tenant_id: tenantId,
       state: 'HEALTHY',
     };
     if (appId) {
       where.app_id = appId;
+    }
+
+    // If ownerUserId provided, strict scoping — only return sessions owned by this user
+    if (ownerUserId) {
+      where.owner_user_id = ownerUserId;
     }
 
     const session = await this.sessionRepo.findOne({ where });
@@ -466,7 +595,20 @@ export class CredentialsService {
     let csrf: CsrfCredential | undefined;
 
     // Build cookies from credential_types, merging real values
-    if (credTypes.cookies && Array.isArray(credTypes.cookies)) {
+    if (credTypes.cookies === 'ALL') {
+      // Return all extracted cookies
+      for (const [, real] of cookieValues) {
+        cookies.push({
+          name: real.name || '',
+          value: real.value ?? '',
+          domain: real.domain ?? '',
+          path: real.path ?? '/',
+          secure: real.secure ?? true,
+          httpOnly: real.httpOnly ?? true,
+          volatility: CredentialVolatility.SEMI_STABLE,
+        });
+      }
+    } else if (Array.isArray(credTypes.cookies)) {
       for (const cookie of credTypes.cookies) {
         const volatility = (cookie.volatility as CredentialVolatility) || CredentialVolatility.STABLE;
         if (!includeVolatile && volatility === CredentialVolatility.VOLATILE) {
@@ -486,15 +628,28 @@ export class CredentialsService {
     }
 
     // Build headers from credential_types, merging real values
-    if (credTypes.headers && Array.isArray(credTypes.headers)) {
+    if (credTypes.headers === 'ALL') {
+      // Return all extracted headers
+      for (const [name, value] of headerValues) {
+        headers.push({
+          name,
+          value,
+          volatility: CredentialVolatility.SEMI_STABLE,
+        });
+      }
+    } else if (Array.isArray(credTypes.headers)) {
       for (const header of credTypes.headers) {
-        const volatility = (header.volatility as CredentialVolatility) || CredentialVolatility.SEMI_STABLE;
+        // Support both object format {"name": "x"} and string format "x"
+        const headerName = typeof header === 'string' ? header : header.name;
+        const volatility = typeof header === 'string'
+          ? CredentialVolatility.SEMI_STABLE
+          : (header.volatility as CredentialVolatility) || CredentialVolatility.SEMI_STABLE;
         if (!includeVolatile && volatility === CredentialVolatility.VOLATILE) {
           continue;
         }
         headers.push({
-          name: header.name || '',
-          value: headerValues.get((header.name || '').toLowerCase()) ?? '',
+          name: headerName || '',
+          value: headerValues.get((headerName || '').toLowerCase()) ?? '',
           volatility,
         });
       }

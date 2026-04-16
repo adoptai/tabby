@@ -59,6 +59,7 @@ values:
     streamHost: "${API_HOST}"
     streamProtocol: "wss"
     commitSha: "${COMMIT_SHA}"
+    deployEnvironment: "${DEPLOY_ENVIRONMENT}"
     # Service-to-service auth (bots → API)
     serviceAuthAllowedTenantIds: "${SERVICE_AUTH_ALLOWED_TENANT_IDS}"
     serviceAuthAllowWildcardTenantScope: "${SVC_AUTH_WILDCARD_SCOPE}"
@@ -68,6 +69,8 @@ values:
     redisUrl: "${REDIS_URL}"
     natsUrl: "${NATS_URL}"
     minioEndpoint: "${MINIO_ENDPOINT}"
+    maxSessionAgeHours: "${MAX_SESSION_AGE_HOURS}"
+    idleShutdownSeconds: "${IDLE_SHUTDOWN_SECONDS}"
 
   postgres:
     enabled: ${POSTGRES_ENABLED}

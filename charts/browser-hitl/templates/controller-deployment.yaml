@@ -72,6 +72,10 @@ spec:
                   optional: true
             - name: TENANT_KEY_VERSION
               value: "v1"
+            - name: RELEASE_INSTANCE
+              value: {{ include "browser-hitl.fullname" . | quote }}
+            - name: DEPLOY_ENVIRONMENT
+              value: {{ .Values.config.deployEnvironment | default "" | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

@@ -62,9 +62,10 @@ export class CreateAppDto {
   @IsObject()
   export_policy: Record<string, unknown>;
 
-  @ApiProperty({ description: 'Notification channels for HITL events', example: { channels: ['slack:#tabby-experiments'] } })
+  @ApiProperty({ description: 'Notification channels for HITL events. Omit for silent/agent-poll mode.', example: { channels: ['slack:#tabby-experiments'] }, required: false })
+  @IsOptional()
   @IsObject()
-  notification_config: Record<string, unknown>;
+  notification_config?: Record<string, unknown>;
 
   @ApiProperty({ description: 'Number of worker sessions to maintain', example: 1, required: false, default: 1 })
   @IsOptional()

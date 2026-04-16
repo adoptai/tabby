@@ -222,6 +222,7 @@ jobs:
       IMAGE_TAG: ${{ needs.push-chart.outputs.image_tag }}
       CHART_VERSION: ${{ needs.push-chart.outputs.chart_version }}
       COMMIT_SHA: ${{ github.sha }}
+      DEPLOY_ENVIRONMENT: staging
       # TrueFoundry config (from environment secrets)
       TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
       TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}
@@ -256,6 +257,9 @@ jobs:
       METRICS_AUTH_TOKEN: ${{ secrets.METRICS_AUTH_TOKEN }}
       NATS_AUTH_TOKEN: ${{ secrets.NATS_AUTH_TOKEN }}
       AGENT_SECRET_HMAC_KEY: ${{ secrets.AGENT_SECRET_HMAC_KEY }}
+      # Session lifecycle (from environment secrets)
+      IDLE_SHUTDOWN_SECONDS: ${{ secrets.IDLE_SHUTDOWN_SECONDS }}
+      MAX_SESSION_AGE_HOURS: ${{ secrets.MAX_SESSION_AGE_HOURS }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
