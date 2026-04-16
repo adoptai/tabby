@@ -2,8 +2,8 @@ apiVersion: v2
 name: browser-hitl
 description: Browser Human-in-the-Loop MVP - Kubernetes-native service stack
 type: application
-version: 1.2.8
-appVersion: "1.2.8"
+version: 1.2.9
+appVersion: "1.2.9"
 keywords:
   - browser
   - hitl
