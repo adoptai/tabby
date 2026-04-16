@@ -19,6 +19,10 @@ spec:
         {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: minio
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: minio
           image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
@@ -46,6 +50,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: MINIO_SECRET_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           resources:
             {{- toYaml .Values.minio.resources | nindent 12 }}
           volumeMounts:
