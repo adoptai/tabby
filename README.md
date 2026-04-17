@@ -1,52 +1,59 @@
 # Browser HITL
 
+[![CI](https://github.com/adoptai/tabby/actions/workflows/ci.yaml/badge.svg)](https://github.com/adoptai/tabby/actions/workflows/ci.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Helm Chart](https://img.shields.io/badge/helm-browser--hitl-blue)](https://github.com/adoptai/tabby/pkgs/container/charts%2Fbrowser-hitl)
+
+## Why Tabby?
+
+AI agents need authenticated browser sessions to get real work done. OAuth flows, OTP codes, CAPTCHAs, and MFA prompts break pure automation. Tabby runs Playwright workers in Kubernetes and routes every "I need a human" moment to Slack, Teams, or a live VNC stream. A person unblocks the step in seconds; the agent resumes. No credential stuffing, no brittle scrapers, no shared passwords.
+
 Kubernetes-native service stack for persistent authenticated browser sessions with human-in-the-loop intervention for MFA, CAPTCHA, and credential challenges.
 
 **Core value proposition:** An agent requests credentials for a web service (e.g. Salesforce) → the system either returns cached credentials from a live browser session or orchestrates a fresh login (including OTP relay from a human operator) and returns decrypted, structured credentials.
 
 ## Architecture
 
-```
-                                ┌──────────────┐
-                                │   Admin UI   │ :3000
-                                │  (static JS) │
-                                └──────┬───────┘
-                                       │
-                  ┌────────────────────┼─────────────────────┐
-                  │                    │                     │
-           ┌──────▼───────┐     ┌──────▼──────┐       ┌──────▼───────┐
-           │  Slack Bot   │     │    API      │       │ Teams Bot    │
-           │  (NATS sub)  │     │  (NestJS)   │       │ (Bot Frmwk)  │
-           │  :no port    │     │  :8080      │       │ :3978        │
-           └──────┬───────┘     └──┬───┬───┬──┘       └───────┬──────┘
-                  │                │   │   │                  │
-                  └────────┬───────┘   │   └───────┬──────────┘
-                           │           │           │
-                   ┌───────▼───────┐ ┌─▼───────┐ ┌─▼───────────┐
-                   │     NATS      │ │  Redis  │ │ PostgreSQL  │
-                   │  (JetStream)  │ │  (7)    │ │   (15)      │
-                   │  :4222        │ │  :6379  │ │   :5432     │
-                   └───────┬───────┘ └─────────┘ └──────┬──────┘
-                           │                            │
-                   ┌───────▼────────────────────────────▼──────┐
-                   │              Controller                   │
-                   │           (NestJS, :8090)                 │
-                   │     Reconcile loop · Pod lifecycle        │
-                   └──────────┬────────────────┬───────────────┘
-                              │ creates/deletes│
-               VNC mode       │                │       CDP mode
-         ┌────────────────────▼──┐   ┌────────▼───────────────────┐
-         │  Worker Pod (2 cont.) │   │  Worker Pod (1 container)  │
-         │ ┌────────┐ ┌───────┐  │   │ ┌────────────────────────┐ │
-         │ │Chromium│ │ noVNC │  │   │ │ Chromium (headless)    │ │
-         │ │+Xvfb   │ │sidecar│  │   │ │ + CDP Relay :9223      │ │
-         │ │:8091   │ │:6080  │  │   │ │ :8091                  │ │
-         │ └───┬────┘ └───────┘  │   │ └───────┬────────────────┘ │
-         │     │                 │   │         │                  │
-         │     ▼                 │   │         ▼                  │
-         │  MinIO (blobs)        │   │  MinIO (blobs)             │
-         │  :9000                │   │  :9000                     │
-         └───────────────────────┘   └────────────────────────────┘
+```mermaid
+flowchart LR
+    AdminUI["Admin UI\n(static JS)\n:3000"]
+
+    AdminUI --> API
+
+    SlackBot["Slack Bot\n(NATS sub)"]
+    API["API\n(NestJS)\n:8000"]
+    TeamsBot["Teams Bot\n(Bot Frmwk)\n:3978"]
+
+    SlackBot --> NATS
+    API --> NATS
+    API --> Redis
+    API --> PG
+    TeamsBot --> NATS
+
+    NATS["NATS\n(JetStream)\n:4222"]
+    Redis["Redis\n:6379"]
+    PG["PostgreSQL\n:5432"]
+
+    NATS --> Controller
+    PG --> Controller
+
+    Controller["Controller\n(NestJS, :8090)\nReconcile loop · Pod lifecycle"]
+
+    Controller -->|creates/deletes VNC mode| WorkerVNC
+    Controller -->|creates/deletes CDP mode| WorkerCDP
+
+    subgraph WorkerVNC["Worker Pod — VNC mode"]
+        Chromium1["Chromium + Xvfb\n:8091"]
+        noVNC["noVNC sidecar\n:6080"]
+        MinIO1["MinIO (blobs)\n:9000"]
+        Chromium1 --> MinIO1
+    end
+
+    subgraph WorkerCDP["Worker Pod — CDP mode"]
+        Chromium2["Chromium (headless)\n+ CDP Relay :9223\n:8091"]
+        MinIO2["MinIO (blobs)\n:9000"]
+        Chromium2 --> MinIO2
+    end
 ```
 
 > **Streaming mode** is configured per-application via `browser_policy.streaming_mode` (`"vnc"` default, or `"cdp"`). VNC mode uses headed Chromium + Xvfb + noVNC sidecar. CDP mode uses headless Chromium + `Page.startScreencast` with a WebSocket relay — no X11 stack or sidecar needed.

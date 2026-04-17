@@ -88,10 +88,8 @@ PR titles MUST follow conventional commits (squash merge makes PR title the comm
 ## Staging Deployment (TrueFoundry)
 
 - Platform: TrueFoundry (wraps ArgoCD)
-- Cluster: `adopt-azure-cluster`, namespace: `azure-ws`
-- Helm release name: `tabby-dev`
+- Helm release name configured in `infra/tfy/deploy.yaml`
 - ArgoCD manages deployment — `helm install/upgrade` directly will CONFLICT
-- Domains: `tabby-api.adoptai.dev` (API), `tabby-admin.adoptai.dev` (Admin UI)
 - Istio gateway: `istio-system/tfy-wildcard`
 
 ## Architecture Notes
@@ -189,4 +187,4 @@ Latest: `1708300000009-GenericHumanInput` — adds `sessions.pending_input_reque
 - Main branch: `dev`
 - Squash merge enforced — PR title becomes the commit message
 - Do NOT commit `values-staging.yaml` (contains secrets)
-- The 3 `.md` files in root (`tabby-deep-dive.md`, `abcd-deep-dive.md`, `tabby-abcd-integration-guide.md`) are local reference docs, not committed
+- Local deep-dive reference docs (if any) are not committed to git

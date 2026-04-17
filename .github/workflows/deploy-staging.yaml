@@ -13,7 +13,7 @@ env:
   NODE_VERSION: "20"
   REGISTRY: ghcr.io/adoptai/tabby
   CHART_REGISTRY: ghcr.io/adoptai/charts
-  TFY_HOST: https://adoptai.truefoundry.cloud
+  TFY_HOST: ${{ vars.TFY_HOST }}
 
 jobs:
   # ── Quality Gates ─────────────────────────────────────────────────────────────

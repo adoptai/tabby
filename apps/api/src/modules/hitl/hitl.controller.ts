@@ -49,7 +49,7 @@ export class HitlController {
   @Throttle({ default: { limit: 3, ttl: 60000 } })
   @ApiOperation({ summary: 'Generate VNC/CDP stream URL', description: 'Returns a signed, short-lived URL to view the browser session via VNC or CDP. The URL contains an embedded auth token valid for 10 minutes.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
-  @ApiResponse({ status: 200, description: 'Stream URL generated', schema: { example: { url: 'https://tabby-api.adoptai.dev/vnc/cccccccc-...?token=eyJ...', expires_at: '2026-03-18T10:12:00.000Z' } } })
+  @ApiResponse({ status: 200, description: 'Stream URL generated', schema: { example: { url: 'https://api.example.com/vnc/cccccccc-...?token=eyJ...', expires_at: '2026-03-18T10:12:00.000Z' } } })
   @ApiResponse({ status: 404, description: 'Session not found' })
   async stream(@Param('id') sessionId: string, @Req() req: any) {
     return this.hitlService.generateStreamUrl(
