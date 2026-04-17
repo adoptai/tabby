@@ -66,9 +66,15 @@ export class SessionsService {
     tenantId: string,
     limit: number,
     offset: number,
+    ownerUserId?: string | null,
   ): Promise<{ data: SessionEntity[]; total: number; limit: number; offset: number }> {
+    // Admins see all sessions in the tenant; non-Admins see only their own
+    const where: any = ownerUserId
+      ? { tenant_id: tenantId, owner_user_id: ownerUserId }
+      : { tenant_id: tenantId };
+
     const [data, total] = await this.sessionRepo.findAndCount({
-      where: { tenant_id: tenantId },
+      where,
       relations: ['application'],
       take: limit,
       skip: offset,

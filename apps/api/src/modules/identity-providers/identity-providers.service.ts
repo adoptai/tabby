@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { IdentityProviderEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 import { ExternalJwksService } from '../auth/external-jwks.service';
+import { OAuthProviderService } from '../auth/oauth-provider.service';
 
 @Injectable()
 export class IdentityProvidersService {
@@ -12,9 +13,10 @@ export class IdentityProvidersService {
     private readonly idpRepo: Repository<IdentityProviderEntity>,
     private readonly auditService: AuditService,
     private readonly jwksService: ExternalJwksService,
+    private readonly oauthProvider: OAuthProviderService,
   ) {}
 
-  async create(tenantId: string, data: Partial<IdentityProviderEntity>, actorId: string) {
+  async create(tenantId: string, data: Partial<IdentityProviderEntity> & { client_secret_plaintext?: string }, actorId: string) {
     const existing = await this.idpRepo.findOne({
       where: { tenant_id: tenantId, name: data.name },
     });
@@ -22,7 +24,13 @@ export class IdentityProvidersService {
       throw new ConflictException(`IdP with name "${data.name}" already exists`);
     }
 
-    const idp = this.idpRepo.create({ ...data, tenant_id: tenantId });
+    const toSave = { ...data, tenant_id: tenantId };
+    if (data.client_secret_plaintext) {
+      toSave.client_secret = this.oauthProvider.encryptSecret(data.client_secret_plaintext);
+    }
+    delete (toSave as any).client_secret_plaintext;
+
+    const idp = this.idpRepo.create(toSave);
     const saved = await this.idpRepo.save(idp);
 
     await this.auditService.log({
@@ -37,10 +45,11 @@ export class IdentityProvidersService {
   }
 
   async findAll(tenantId: string) {
-    return this.idpRepo.find({
+    const idps = await this.idpRepo.find({
       where: { tenant_id: tenantId },
       order: { created_at: 'DESC' },
     });
+    return idps.map(this.maskSecret);
   }
 
   async findOne(tenantId: string, id: string) {
@@ -48,12 +57,22 @@ export class IdentityProvidersService {
       where: { id, tenant_id: tenantId },
     });
     if (!idp) throw new NotFoundException('Identity provider not found');
-    return idp;
+    return this.maskSecret(idp);
   }
 
-  async update(tenantId: string, id: string, data: Partial<IdentityProviderEntity>, actorId: string) {
+  /** Replace stored encrypted secret with a safe placeholder in API responses. */
+  private maskSecret(idp: IdentityProviderEntity): IdentityProviderEntity {
+    return { ...idp, client_secret: idp.client_secret ? '***' : null } as IdentityProviderEntity;
+  }
+
+  async update(tenantId: string, id: string, data: Partial<IdentityProviderEntity> & { client_secret_plaintext?: string }, actorId: string) {
     const idp = await this.findOne(tenantId, id);
-    Object.assign(idp, data);
+    const toApply: any = { ...data };
+    if (data.client_secret_plaintext) {
+      toApply.client_secret = this.oauthProvider.encryptSecret(data.client_secret_plaintext);
+    }
+    delete toApply.client_secret_plaintext;
+    Object.assign(idp, toApply);
     const saved = await this.idpRepo.save(idp);
 
     await this.auditService.log({

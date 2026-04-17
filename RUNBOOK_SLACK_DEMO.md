@@ -280,7 +280,7 @@ APP_RESPONSE=$(curl -s -X POST http://localhost:18080/apps \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Salesforce Authentication Demo",
-    "target_urls": ["https://test-harness.internal:8000"],
+    "target_urls": ["https://test-harness.example.com:8000"],
     "browser_policy": {
       "streaming_mode": "vnc",
       "viewport": { "width": 1920, "height": 1080 }
@@ -504,7 +504,7 @@ make local-fresh-down
 | `rg` (ripgrep) not installed | `local-slack-soft-up` fails: "required binary not found: rg" | Replace `require_bin rg` with `require_bin grep` and `rg -q` with `grep -qE` in `scripts/local-slack-soft-bridge.sh` |
 | Empty SERVICE_AUTH creds in .env.local | Bridge gets 401 on every API call | Set `SERVICE_AUTH_CLIENT_ID=phase4-bot` and `SERVICE_AUTH_CLIENT_SECRET=phase4-secret` in `.env.local` |
 | Auth endpoint is `/login` not `/auth/login` | 404 on login attempt | Use `POST /login` (no prefix; controller has `@Controller()` with `@Post('login')`) |
-| `target_urls` must be HTTPS | Validation error on app creation | Use `https://test-harness.internal:8000` |
+| `target_urls` must be HTTPS | Validation error on app creation | Use `https://test-harness.example.com:8000` |
 | Missing `credential_ref` | Validation error: "credential_ref is required" | Include `"credential_ref": "k8s:secret/e2e-smoke-creds"` |
 | Missing `goto` step | Validation error: "steps must include at least one goto action" | First step must be `{ "action": "goto", "url": "..." }` |
 | Wrong health check type | Validation error: "Invalid check type" | Use `"type": "network_check"` not `"type": "url_match"` |

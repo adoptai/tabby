@@ -9,6 +9,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { TokenBlacklistService } from './token-blacklist.service';
 import { ExternalJwksService } from './external-jwks.service';
 import { TokenExchangeService } from './token-exchange.service';
+import { OAuthProviderService } from './oauth-provider.service';
 import { AuditModule } from '../audit/audit.module';
 import { resolveJwtSigningKey } from './jwt-config';
 
@@ -23,7 +24,7 @@ import { resolveJwtSigningKey } from './jwt-config';
     AuditModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, TokenBlacklistService, ExternalJwksService, TokenExchangeService],
-  exports: [AuthService, JwtModule, TokenBlacklistService, ExternalJwksService, TokenExchangeService],
+  providers: [AuthService, JwtStrategy, TokenBlacklistService, ExternalJwksService, TokenExchangeService, OAuthProviderService],
+  exports: [AuthService, JwtModule, TokenBlacklistService, ExternalJwksService, TokenExchangeService, OAuthProviderService],
 })
 export class AuthModule {}

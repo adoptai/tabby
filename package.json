@@ -2,6 +2,10 @@
   "name": "browser-hitl",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/adoptai/tabby.git" },
+  "homepage": "https://github.com/adoptai/tabby#readme",
+  "bugs": { "url": "https://github.com/adoptai/tabby/issues" },
   "description": "Browser HITL MVP - Headless browser sessions with human-in-the-loop takeover",
   "scripts": {
     "build": "nx run-many --target=build --all",
