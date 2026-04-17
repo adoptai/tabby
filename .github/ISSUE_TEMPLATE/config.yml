@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/adoptai/tabby/security/advisories/new
+    about: Report a security issue privately via GitHub security advisories
+  - name: Discussion
+    url: https://github.com/adoptai/tabby/discussions
+    about: Ask questions and share ideas with the community

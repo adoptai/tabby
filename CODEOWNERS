@@ -1,0 +1,10 @@
+# Tabby code owners
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/managing-repository-settings/about-code-owners
+
+* @adoptai/maintainers
+
+/apps/api/              @adoptai/maintainers
+/apps/controller/       @adoptai/maintainers
+/apps/worker/           @adoptai/maintainers
+/charts/                @adoptai/maintainers
+/.github/workflows/     @adoptai/maintainers
