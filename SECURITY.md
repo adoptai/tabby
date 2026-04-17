@@ -4,7 +4,9 @@
 
 If you discover a security vulnerability, please report it responsibly.
 
-**Contact:** iain@adopt.ai
+**Preferred:** open a private advisory via [GitHub Security Advisories](https://github.com/adoptai/tabby/security/advisories/new).
+
+**Email:** iain@adopt.ai, moraski@adopt.ai
 
 Please include:
 - Description of the vulnerability
@@ -19,8 +21,6 @@ We will acknowledge receipt within 48 hours and provide a detailed response with
 ## Security Posture
 
 This project underwent a 40+ item red team security audit. All remediations completed and graded (S/A tier).
-
-Full audit trail: [docs/internal/CLAUDE_RED_TEAM_REMEDIATIONS.md](docs/internal/CLAUDE_RED_TEAM_REMEDIATIONS.md)
 
 ## Key Security Features
 
