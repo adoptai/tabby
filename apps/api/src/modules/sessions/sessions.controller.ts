@@ -52,7 +52,9 @@ export class SessionsController {
     @Query() query: PaginationQueryDto,
     @Req() req: any,
   ) {
-    return this.sessionsService.findAll(req.user.tenant_id, query.limit, query.offset);
+    // Admins see all; Operators and Viewers see only their own sessions
+    const ownerFilter = req.user.role === 'Admin' ? null : req.user.owner_user_id;
+    return this.sessionsService.findAll(req.user.tenant_id, query.limit, query.offset, ownerFilter);
   }
 
   @Get('sessions/:id')

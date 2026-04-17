@@ -191,12 +191,16 @@ const html = `<!doctype html>
       <div class="grid">
         <section class="card">
           <h2>Login</h2>
-          <label for="email">Email</label>
-          <input id="email" value="admin@browser-hitl.local" />
-          <label for="password">Password</label>
-          <input id="password" type="password" value="" />
-          <button id="loginBtn">Login</button>
-          <button id="loadBtn" class="secondary">Load Sessions</button>
+          <div id="oauthProviders" style="margin-bottom: 12px;"></div>
+          <details id="pwdLoginDetails">
+            <summary style="cursor:pointer; color: var(--btn-secondary); margin-bottom: 8px;">Sign in with email/password</summary>
+            <label for="email">Email</label>
+            <input id="email" value="admin@browser-hitl.local" />
+            <label for="password">Password</label>
+            <input id="password" type="password" value="" />
+            <button id="loginBtn">Login</button>
+          </details>
+          <button id="loadBtn" class="secondary" style="margin-top: 8px;">Load Sessions</button>
           <div id="status" class="status"></div>
           <p class="mono">Token: <span id="tokenState">not set</span></p>
         </section>
@@ -262,6 +266,47 @@ const html = `<!doctype html>
         const statusEl = document.getElementById('status');
         const tokenStateEl = document.getElementById('tokenState');
         const logEl = document.getElementById('log');
+
+        // ── OAuth token from redirect callback ─────────────────────
+        (function extractOAuthToken() {
+          const params = new URLSearchParams(window.location.search);
+          const t = params.get('_token');
+          if (t) {
+            token = t;
+            tokenStateEl.textContent = token.slice(0, 20) + '…';
+            // Remove _token from URL without reload
+            params.delete('_token');
+            const newSearch = params.toString();
+            history.replaceState({}, '', newSearch ? '?' + newSearch : window.location.pathname);
+            appendLog('Signed in via OAuth ✓');
+          }
+        })();
+
+        // ── Load OAuth providers ────────────────────────────────────
+        (async function loadOAuthProviders() {
+          try {
+            const resp = await fetch(apiBase + '/auth/oauth/providers');
+            if (!resp.ok) return;
+            const providers = await resp.json();
+            const container = document.getElementById('oauthProviders');
+            providers.forEach(function(p) {
+              const btn = document.createElement('button');
+              btn.textContent = 'Sign in with ' + p.name;
+              btn.style.marginBottom = '6px';
+              btn.style.width = '100%';
+              btn.addEventListener('click', function() {
+                const callbackUrl = window.location.origin + window.location.pathname;
+                window.location.href = apiBase + '/auth/oauth/' + p.id + '/login?redirect_uri=' + encodeURIComponent(callbackUrl);
+              });
+              container.appendChild(btn);
+            });
+            if (providers.length > 0) {
+              document.getElementById('pwdLoginDetails').open = false;
+            }
+          } catch (e) {
+            // No OAuth providers configured — email/password only
+          }
+        })();
         const rowsEl = document.getElementById('sessionRows');
         const emailEl = document.getElementById('email');
         const passwordEl = document.getElementById('password');
