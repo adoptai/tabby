@@ -6,7 +6,7 @@ If you discover a security vulnerability, please report it responsibly.
 
 **Preferred:** open a private advisory via [GitHub Security Advisories](https://github.com/adoptai/tabby/security/advisories/new).
 
-**Email:** iain@adopt.ai, moraski@adopt.ai
+**Email:** iain@adopt.ai, moraski@adopt.ai, anirudh@adopt.ai
 
 Please include:
 - Description of the vulnerability
