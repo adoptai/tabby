@@ -23,16 +23,6 @@ spec:
         runAsNonRoot: true
         runAsUser: 999
         fsGroup: 999
-      initContainers:
-        - name: fix-permissions
-          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
-          command: ["sh", "-c", "chown -R 999:999 /var/lib/postgresql/data || true"]
-          securityContext:
-            runAsUser: 0
-            runAsNonRoot: false
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
       containers:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
