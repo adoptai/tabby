@@ -291,7 +291,7 @@ jobs:
       - run: pip install "truefoundry<1.0.0"
 
       - name: Login to TrueFoundry
-        run: tfy login --host ${{ vars.TFY_HOST }} --api-key ${{ secrets.TFY_API_KEY }}
+        run: tfy login --host ${{ secrets.TFY_HOST }} --api-key ${{ secrets.TFY_API_KEY }}
 
       - name: Generate manifest from template
         run: envsubst < infra/tfy/deploy.yaml > /tmp/tfy-manifest.yaml
