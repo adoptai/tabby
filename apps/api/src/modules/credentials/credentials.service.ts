@@ -242,9 +242,27 @@ export class CredentialsService {
     if (profiles.length === 0) {
       // Auto-provision from template if federated user has no profile yet
       if (ownerUserId) {
-        const provisioned = await this.autoProvisionFromTemplate(tenantId, profileId, ownerUserId);
-        if (provisioned) {
-          return provisioned;
+        try {
+          const provisioned = await this.autoProvisionFromTemplate(tenantId, profileId, ownerUserId);
+          if (provisioned) {
+            return provisioned;
+          }
+        } catch (err) {
+          // Race condition: another request already provisioned. Retry the lookup
+          // with relaxed filters (any version_state, correct owner_user_id).
+          if ((err as any)?.code === '23505' || (err as any)?.message?.includes('duplicate key')) {
+            this.logger.warn(`Duplicate key during auto-provision for "${profileId}" user=${ownerUserId} — retrying lookup`);
+            // Small delay to let the winning request commit its transaction
+            await new Promise(r => setTimeout(r, 200));
+            const retryProfiles = await this.profileRepo.find({
+              where: { tenant_id: tenantId, profile_id: profileId, owner_user_id: ownerUserId },
+            });
+            if (retryProfiles.length > 0) {
+              const active = retryProfiles.find(p => p.version_state === ProfileVersionState.ACTIVE);
+              return active || retryProfiles[0];
+            }
+          }
+          throw err;
         }
       }
       throw new NotFoundException(`No active profile found for "${profileId}"`);

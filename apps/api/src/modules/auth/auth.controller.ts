@@ -1,12 +1,16 @@
 import {
   Controller, Post, Get, Delete, Body, Param, HttpCode,
-  UseGuards, Req, ParseUUIDPipe, UnauthorizedException,
+  UseGuards, Req, Res, ParseUUIDPipe, UnauthorizedException, Query, BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import * as crypto from 'crypto';
 import { AuthService } from './auth.service';
 import { TokenBlacklistService } from './token-blacklist.service';
 import { TokenExchangeService } from './token-exchange.service';
+import { OAuthProviderService } from './oauth-provider.service';
 import {
   IsEmail, IsString, MinLength, IsUUID, IsOptional,
   IsArray, ArrayMinSize, IsInt, Min, Max, Matches,
@@ -15,6 +19,10 @@ import { DEFAULTS } from '@browser-hitl/shared';
 import { AuditService } from '../audit/audit.service';
 import { Throttle } from '@nestjs/throttler';
 import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard';
+import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
+import { TenantEntity } from '../../entities/tenant.entity';
+import { JwtService } from '@nestjs/jwt';
+import { JwtPayload } from './auth.service';
 
 // =====================================================================
 // DTOs
@@ -134,6 +142,10 @@ class TokenExchangeDto {
 // Controller
 // =====================================================================
 
+// In-memory PKCE state store (state → { codeVerifier, idpId, redirectUri, expiresAt })
+// A Redis-backed store would be better for multi-instance but this is sufficient for now.
+const oauthStateStore = new Map<string, { codeVerifier: string; idpId: string; redirectUri: string; expiresAt: number }>();
+
 @ApiTags('Authentication')
 @ApiBearerAuth()
 @Controller()
@@ -143,6 +155,12 @@ export class AuthController {
     private readonly auditService: AuditService,
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly tokenExchangeService: TokenExchangeService,
+    private readonly oauthProvider: OAuthProviderService,
+    private readonly jwtService: JwtService,
+    @InjectRepository(IdentityProviderEntity)
+    private readonly idpRepo: Repository<IdentityProviderEntity>,
+    @InjectRepository(TenantEntity)
+    private readonly tenantRepo: Repository<TenantEntity>,
   ) {}
 
   // =================================================================
@@ -387,5 +405,132 @@ export class AuthController {
       requested_ttl_seconds: dto.requested_ttl_seconds,
       agent_payload: agentPayload,
     }, tenantId);
+  }
+
+  // =================================================================
+  // Generic OAuth — browser login for admin-UI
+  // =================================================================
+
+  @ApiOperation({ summary: 'List OAuth-configured IdPs', description: 'Returns IdPs that have auth_url configured — these can be used for browser-based login.' })
+  @Get('auth/oauth/providers')
+  @ApiResponse({ status: 200, description: 'List of OAuth providers available for login' })
+  async listOAuthProviders() {
+    // Only return IdPs that have browser OAuth configured (have auth_url)
+    const idps = await this.idpRepo.find({ where: { enabled: true } });
+    return idps
+      .filter(idp => idp.auth_url && idp.client_id)
+      .map(idp => ({
+        id: idp.id,
+        name: idp.name,
+        // Never expose client_secret
+      }));
+  }
+
+  @ApiOperation({ summary: 'Start OAuth login flow', description: 'Redirects the browser to the IdP authorization endpoint. Used by the admin-UI login page.' })
+  @Get('auth/oauth/:idpId/login')
+  @ApiResponse({ status: 302, description: 'Redirects to IdP' })
+  async oauthLogin(
+    @Param('idpId', ParseUUIDPipe) idpId: string,
+    @Query('redirect_uri') redirectUri: string,
+    @Res() res: any,
+  ) {
+    if (!redirectUri) throw new BadRequestException('redirect_uri is required');
+
+    const idp = await this.idpRepo.findOne({ where: { id: idpId, enabled: true } });
+    if (!idp || !idp.auth_url) throw new BadRequestException('IdP not found or not OAuth-configured');
+
+    const state = crypto.randomUUID();
+    const codeVerifier = this.oauthProvider.generateCodeVerifier();
+    const codeChallenge = this.oauthProvider.computeCodeChallenge(codeVerifier);
+
+    // Store state (5-min TTL)
+    oauthStateStore.set(state, { codeVerifier, idpId, redirectUri, expiresAt: Date.now() + 5 * 60_000 });
+    // Prune expired entries opportunistically
+    for (const [k, v] of oauthStateStore) {
+      if (v.expiresAt < Date.now()) oauthStateStore.delete(k);
+    }
+
+    const authUrl = this.oauthProvider.buildAuthorizationUrl(idp, redirectUri, state, codeChallenge);
+    return res.redirect(authUrl);
+  }
+
+  @ApiOperation({ summary: 'OAuth callback', description: 'Handles the IdP redirect after successful authentication. Exchanges code for tokens, issues Tabby JWT, and redirects to admin-UI.' })
+  @Get('auth/oauth/:idpId/callback')
+  @ApiResponse({ status: 302, description: 'Redirects to admin-UI with token' })
+  async oauthCallback(
+    @Param('idpId', ParseUUIDPipe) idpId: string,
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error: string,
+    @Res() res: any,
+  ) {
+    if (error) throw new UnauthorizedException(`OAuth error: ${error}`);
+    if (!code || !state) throw new BadRequestException('Missing code or state');
+
+    const stored = oauthStateStore.get(state);
+    if (!stored || stored.idpId !== idpId || stored.expiresAt < Date.now()) {
+      throw new UnauthorizedException('Invalid or expired OAuth state');
+    }
+    oauthStateStore.delete(state);
+
+    const idp = await this.idpRepo.findOne({ where: { id: idpId, enabled: true } });
+    if (!idp) throw new UnauthorizedException('IdP not found');
+
+    // Exchange auth code for tokens
+    const tokens = await this.oauthProvider.exchangeCode(idp, code, stored.codeVerifier, stored.redirectUri);
+
+    // Fetch user info
+    const claims = await this.oauthProvider.fetchUserInfo(idp, tokens.access_token);
+    const { userId, email, name, tenantIdClaimValue } = this.oauthProvider.extractIdentity(idp, claims);
+
+    if (!userId) throw new UnauthorizedException('Could not extract user identity from userinfo');
+
+    // Resolve or auto-provision tenant
+    let resolvedTenantId: string = idp.tenant_id;
+    if (tenantIdClaimValue && idp.tenant_id_claim) {
+      const tenant = await this.tenantRepo.findOne({ where: { id: tenantIdClaimValue } });
+      if (!tenant) {
+        if (idp.allow_auto_provision) {
+          const created = this.tenantRepo.create({ id: tenantIdClaimValue, name: tenantIdClaimValue });
+          const saved = await this.tenantRepo.save(created);
+          resolvedTenantId = saved.id;
+        } else {
+          throw new UnauthorizedException(`Tenant not found: ${tenantIdClaimValue}`);
+        }
+      } else {
+        resolvedTenantId = tenant.id;
+      }
+    }
+
+    // Determine role
+    const role = this.oauthProvider.resolveRole(idp, email);
+
+    // Issue Tabby JWT
+    const jti = crypto.randomUUID();
+    const payload: JwtPayload = {
+      sub: `federated:${userId}`,
+      tenant_id: resolvedTenantId,
+      role,
+      jti,
+      kid: process.env.JWT_SIGNING_KEY_ID || 'v1',
+      token_type: 'federated',
+      owner_user_id: userId,
+      idp_id: idp.id,
+    };
+    const token = this.jwtService.sign(payload, { expiresIn: 24 * 3600 });
+
+    await this.auditService.log({
+      tenant_id: resolvedTenantId,
+      actor_type: 'human',
+      actor_id: `federated:${userId}`,
+      event_type: 'auth.oauth.login',
+      payload: { idp_id: idp.id, owner_user_id: userId, email, role },
+    });
+
+    // Redirect to admin-UI with token in query param
+    // The admin-UI JS reads _token, stores it, and removes it from URL via history.replaceState
+    const baseUrl = stored.redirectUri.split('?')[0].split('#')[0];
+    const adminUiBase = new URL(baseUrl).origin;
+    return res.redirect(`${adminUiBase}/?_token=${encodeURIComponent(token)}`);
   }
 }
