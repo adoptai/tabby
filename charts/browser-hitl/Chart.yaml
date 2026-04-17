@@ -10,5 +10,9 @@ keywords:
   - human-in-the-loop
   - authentication
   - session-management
+home: https://github.com/adoptai/tabby
+sources:
+  - https://github.com/adoptai/tabby
+# TODO: add icon URL after OSS launch
 maintainers:
   - name: Browser HITL Team

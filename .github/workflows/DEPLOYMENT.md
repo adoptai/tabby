@@ -115,8 +115,8 @@ Create two environments: `staging` and `production`.
 | `TFY_API_KEY`               | Yes      | Both    | TrueFoundry API key for `tfy apply`                   |
 | `TFY_APP_NAME`              | Yes      | Both    | TrueFoundry application name                          |
 | `TFY_WORKSPACE_FQN`         | Yes      | Both    | TrueFoundry workspace FQN                             |
-| `API_HOST`                  | Yes      | Both    | Public hostname (e.g., `tabby-api.adoptai.dev`)       |
-| `ADMIN_HOST`                | Yes      | Both    | Admin UI hostname (e.g., `tabby-admin.adoptai.dev`)   |
+| `API_HOST`                  | Yes      | Both    | Public hostname (e.g., `api.example.com`)       |
+| `ADMIN_HOST`                | Yes      | Both    | Admin UI hostname (e.g., `admin.example.com`)   |
 | `POSTGRES_PASSWORD`         | Yes      | Both    | PostgreSQL password                                   |
 | `JWT_SIGNING_KEY`           | Yes      | Both    | JWT signing key (48+ chars, same across all services) |
 | `TENANT_ENCRYPTION_KEY`     | Yes      | Both    | 64-char hex for AES-256-GCM (`openssl rand -hex 32`) |
@@ -213,7 +213,7 @@ The bump commit uses `[skip ci]` to prevent re-triggering the workflow.
 ### Check deployed version
 
 ```bash
-curl -s https://tabby-api.adoptai.dev/health/live | jq .
+curl -s https://api.example.com/health/live | jq .
 # Returns: { "status": "ok", "version": "0.1.6", "commit": "abc1234..." }
 ```
 
@@ -244,7 +244,7 @@ helm template tabby-dev charts/browser-hitl/ | grep -c "kind:"
 | Problem                                       | Cause                                                              | Fix                                                                       |
 | --------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
 | Admin UI shows `ERR_NAME_NOT_RESOLVED`        | `NEXT_PUBLIC_API_URL` points to internal K8s DNS                   | Set to the external URL the **browser** can reach                         |
-| Stream URLs return `http://localhost/vnc/...`  | `STREAM_HOST` not set on API                                       | Set to public hostname (e.g., `tabby-api.adoptai.dev`)                    |
+| Stream URLs return `http://localhost/vnc/...`  | `STREAM_HOST` not set on API                                       | Set to public hostname (e.g., `api.example.com`)                    |
 | Slack bot silent after deploy                  | NATS wasn't ready when bot started — no retry                      | Restart the bot pod after NATS is healthy                                 |
 | Worker pods crash-loop                         | Egress proxy down → controller can't set allowlists                | Restart egress proxy first, then controller                               |
 | `JWT_SIGNING_KEY` mismatch                     | API and bots have different keys → 401s                            | All services must share the exact same key                                |

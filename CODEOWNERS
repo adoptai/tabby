@@ -1,0 +1,13 @@
+# Tabby code owners
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/managing-repository-settings/about-code-owners
+#
+# CODEOWNERS accepts GitHub usernames OR email addresses associated with a
+# verified GitHub account. Emails below map to the maintainers' GitHub accounts.
+
+* iain@adopt.ai moraski@adopt.ai anirudh@adopt.ai
+
+/apps/api/              iain@adopt.ai moraski@adopt.ai anirudh@adopt.ai
+/apps/controller/       iain@adopt.ai moraski@adopt.ai anirudh@adopt.ai
+/apps/worker/           iain@adopt.ai moraski@adopt.ai anirudh@adopt.ai
+/charts/                iain@adopt.ai moraski@adopt.ai anirudh@adopt.ai
+/.github/workflows/     iain@adopt.ai moraski@adopt.ai anirudh@adopt.ai
