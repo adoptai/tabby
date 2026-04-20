@@ -254,6 +254,7 @@ jobs:
       REDIS_ENABLED: ${{ secrets.REDIS_ENABLED || 'true' }}
       NATS_ENABLED: ${{ secrets.NATS_ENABLED || 'true' }}
       MINIO_ENABLED: ${{ secrets.MINIO_ENABLED || 'true' }}
+      ADMIN_UI_ENABLED: ${{ secrets.ADMIN_UI_ENABLED || 'true' }}
       TFY_APP_NAME: ${{ secrets.TFY_APP_NAME }}
       TFY_WORKSPACE_FQN: ${{ secrets.TFY_WORKSPACE_FQN }}
       API_HOST: ${{ secrets.API_HOST }}
