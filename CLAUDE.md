@@ -149,17 +149,39 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 - `POST /sessions/:id/input` — Submit generic human input (type, value, step_index)
 - `POST /sessions/:id/acknowledge` — Acknowledge failure, retry
 - `POST /credentials/request` — Request credentials. Supports `force_refresh: true` to trigger immediate re-extraction. Add `wait_seconds: 1-30` to block until fresh credentials arrive (BLPOP on Redis). Without `wait_seconds`, force_refresh is fire-and-forget.
+- `POST /auth/token-exchange` — RFC 8693-inspired exchange: accepts `oidc_jwt` or `agent_assertion` subject token type, issues user-scoped Tabby JWT with `owner_user_id`
+- `GET /auth/oauth/providers` — List IdPs with browser OAuth configured (have `auth_url` set)
+- `GET /auth/oauth/:idpId/login` — Start browser OAuth flow with PKCE; redirects to IdP
+- `GET /auth/oauth/:idpId/callback` — OAuth callback: exchanges code, auto-provisions user, issues Tabby JWT, redirects admin-UI
 
 ### NATS Events
 - `hitl.started.{tenantId}.{sessionId}` — carries `intervention_type` + `input_request` metadata (multiple events per session for sequential inputs)
 - `hitl.completed.{tenantId}.{sessionId}`
 - `session.state.changed.{tenantId}.{sessionId}`
 
+### OAuth / Multi-Tenant Architecture
+- Tabby is an OAuth Resource Server: validates external IdP JWTs via JWKS (no `client_secret` needed for direct API path). See `apps/api/src/modules/auth/jwt.strategy.ts` and `apps/api/src/modules/auth/oauth-provider.service.ts`.
+- Auto-provisioning: tenants and users are provisioned on first JWT validation if `allow_auto_provision` is set on the IdP config. No pre-registration required.
+- `admin_domains` on IdP config: emails matching listed domains get Admin role; everyone else gets Operator. Set via `GenericOAuth` migration column.
+- Per-session `owner_user_id` scoping: Admin sees all sessions; Operator/Viewer filtered to their own `owner_user_id`. Enforced in `apps/api/src/modules/sessions/sessions.service.ts`.
+- Token exchange (`POST /auth/token-exchange`): `agent_assertion` subject type lets a platform/bot exchange an agent JWT on behalf of a user (RFC 8693). `oidc_jwt` subject type exchanges a raw external IdP JWT directly.
+- Two-host ingress topology required for on-prem: `tabby-api.*` (API VirtualService) + `tabby-admin.*` (admin-UI VirtualService) — a single shared host does not work because the chart renders them as separate VirtualServices.
+- `ADMIN_UI_ENABLED` env (chart: `.Values.adminUi.enabled`) gates the admin-UI Deployment, Service, VirtualService, and Ingress route (`/` path). Turning it off removes all admin-UI resources.
+
 ## Database Migrations
 
-9 migrations in `apps/api/src/migrations/`. TypeORM, `synchronize: false`, `migrationsRun: true`. Auto-run on API startup.
+17 migrations in `apps/api/src/migrations/`. TypeORM, `synchronize: false`, `migrationsRun: true`. Auto-run on API startup.
 
-Latest: `1708300000009-GenericHumanInput` — adds `sessions.pending_input_request` (JSONB), `interventions.input_request_metadata` (JSONB), `INPUT_NEEDED` to intervention type enum.
+Latest: `1708300000016-GenericOAuth` — adds `client_secret`, `auth_url`, `token_url`, `userinfo_url`, `sign_out_url`, `scopes`, `admin_domains`, `name_claim` to `identity_providers` (Generic IdP / browser OAuth support).
+
+Recent migrations (newest first):
+- `...016-GenericOAuth` — Generic IdP OAuth columns on `identity_providers` (see above)
+- `...015-MultiTenantCloud` — Changes `tenants.id` from uuid to varchar for custom IDs (Frontegg org IDs); adds `tenant_id_claim` to `identity_providers`; fixes `service_profiles` unique indexes to include `owner_user_id`
+- `...014-AddAppOwnerUserId` — Adds `owner_user_id` to `applications`
+- `...013-AddIdleShutdown` — Adds `sessions.last_credential_request_at` for idle shutdown tracking
+- `...012-AddAppTemplates` — Creates `app_templates` table
+- `...011-AddOwnerUserIds` — Adds `owner_user_id` to `sessions` and `service_profiles`; adds `oidc`/`saml` to identity_provider enum
+- `...009-GenericHumanInput` — Adds `sessions.pending_input_request` (JSONB), `interventions.input_request_metadata` (JSONB), `INPUT_NEEDED` to intervention type enum
 
 ## Known Gotchas
 
@@ -181,6 +203,9 @@ Latest: `1708300000009-GenericHumanInput` — adds `sessions.pending_input_reque
 16. **`url_check` preferred over `dom_check` for SPAs** — `dom_check` on `body` returns `isVisible()=false` for SPAs like Salesforce Lightning and Workday even when logged in. Use `url_check` with `expect_status: 200` instead.
 17. **`refresh_interval_seconds` defaults to 3600** — If not set in `export_policy`, credentials are only re-extracted once per hour. For volatile tokens (Salesforce aura, CSRF), set to 60-120.
 18. **`streaming_mode` ignored in `browser_policy`** — Not a valid field. VNC streaming is always enabled for HITL sessions. Remove from app payloads.
+19. **No initContainers for Postgres/Redis/MinIO/NATS** — Removed (required `runAsUser: 0`, rejected by PodSecurityAdmission in restricted namespaces). `fsGroup` handles volume ownership instead.
+20. **Concurrent auto-provisioning race on `credentials/request`** — Catches Postgres duplicate-key (23505) and retries the lookup. See `apps/api/src/modules/credentials/credentials.service.ts`.
+21. **Admin-UI ingress route gated on `adminUi.enabled`** — The `{{- if .Values.adminUi.enabled }}` block in `charts/browser-hitl/templates/ingress.yaml` controls the `/` route. Disabling admin-UI removes it cleanly.
 
 ## Git
 

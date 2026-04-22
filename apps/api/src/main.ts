@@ -14,8 +14,8 @@ async function bootstrap() {
     logger: new JsonLoggerService(),
   });
 
-  // OpenAPI / Swagger documentation (H9 remediation)
-  if (process.env.NODE_ENV !== 'production') {
+  // OpenAPI / Swagger docs at /api/docs. Toggle via API_DOCS_ENABLED (default: enabled).
+  if (process.env.API_DOCS_ENABLED !== 'false') {
     const config = new DocumentBuilder()
       .setTitle('Browser HITL API')
       .setDescription(
