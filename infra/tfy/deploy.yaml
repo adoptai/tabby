@@ -51,7 +51,7 @@ values:
     enabled: false
 
   adminUi:
-    enabled: true
+    enabled: ${ADMIN_UI_ENABLED}
     port: 8000
 
   config:
@@ -71,6 +71,7 @@ values:
     minioEndpoint: "${MINIO_ENDPOINT}"
     maxSessionAgeHours: "${MAX_SESSION_AGE_HOURS}"
     idleShutdownSeconds: "${IDLE_SHUTDOWN_SECONDS}"
+    apiDocsEnabled: "${API_DOCS_ENABLED}"
 
   postgres:
     enabled: ${POSTGRES_ENABLED}
