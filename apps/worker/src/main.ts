@@ -211,8 +211,11 @@ async function main() {
       page, context, dslRunner, healthRunner, artifactExtractor, db, appConfig, appId, sessionId, credentials,
     );
 
-    // Register header capture listener BEFORE login (per spec section 10.8)
+    // Register header capture listeners BEFORE login (per spec section 10.8).
+    // Request-header capture must also register before login so the first authenticated
+    // outbound request (bearer JWT, tenant key) is not missed.
     artifactExtractor.registerHeaderCapture();
+    artifactExtractor.registerRequestHeaderCapture();
 
     // Execute login DSL
     console.log('Starting login DSL execution');

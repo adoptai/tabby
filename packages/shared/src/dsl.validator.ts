@@ -267,9 +267,58 @@ export function validateKeepaliveConfig(config: KeepaliveConfig): ValidationResu
   return { valid: errors.length === 0, errors };
 }
 
+// RFC 7230 token: header names are alphanumeric + !#$%&'*+-.^_`|~
+const HTTP_HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
+
+function validateHeaderAllowlist(
+  path: string,
+  allowlist: unknown,
+  artifactTypes: string[],
+  opts: { rejectCookie?: boolean } = {},
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (!Array.isArray(allowlist)) {
+    errors.push({ path, message: `${path} must be an array of header names` });
+    return errors;
+  }
+  if (allowlist.length === 0) {
+    errors.push({ path, message: `${path} must be a non-empty array if provided` });
+    return errors;
+  }
+  if (!artifactTypes.includes('headers')) {
+    errors.push({ path, message: `${path} requires 'headers' in artifact_types` });
+  }
+  for (let i = 0; i < allowlist.length; i++) {
+    const entry = allowlist[i];
+    const entryPath = `${path}[${i}]`;
+    if (typeof entry !== 'string' || entry.length === 0) {
+      errors.push({ path: entryPath, message: 'header name must be a non-empty string' });
+      continue;
+    }
+    if (entry === '*') {
+      errors.push({ path: entryPath, message: 'wildcard "*" is not permitted in header allowlist' });
+      continue;
+    }
+    if (!HTTP_HEADER_NAME_RE.test(entry)) {
+      errors.push({ path: entryPath, message: `"${entry}" is not a valid HTTP header name` });
+      continue;
+    }
+    if (opts.rejectCookie && entry.toLowerCase() === 'cookie') {
+      errors.push({
+        path: entryPath,
+        message: 'Cookie header is not permitted in request_header_allowlist — use artifact_types: ["cookies"] instead',
+      });
+    }
+  }
+  return errors;
+}
+
 export function validateExportPolicy(config: ExportPolicy): ValidationResult {
   const errors: ValidationError[] = [];
   const validArtifactTypes = ['cookies', 'headers', 'csrf_token', 'local_storage', 'session_storage'];
+
+  const artifactTypes: string[] = Array.isArray(config.artifact_types) ? config.artifact_types : [];
 
   if (!config.artifact_types || !Array.isArray(config.artifact_types) || config.artifact_types.length === 0) {
     errors.push({ path: 'artifact_types', message: 'artifact_types must be a non-empty array' });
@@ -287,6 +336,18 @@ export function validateExportPolicy(config: ExportPolicy): ValidationResult {
 
   if (config.ttl_seconds === undefined || config.ttl_seconds < 300) {
     errors.push({ path: 'ttl_seconds', message: 'ttl_seconds must be >= 300' });
+  }
+
+  if (config.header_allowlist !== undefined) {
+    errors.push(...validateHeaderAllowlist('header_allowlist', config.header_allowlist, artifactTypes));
+  }
+
+  if (config.request_header_allowlist !== undefined) {
+    errors.push(
+      ...validateHeaderAllowlist('request_header_allowlist', config.request_header_allowlist, artifactTypes, {
+        rejectCookie: true,
+      }),
+    );
   }
 
   return { valid: errors.length === 0, errors };
