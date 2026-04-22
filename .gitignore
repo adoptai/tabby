@@ -65,6 +65,8 @@ minio-data/
 /tmp/
 *.tmp
 *.bak
+*.pid
+.tabby-noui-client.json
 
 # --- SBOM artifacts (generated, not committed) ---
 *.sbom.json
