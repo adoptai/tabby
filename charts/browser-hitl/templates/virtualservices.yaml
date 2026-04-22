@@ -22,7 +22,7 @@ spec:
               number: {{ .Values.virtualServices.api.port | int }}
 {{- end }}
 
-{{- if .Values.virtualServices.adminUi }}
+{{- if and .Values.virtualServices.adminUi .Values.adminUi.enabled }}
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
