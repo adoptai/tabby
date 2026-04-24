@@ -145,4 +145,21 @@ export class StreamTokenService implements OnModuleDestroy {
 
     return { valid: true, payload };
   }
+
+  /**
+   * Write a human-input value to Redis so the worker can pick it up.
+   * Mirrors the core logic of HitlService.submitInput without the audit/
+   * observability overhead — used by the stream-token-authenticated HITL
+   * proxy endpoints that sit inside StreamingController.
+   */
+  async writeHumanInput(
+    sessionId: string,
+    stepIndex: number,
+    inputType: string,
+    value: string,
+  ): Promise<void> {
+    const redisKey = REDIS_KEYS.humanInput(sessionId, stepIndex);
+    const payload = JSON.stringify({ input_type: inputType, value });
+    await this.redis.set(redisKey, payload, 'EX', REDIS_TTL.HUMAN_INPUT_SECONDS);
+  }
 }
