@@ -486,7 +486,16 @@ export class StreamingController {
             new URLSearchParams(window.location.search).get('token') || '';
         }
 
-        var currentStepIndex = null;
+        // currentStepIndex is the latest step_index we saw; stays sticky once
+        // observed. We only "forget" it on terminal states (HEALTHY/FAILED) or
+        // when a new step shows up. The controller may transition the session
+        // from LOGIN_NEEDED to LOGIN_IN_PROGRESS and clear pending_input_request
+        // BEFORE the user clicks the button (e.g. when the worker advances on
+        // its own); without a sticky step_index we'd disable the button
+        // mid-flow and the user would have no way to resolve. Default to 0 so
+        // the button is always usable on the LOGIN_NEEDED/LOGIN_IN_PROGRESS path.
+        var currentStepIndex = 0;
+        var hasSeenPending = false;
 
         function refreshState() {
           var tok = resolveToken();
@@ -500,6 +509,7 @@ export class StreamingController {
               var pending = s.pending_input_request;
               if (pending && pending.step_index != null) {
                 currentStepIndex = pending.step_index;
+                hasSeenPending = true;
                 var type = pending.input_type || 'confirm';
                 var msg = pending.message || pending.label || 'Input needed';
                 status.textContent = 'Step ' + pending.step_index + ' (' + type + '): ' + msg;
@@ -508,7 +518,7 @@ export class StreamingController {
                 btn.textContent = 'Mark as Resolved';
                 btn.style.background = '#22c55e';
               } else if (s.state === 'HEALTHY') {
-                currentStepIndex = null;
+                hasSeenPending = false;
                 status.textContent = 'Session healthy — no pending input.';
                 btn.disabled = true;
                 btn.style.opacity = '0.5';
@@ -517,16 +527,24 @@ export class StreamingController {
                 btn.disabled = true;
                 btn.style.opacity = '0.5';
               } else {
-                status.textContent = 'State: ' + (s.state || 'unknown') + ' — waiting…';
-                btn.disabled = true;
-                btn.style.opacity = '0.5';
+                // No pending_input_request, but session is not terminal.
+                // Keep the button enabled — the controller may have cleared
+                // pending mid-flight (LOGIN_NEEDED → LOGIN_IN_PROGRESS) and
+                // the user still needs to confirm via the button.
+                status.textContent = 'State: ' + (s.state || 'unknown')
+                  + ' — click "Mark as Resolved" once login is complete.';
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.textContent = 'Mark as Resolved';
+                btn.style.background = '#22c55e';
               }
             })
             .catch(function () {});
         }
 
         document.getElementById('resolveBtn').addEventListener('click', function () {
-          if (currentStepIndex == null) return;
+          // Always allow the click. Backend will no-op if there's nothing to
+          // resolve — and the worker accepts input regardless of state.
           var tok = resolveToken();
           if (!tok) return;
           var btn = document.getElementById('resolveBtn');
