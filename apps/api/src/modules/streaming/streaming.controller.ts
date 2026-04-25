@@ -486,16 +486,32 @@ export class StreamingController {
             new URLSearchParams(window.location.search).get('token') || '';
         }
 
-        // currentStepIndex is the latest step_index we saw; stays sticky once
-        // observed. We only "forget" it on terminal states (HEALTHY/FAILED) or
-        // when a new step shows up. The controller may transition the session
-        // from LOGIN_NEEDED to LOGIN_IN_PROGRESS and clear pending_input_request
-        // BEFORE the user clicks the button (e.g. when the worker advances on
-        // its own); without a sticky step_index we'd disable the button
-        // mid-flow and the user would have no way to resolve. Default to 0 so
-        // the button is always usable on the LOGIN_NEEDED/LOGIN_IN_PROGRESS path.
+        // Sticky step_index. Updated whenever a pending_input_request is seen.
+        // Defaults to 0 so the button can submit even if the controller cleared
+        // pending_input mid-flight (e.g. on LOGIN_NEEDED → LOGIN_IN_PROGRESS
+        // transition before the user clicked).
         var currentStepIndex = 0;
-        var hasSeenPending = false;
+
+        // Set of session states (from packages/shared/src/enums.ts SessionState)
+        // where it makes sense to let the user click "Mark as Resolved":
+        //   - LOGIN_NEEDED       → worker is blocked waiting for the human.
+        //   - LOGIN_IN_PROGRESS  → controller transitioned but the worker may
+        //                          still be waiting on input; user clicks to
+        //                          confirm once login is done.
+        // All other states (STARTING, HEALTHY, UNHEALTHY, FAILED, TERMINATED)
+        // disable the button — clicking does nothing useful and prevents the
+        // user from spamming submits with no effect.
+        var ENABLE_STATES = { LOGIN_NEEDED: 1, LOGIN_IN_PROGRESS: 1 };
+
+        function setEnabled(btn, enabled) {
+          btn.disabled = !enabled;
+          btn.style.opacity = enabled ? '1' : '0.5';
+          btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+          if (enabled) {
+            btn.textContent = 'Mark as Resolved';
+            btn.style.background = '#22c55e';
+          }
+        }
 
         function refreshState() {
           var tok = resolveToken();
@@ -507,37 +523,57 @@ export class StreamingController {
               var btn = document.getElementById('resolveBtn');
               var status = document.getElementById('hitl-status');
               var pending = s.pending_input_request;
+              var state = s.state || 'unknown';
+
+              // Always update sticky step_index when pending is observed.
               if (pending && pending.step_index != null) {
                 currentStepIndex = pending.step_index;
-                hasSeenPending = true;
-                var type = pending.input_type || 'confirm';
-                var msg = pending.message || pending.label || 'Input needed';
-                status.textContent = 'Step ' + pending.step_index + ' (' + type + '): ' + msg;
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.textContent = 'Mark as Resolved';
-                btn.style.background = '#22c55e';
-              } else if (s.state === 'HEALTHY') {
-                hasSeenPending = false;
-                status.textContent = 'Session healthy — no pending input.';
-                btn.disabled = true;
-                btn.style.opacity = '0.5';
-              } else if (s.state === 'FAILED') {
-                status.textContent = 'Session FAILED: ' + (s.error || 'unknown');
-                btn.disabled = true;
-                btn.style.opacity = '0.5';
-              } else {
-                // No pending_input_request, but session is not terminal.
-                // Keep the button enabled — the controller may have cleared
-                // pending mid-flight (LOGIN_NEEDED → LOGIN_IN_PROGRESS) and
-                // the user still needs to confirm via the button.
-                status.textContent = 'State: ' + (s.state || 'unknown')
-                  + ' — click "Mark as Resolved" once login is complete.';
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.textContent = 'Mark as Resolved';
-                btn.style.background = '#22c55e';
               }
+
+              if (state === 'HEALTHY') {
+                status.textContent = 'Session healthy — no pending input.';
+                setEnabled(btn, false);
+                return;
+              }
+              if (state === 'FAILED') {
+                status.textContent = 'Session FAILED: ' + (s.error || 'unknown');
+                setEnabled(btn, false);
+                return;
+              }
+              if (state === 'TERMINATED') {
+                status.textContent = 'Session ended.';
+                setEnabled(btn, false);
+                return;
+              }
+              if (state === 'STARTING') {
+                status.textContent = 'Session is starting — login will be required once the browser is ready.';
+                setEnabled(btn, false);
+                return;
+              }
+              if (state === 'UNHEALTHY') {
+                status.textContent = 'Session is recovering automatically — please wait.';
+                setEnabled(btn, false);
+                return;
+              }
+
+              // LOGIN_NEEDED or LOGIN_IN_PROGRESS — actionable.
+              if (ENABLE_STATES[state]) {
+                if (pending && pending.step_index != null) {
+                  var type = pending.input_type || 'confirm';
+                  var msg = pending.message || pending.label || 'Input needed';
+                  status.textContent = 'Step ' + pending.step_index + ' (' + type + '): ' + msg;
+                } else {
+                  status.textContent = state === 'LOGIN_IN_PROGRESS'
+                    ? 'Login in progress — click "Mark as Resolved" once you are done.'
+                    : 'Login required — log in inside the viewer, then click "Mark as Resolved".';
+                }
+                setEnabled(btn, true);
+                return;
+              }
+
+              // Unknown state: be conservative, disable.
+              status.textContent = 'State: ' + state + ' — waiting…';
+              setEnabled(btn, false);
             })
             .catch(function () {});
         }
