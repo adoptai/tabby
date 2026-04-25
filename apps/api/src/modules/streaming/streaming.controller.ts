@@ -473,6 +473,21 @@ export class StreamingController {
 
     <script>
       (function () {
+        // Only render the HITL panel when this VNC page was opened from the
+        // MCP flow ("?from=mcp"). Copilot, CE and other surfaces have their
+        // own resolve UI; if the user clicks "Mark as Resolved" inside VNC
+        // for those surfaces, the worker advances but the originating UI is
+        // left waiting forever. Default-hide is the safe choice.
+        var rawHash = window.location.hash.charAt(0) === '#'
+          ? window.location.hash.slice(1) : window.location.hash;
+        var fromParam = new URLSearchParams(window.location.search).get('from')
+          || new URLSearchParams(rawHash).get('from');
+        if (fromParam !== 'mcp') {
+          var panel = document.getElementById('hitl-panel');
+          if (panel) panel.style.display = 'none';
+          return;
+        }
+
         var cfg = document.getElementById('hitl-config');
         var SESSION_ID = cfg.getAttribute('data-session-id');
         // Stream token may be updated from URL hash/query after page load (same
