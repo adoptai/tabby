@@ -16,7 +16,7 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SessionEntity } from '../../entities';
+import { SessionEntity, InterventionEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
@@ -265,6 +265,8 @@ export class StreamingController {
     private readonly streamTokenService: StreamTokenService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
+    @InjectRepository(InterventionEntity)
+    private readonly interventionRepo: Repository<InterventionEntity>,
   ) {}
 
   @Get('assets/*')
@@ -348,9 +350,24 @@ export class StreamingController {
       throw new NotFoundException('Session not found');
     }
 
+    // The controller clears session.pending_input_request once it transitions
+    // to LOGIN_IN_PROGRESS (state-machine.service.ts:268). The worker is still
+    // blocked on the original step_index waiting for input on the matching
+    // Redis key. Fall back to the latest intervention's input_request_metadata
+    // so the resolve button can POST the correct step_index — same pattern
+    // used by AgentService.getSessionStatus.
+    let pendingInput = session.pending_input_request as Record<string, unknown> | null;
+    if (!pendingInput && (session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED')) {
+      const latestIntervention = await this.interventionRepo.findOne({
+        where: { session_id: sessionId },
+        order: { started_at: 'DESC' },
+      });
+      pendingInput = latestIntervention?.input_request_metadata ?? null;
+    }
+
     return {
       state: session.state,
-      pending_input_request: session.pending_input_request ?? null,
+      pending_input_request: pendingInput,
     };
   }
 
@@ -501,11 +518,12 @@ export class StreamingController {
             new URLSearchParams(window.location.search).get('token') || '';
         }
 
-        // Sticky step_index. Updated whenever a pending_input_request is seen.
-        // Defaults to 0 so the button can submit even if the controller cleared
-        // pending_input mid-flight (e.g. on LOGIN_NEEDED → LOGIN_IN_PROGRESS
-        // transition before the user clicked).
-        var currentStepIndex = 0;
+        // step_index from the latest hitl-state poll. Backend falls back to
+        // the most recent intervention.input_request_metadata when the session
+        // pending_input_request was cleared by the controller, so the value
+        // stays correct throughout LOGIN_IN_PROGRESS. Null = no step known —
+        // button stays disabled to prevent submitting to the wrong key.
+        var currentStepIndex = null;
 
         // Set of session states (from packages/shared/src/enums.ts SessionState)
         // where it makes sense to let the user click "Mark as Resolved":
@@ -577,12 +595,17 @@ export class StreamingController {
                   var type = pending.input_type || 'confirm';
                   var msg = pending.message || pending.label || 'Input needed';
                   status.textContent = 'Step ' + pending.step_index + ' (' + type + '): ' + msg;
+                  setEnabled(btn, true);
                 } else {
+                  // No step_index resolved yet — button must stay disabled
+                  // because submitting with a default would write to the
+                  // wrong human_input Redis key and the worker would never
+                  // see it.
                   status.textContent = state === 'LOGIN_IN_PROGRESS'
-                    ? 'Login in progress — click "Mark as Resolved" once you are done.'
-                    : 'Login required — log in inside the viewer, then click "Mark as Resolved".';
+                    ? 'Login in progress — waiting for current step…'
+                    : 'Login required — waiting for input details…';
+                  setEnabled(btn, false);
                 }
-                setEnabled(btn, true);
                 return;
               }
 
@@ -594,8 +617,11 @@ export class StreamingController {
         }
 
         document.getElementById('resolveBtn').addEventListener('click', function () {
-          // Always allow the click. Backend will no-op if there's nothing to
-          // resolve — and the worker accepts input regardless of state.
+          // Refuse the click if we never observed a step_index. Posting with
+          // a default would write to the wrong human_input Redis key and the
+          // worker would silently miss the input. setEnabled(false) at this
+          // point is a defense-in-depth — the button should already be disabled.
+          if (currentStepIndex === null) return;
           var tok = resolveToken();
           if (!tok) return;
           var btn = document.getElementById('resolveBtn');
