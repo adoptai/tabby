@@ -31,6 +31,7 @@
   "packageManager": "pnpm@10.12.1",
   "pnpm": {
     "overrides": {
+      "axios": "1.15.1",
       "fast-xml-parser": ">=5.3.6",
       "lodash": ">=4.17.21",
       "multer": ">=2.0.1"
