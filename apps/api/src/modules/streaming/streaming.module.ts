@@ -7,7 +7,7 @@ import { CdpStreamProvider } from './cdp-stream.provider';
 import { CdpWsProxyService } from './cdp-ws-proxy.service';
 import { StreamProviderFactory } from './stream-provider.factory';
 import { SessionEntity, ApplicationEntity, InterventionEntity } from '../../entities';
-import { StreamingController, CdpStreamingController } from './streaming.controller';
+import { StreamingController, CdpStreamingController, ShortLinkController } from './streaming.controller';
 import { VncWsProxyService } from './vnc-ws-proxy.service';
 import { resolveJwtSigningKey } from '../auth/jwt-config';
 
@@ -19,7 +19,7 @@ import { resolveJwtSigningKey } from '../auth/jwt-config';
       signOptions: { expiresIn: '10m' },
     }),
   ],
-  controllers: [StreamingController, CdpStreamingController],
+  controllers: [ShortLinkController, StreamingController, CdpStreamingController],
   providers: [
     StreamTokenService,
     VncStreamProvider,

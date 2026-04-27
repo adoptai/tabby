@@ -146,6 +146,16 @@ export class StreamTokenService implements OnModuleDestroy {
     return { valid: true, payload };
   }
 
+  async createShortLink(url: string): Promise<string> {
+    const shortId = Math.random().toString(36).slice(2, 10); // 8 random chars
+    await this.redis.set(`vnc:short:${shortId}`, url, 'EX', 600);
+    return shortId;
+  }
+
+  async resolveShortLink(shortId: string): Promise<string | null> {
+    return this.redis.get(`vnc:short:${shortId}`);
+  }
+
   /**
    * Write a human-input value to Redis so the worker can pick it up.
    * Mirrors the core logic of HitlService.submitInput without the audit/

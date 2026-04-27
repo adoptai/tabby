@@ -21,6 +21,24 @@ import { StreamTokenService } from './stream-token.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
 
+@Controller('s')
+export class ShortLinkController {
+  constructor(private readonly streamTokenService: StreamTokenService) {}
+
+  @Get(':shortId')
+  async redirect(
+    @Param('shortId') shortId: string,
+    @Res() res: any,
+  ): Promise<void> {
+    const url = await this.streamTokenService.resolveShortLink(shortId);
+    if (!url) {
+      res.status(404).send('Link expired or not found');
+      return;
+    }
+    res.redirect(302, url);
+  }
+}
+
 @ApiTags('Streaming - CDP')
 @Controller('cdp')
 export class CdpStreamingController {
@@ -524,6 +542,11 @@ export class StreamingController {
         // stays correct throughout LOGIN_IN_PROGRESS. Null = no step known —
         // button stays disabled to prevent submitting to the wrong key.
         var currentStepIndex = null;
+        // Track which step_index the user has already resolved in this viewer
+        // session, so the button stays disabled after one click and only
+        // re-enables when the worker advances to a NEW step (sequential HITL
+        // like Salesforce password → OTP). Prevents duplicate submissions.
+        var resolvedStepIndex = null;
 
         // Set of session states (from packages/shared/src/enums.ts SessionState)
         // where it makes sense to let the user click "Mark as Resolved":
@@ -595,7 +618,15 @@ export class StreamingController {
                   var type = pending.input_type || 'confirm';
                   var msg = pending.message || pending.label || 'Input needed';
                   status.textContent = 'Step ' + pending.step_index + ' (' + type + '): ' + msg;
-                  setEnabled(btn, true);
+                  // Only re-enable if this is a NEW step (or first one).
+                  // Prevents the user from clicking again on the same step.
+                  if (resolvedStepIndex === null || pending.step_index !== resolvedStepIndex) {
+                    setEnabled(btn, true);
+                  } else {
+                    setEnabled(btn, false);
+                    btn.textContent = 'Resolved ✓';
+                    btn.style.background = '#16a34a';
+                  }
                 } else {
                   // No step_index resolved yet — button must stay disabled
                   // because submitting with a default would write to the
@@ -640,6 +671,9 @@ export class StreamingController {
               }
               btn.textContent = 'Resolved ✓';
               btn.style.background = '#16a34a';
+              // Mark this step as resolved so refreshState() doesn't re-enable
+              // the button until the worker advances to a different step_index.
+              resolvedStepIndex = currentStepIndex;
               setTimeout(refreshState, 1500);
             })
             .catch(function () {
