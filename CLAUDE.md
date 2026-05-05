@@ -110,6 +110,9 @@ Worker hits `request_human_input` DSL step → writes `pending_input_request` to
 - `url` — URL (e.g., magic link)
 - `confirm` — human resolves via VNC, clicks "Mark as Resolved" in Slack
 
+### DSL Step Types
+Core steps: `goto`, `click`, `fill`, `wait_for` (element selector), `wait_for_url` (URL pattern match), `evaluate` (JS eval in page context), `screenshot`, `request_human_input`. Each step can have `on_failure`, retry config, and conditional execution.
+
 ### DSL Step: `on_failure`
 Any `wait_for`, `wait_for_url`, `click`, `fill`, `goto` step can have `on_failure`:
 - `{ "action": "skip" }` — skip failed step, continue DSL
@@ -153,6 +156,12 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 - `GET /auth/oauth/providers` — List IdPs with browser OAuth configured (have `auth_url` set)
 - `GET /auth/oauth/:idpId/login` — Start browser OAuth flow with PKCE; redirects to IdP
 - `GET /auth/oauth/:idpId/callback` — OAuth callback: exchanges code, auto-provisions user, issues Tabby JWT, redirects admin-UI
+
+### MCP Integration (noVNC streaming)
+- `GET /stream/r/:id` — short-link redirect: looks up Redis-backed short URL (600s TTL), redirects to full noVNC viewer URL
+- Short links created by `stream-token.service.ts:createShortLink()` — used by python-mcp to give LLMs a compact VNC URL
+- `?from=mcp` query param gates the "Mark as Resolved" HITL panel in the noVNC viewer (Copilot/CE have their own resolve UI)
+- Resolve panel calls `POST /sessions/:id/input` with `{type: "confirm", value: "resolved"}` to release the worker
 
 ### NATS Events
 - `hitl.started.{tenantId}.{sessionId}` — carries `intervention_type` + `input_request` metadata (multiple events per session for sequential inputs)
