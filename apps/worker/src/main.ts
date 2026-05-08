@@ -1,3 +1,6 @@
+import { initSentry } from '@browser-hitl/shared';
+initSentry('worker');
+
 import { chromium, Browser, BrowserContext, Page, LaunchOptions } from 'playwright';
 import { CHROMIUM_FLAGS, CDP_PORTS, PORTS } from '@browser-hitl/shared';
 import { HealthServer } from './health-server';

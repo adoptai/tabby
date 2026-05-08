@@ -1,9 +1,10 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Post, HttpCode } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SessionEntity } from '../../entities';
 import { RedisHealthMonitor } from '../redis/redis-health-monitor';
+import { testSentry } from '@browser-hitl/shared';
 
 /**
  * Health check endpoints (H1 remediation + ADR-011 Redis resilience).
@@ -59,5 +60,13 @@ export class HealthController {
       status: allOk ? 'ok' : 'degraded',
       checks,
     };
+  }
+
+  @Post('sentry-test')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Fire a test error to Sentry', description: 'Sends a test exception to Sentry to verify the integration is working. No auth required. Returns whether Sentry is configured.' })
+  @ApiResponse({ status: 200, schema: { example: { sent: true, service: 'api' } } })
+  sentryTest(): { sent: boolean; service: string } {
+    return { sent: testSentry('api'), service: 'api' };
   }
 }
