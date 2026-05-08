@@ -1,3 +1,6 @@
+import { initSentry } from '@browser-hitl/shared';
+initSentry('slack-bot');
+
 import { App, LogLevel } from '@slack/bolt';
 import { NatsListener } from './nats-listener';
 import { ApiClient } from './api-client';

@@ -1,10 +1,12 @@
 import express from 'express';
 import { Server } from 'http';
+import { testSentry } from '@browser-hitl/shared';
 
 /**
  * Worker Health HTTP Server per spec section 15.5.
  * GET /health - Kubernetes liveness/readiness probe
  * GET /status - Session state details for observability
+ * POST /health/sentry-test - Fire test error to Sentry
  */
 export class HealthServer {
   private server: Server | null = null;
@@ -32,6 +34,10 @@ export class HealthServer {
         uptime_seconds: Math.floor(process.uptime()),
         memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
       });
+    });
+
+    app.post('/health/sentry-test', (_req, res) => {
+      res.json({ sent: testSentry('worker'), service: 'worker' });
     });
 
     this.server = app.listen(port, () => {
