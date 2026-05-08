@@ -1,4 +1,7 @@
 import 'reflect-metadata';
+import { initSentry } from '@browser-hitl/shared';
+initSentry('api');
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';

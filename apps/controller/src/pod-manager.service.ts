@@ -329,6 +329,11 @@ export class PodManagerService {
       { name: 'TENANT_ENCRYPTION_KEY', value: process.env.TENANT_ENCRYPTION_KEY || '' },
       { name: 'TENANT_KEY_VERSION', value: process.env.TENANT_KEY_VERSION || 'v1' },
       { name: 'STREAMING_MODE', value: streamingMode },
+      { name: 'SENTRY_DSN', value: process.env.SENTRY_DSN || '' },
+      { name: 'SENTRY_ENABLED', value: process.env.SENTRY_ENABLED || 'false' },
+      { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
+      { name: 'APP_ENV', value: process.env.APP_ENV || '' },
+      { name: 'CHART_VERSION', value: process.env.CHART_VERSION || '' },
     ];
 
     // VNC mode needs DISPLAY for Xvfb; CDP mode does not
