@@ -5,6 +5,7 @@ import { IncomingMessage, Server } from 'http';
 import { connect as connectSocket, Socket } from 'net';
 import { URL } from 'url';
 import { Repository } from 'typeorm';
+import { JwtService } from '@nestjs/jwt';
 import { SessionEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
 
@@ -22,6 +23,7 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly httpAdapterHost: HttpAdapterHost,
     private readonly streamTokenService: StreamTokenService,
+    private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
   ) {}
@@ -91,6 +93,27 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
       if (!session.pod_name) {
         this.rejectUpgrade(clientSocket, 409, 'Session pod is not ready');
         return;
+      }
+
+      // Defense-in-depth: if a tabby_vnc cookie is present, validate it.
+      // Absent cookie is allowed (stream token alone is sufficient for backward compat).
+      if (session.owner_user_id) {
+        const cookieHeader = Array.isArray(request.headers.cookie)
+          ? request.headers.cookie.join('; ')
+          : request.headers.cookie || '';
+        const vncCookie = this.parseVncCookie(cookieHeader);
+        if (vncCookie !== null) {
+          try {
+            const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string }>(vncCookie);
+            if (vncPayload.type !== 'vnc_access' || vncPayload.owner_user_id !== session.owner_user_id) {
+              this.rejectUpgrade(clientSocket, 401, 'VNC cookie owner mismatch');
+              return;
+            }
+          } catch {
+            this.rejectUpgrade(clientSocket, 401, 'Invalid VNC access cookie');
+            return;
+          }
+        }
       }
 
       const serviceName = `${session.pod_name}-novnc`;
@@ -169,7 +192,8 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      if (headerName.toLowerCase() === 'host') {
+      const lower = headerName.toLowerCase();
+      if (lower === 'host' || lower === 'cookie' || lower === 'authorization') {
         continue;
       }
 
@@ -221,6 +245,21 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
     socket.once('close', () => {
       this.trackedSockets.delete(socket);
     });
+  }
+
+  private parseVncCookie(cookieHeader: string): string | null {
+    if (!cookieHeader) return null;
+    for (const part of cookieHeader.split(';')) {
+      const [k, ...v] = part.split('=');
+      if (k && k.trim() === 'tabby_vnc') {
+        try {
+          return decodeURIComponent(v.join('=').trim());
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
   }
 
   private resolveStreamToken(url: URL, request: IncomingMessage): string | null {
