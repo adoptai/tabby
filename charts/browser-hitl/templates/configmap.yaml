@@ -63,6 +63,10 @@ data:
   NOVNC_PORT: {{ .Values.worker.novnc.port | quote }}
   # API docs (Swagger) toggle — disable in prod
   API_DOCS_ENABLED: {{ .Values.config.apiDocsEnabled | default "true" | quote }}
+  # Sentry error tracking (production only, disabled for on-prem)
+  SENTRY_DSN: {{ .Values.config.sentryDsn | default "" | quote }}
+  SENTRY_ENABLED: {{ .Values.config.sentryEnabled | default "false" | quote }}
+  SENTRY_TRACES_SAMPLE_RATE: {{ .Values.config.sentryTracesSampleRate | default "0.1" | quote }}
   # Version info (injected by CI)
   CHART_VERSION: {{ .Chart.Version | quote }}
   COMMIT_SHA: {{ .Values.config.commitSha | default "unknown" | quote }}

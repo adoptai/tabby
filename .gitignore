@@ -93,8 +93,11 @@ BARE_BONE_FEASIBILITY.md
 BARE_BONE_IMPLEMENTATION.md
 PLATFORM_SETUP.md
 projecta3-deep-dive.md
+mcp-integration-research.md
 
 # --- Claude ---
 .claude
 
 docs/SALESFORCE_TEMPLATE_PAYLOAD.md
+docs/LOCAL_DEV_KNOWN_ISSUES.md
+docs/actions.md

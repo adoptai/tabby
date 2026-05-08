@@ -1,6 +1,7 @@
 import {
   Controller, Post, Body, Param, Req, UseGuards, HttpCode, Headers,
 } from '@nestjs/common';
+import { StreamTokenService } from '../streaming/stream-token.service';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiHeader, ApiProperty } from '@nestjs/swagger';
 import {
   IsInt,
@@ -41,7 +42,10 @@ class InputDto {
 @Controller('sessions')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class HitlController {
-  constructor(private readonly hitlService: HitlService) {}
+  constructor(
+    private readonly hitlService: HitlService,
+    private readonly streamTokenService: StreamTokenService,
+  ) {}
 
   @Post(':id/stream')
   @Roles('Admin', 'Operator', 'Viewer', 'Agent')
@@ -57,6 +61,35 @@ export class HitlController {
       req.user.tenant_id,
       req.user.user_id,
     );
+  }
+
+  @Post(':id/short-link')
+  @Roles('Admin', 'Operator', 'Viewer', 'Agent')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Generate a short VNC URL', description: 'Creates a short redirect URL for the VNC viewer (10 min TTL). Use for display in space-constrained UIs.' })
+  @ApiParam({ name: 'id', description: 'Session UUID' })
+  @ApiResponse({ status: 200, description: 'Short URL generated', schema: { example: { short_url: 'https://api.example.com/s/abc12345' } } })
+  async shortLink(
+    @Param('id') sessionId: string,
+    @Req() req: any,
+  ): Promise<{ short_url: string }> {
+    const streamResult = await this.hitlService.generateStreamUrl(
+      sessionId,
+      req.user.tenant_id,
+      req.user.user_id,
+    );
+    // Append ?from=mcp so the noVNC viewer shows the "Mark as Resolved" panel.
+    // This endpoint is only called from MCP flows. The token lives in the URL
+    // FRAGMENT (#token=...), so the query param must be inserted BEFORE the
+    // fragment — naive concatenation would corrupt the token.
+    const [urlBase, fragment] = streamResult.url.split('#', 2);
+    const sep = urlBase.includes('?') ? '&' : '?';
+    const urlWithParam = fragment !== undefined
+      ? `${urlBase}${sep}from=mcp#${fragment}`
+      : `${urlBase}${sep}from=mcp`;
+    const shortId = await this.streamTokenService.createShortLink(urlWithParam);
+    const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+    return { short_url: `${base}/s/${shortId}` };
   }
 
   @Post(':id/takeover')

@@ -141,6 +141,8 @@ config:
   serviceAuthAllowedTenantIds: "*"
   serviceAuthAllowWildcardTenantScope: "true"
   idleShutdownSeconds: "3600"  # Auto-stop per-user sessions after 1h idle
+  sentryDsn: "https://1a3b1d20187ad2f8344d44a512233e2b@o4508873458319360.ingest.us.sentry.io/4511342165622784"
+  sentryEnabled: "true"
 
 # Development secrets (NEVER use in production)
 secrets:
