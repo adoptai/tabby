@@ -308,4 +308,24 @@ export class ProfilesService {
     }
     return profile;
   }
+
+  async remove(id: string, tenantId: string | undefined, actorId: string): Promise<void> {
+    const profile = await this.findOne(id, tenantId);
+
+    // Nullify children that reference this profile as parent_version_id
+    await this.profileRepo.update(
+      { parent_version_id: id },
+      { parent_version_id: null as any },
+    );
+
+    await this.profileRepo.remove(profile);
+
+    await this.auditService.log({
+      tenant_id: profile.tenant_id,
+      actor_type: 'human',
+      actor_id: actorId,
+      event_type: 'profile.deleted',
+      payload: { profile_uuid: id, profile_id: profile.profile_id, version: profile.version },
+    });
+  }
 }
