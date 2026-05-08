@@ -12,6 +12,7 @@
 Tabby is deployed via **Replicated**, which manages the Helm chart lifecycle (install, upgrade, rollback). The infrastructure team does not run `helm install` directly — Replicated handles chart delivery, image mirroring (for air-gapped environments), and version management.
 
 The Helm chart OCI reference is:
+
 ```
 oci://ghcr.io/adoptai/charts/browser-hitl
 ```
@@ -24,15 +25,17 @@ Replicated pulls this chart and applies the customer-provided configuration valu
 
 ### Cluster Requirements
 
-| Requirement | Minimum | Recommended |
-|---|---|---|
-| Kubernetes version | 1.27 | 1.28–1.30 |
-| CPU available | 8 vCPU | 16+ vCPU |
-| RAM available | 32 GiB | 64+ GiB |
-| Storage | Default StorageClass with ReadWriteOnce SSD-backed PVCs | `Retain` reclaim policy |
-| Ingress | NGINX Ingress Controller or Istio + Gateway | NGINX preferred |
-| Outbound HTTPS | Required | To IdP (JWKS fetches), to target SaaS sites (via egress proxy) |
-| Pod Security | Standard or restricted | Chart is compatible with `restricted` PSA profile |
+
+| Requirement        | Minimum                                                 | Recommended                                                    |
+| ------------------ | ------------------------------------------------------- | -------------------------------------------------------------- |
+| Kubernetes version | 1.27                                                    | 1.28–1.30                                                      |
+| CPU available      | 8 vCPU                                                  | 16+ vCPU                                                       |
+| RAM available      | 32 GiB                                                  | 64+ GiB                                                        |
+| Storage            | Default StorageClass with ReadWriteOnce SSD-backed PVCs | `Retain` reclaim policy                                        |
+| Ingress            | NGINX Ingress Controller or Istio + Gateway             | NGINX preferred                                                |
+| Outbound HTTPS     | Required                                                | To IdP (JWKS fetches), to target SaaS sites (via egress proxy) |
+| Pod Security       | Standard or restricted                                  | Chart is compatible with `restricted` PSA profile              |
+
 
 The permanent services (API, Controller, Egress Proxy, Postgres, Redis, NATS, MinIO) consume a fixed baseline of resources. Worker pods are created dynamically — one per active service profile — and remain alive for continuous credential extraction. Ensure the cluster has sufficient headroom to schedule worker pods on demand.
 
@@ -80,23 +83,25 @@ openssl rand -hex 32   # natsAuthToken
 
 ### Secret Reference
 
-| Secret | Required | Format | Purpose |
-|---|:---:|---|---|
-| `tenantEncryptionKey` | **yes** | **64 hex chars** | AES-256-GCM key for credential/artifact encryption. **Most critical secret — loss = unrecoverable credentials.** |
-| `jwtSigningKey` | yes | ≥32 chars | Signs Tabby-issued JWTs (HS256) |
-| `postgresPassword` | yes | string | Postgres user password |
-| `minioAccessKey` | yes | string | MinIO root username |
-| `minioSecretKey` | yes | ≥8 chars | MinIO root password |
-| `adminBootstrapPassword` | yes | strong password | Initial admin user (`admin@browser-hitl.local`) |
-| `egressProxyAdminToken` | yes | hex string | Authenticates allowlist management |
-| `egressProxySessionKey` | yes | hex string | HMAC key for per-session proxy auth |
-| `serviceAuthClientSecret` | if bots enabled | hex string | Bot-to-API OAuth client secret |
-| `natsAuthToken` | recommended | string | NATS token auth |
-| `slackBotToken` | if Slack enabled | `xoxb-...` | Slack bot token |
-| `slackSigningSecret` | if Slack enabled | hex | Slack signing secret |
-| `slackAppToken` | if Slack enabled | `xapp-...` | Slack Socket Mode token |
-| `microsoftAppId` | if Teams enabled | UUID | Azure bot registration |
-| `microsoftAppPassword` | if Teams enabled | string | Azure bot password |
+
+| Secret                    | Required         | Format           | Purpose                                                                                                          |
+| ------------------------- | ---------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `tenantEncryptionKey`     | **yes**          | **64 hex chars** | AES-256-GCM key for credential/artifact encryption. **Most critical secret — loss = unrecoverable credentials.** |
+| `jwtSigningKey`           | yes              | ≥32 chars        | Signs Tabby-issued JWTs (HS256)                                                                                  |
+| `postgresPassword`        | yes              | string           | Postgres user password                                                                                           |
+| `minioAccessKey`          | yes              | string           | MinIO root username                                                                                              |
+| `minioSecretKey`          | yes              | ≥8 chars         | MinIO root password                                                                                              |
+| `adminBootstrapPassword`  | yes              | strong password  | Initial admin user (`admin@browser-hitl.local`)                                                                  |
+| `egressProxyAdminToken`   | yes              | hex string       | Authenticates allowlist management                                                                               |
+| `egressProxySessionKey`   | yes              | hex string       | HMAC key for per-session proxy auth                                                                              |
+| `serviceAuthClientSecret` | if bots enabled  | hex string       | Bot-to-API OAuth client secret                                                                                   |
+| `natsAuthToken`           | recommended      | string           | NATS token auth                                                                                                  |
+| `slackBotToken`           | if Slack enabled | `xoxb-...`       | Slack bot token                                                                                                  |
+| `slackSigningSecret`      | if Slack enabled | hex              | Slack signing secret                                                                                             |
+| `slackAppToken`           | if Slack enabled | `xapp-...`       | Slack Socket Mode token                                                                                          |
+| `microsoftAppId`          | if Teams enabled | UUID             | Azure bot registration                                                                                           |
+| `microsoftAppPassword`    | if Teams enabled | string           | Azure bot password                                                                                               |
+
 
 > **About `tenantEncryptionKey`:** Injected automatically into API, Controller, and every Worker pod. Changing this key after deployment makes all previously-encrypted artifacts permanently unreadable.
 
@@ -152,10 +157,12 @@ worker:
 
 The API and Admin UI require **separate hostnames**. A single shared hostname does not work.
 
-| Host | Target | Example |
-|---|---|---|
-| `tabby-api.<domain>` | API (:8000) | `tabby-api.customer.com` |
+
+| Host                   | Target           | Example                    |
+| ---------------------- | ---------------- | -------------------------- |
+| `tabby-api.<domain>`   | API (:8000)      | `tabby-api.customer.com`   |
 | `tabby-admin.<domain>` | Admin UI (:8000) | `tabby-admin.customer.com` |
+
 
 ```yaml
 ingress:
@@ -199,12 +206,14 @@ config:
 
 In-cluster storage sizing (if using defaults):
 
-| Service | PVC Size | Type |
-|---|---|---|
-| Postgres | 50Gi | SSD required |
-| Redis | 5Gi | Standard |
-| NATS | 20Gi | SSD required |
-| MinIO | 100Gi | SSD recommended |
+
+| Service  | PVC Size | Type            |
+| -------- | -------- | --------------- |
+| Postgres | 50Gi     | SSD required    |
+| Redis    | 5Gi      | Standard        |
+| NATS     | 20Gi     | SSD required    |
+| MinIO    | 100Gi    | SSD recommended |
+
 
 ### Egress Proxy
 
@@ -231,18 +240,20 @@ networkPolicies:
 
 ### Runtime Settings
 
-| Key | Default | Notes |
-|---|---|---|
-| `config.publicBaseUrl` | `""` | **Required.** External API URL. |
-| `config.streamHost` | `""` | **Required.** Hostname for VNC WebSocket streams. |
-| `config.streamProtocol` | `""` | `wss` for HTTPS, `ws` for HTTP. |
-| `config.maxSessionAgeHours` | `24` | Sessions recycled after this. |
-| `config.idleShutdownSeconds` | `0` | `0` = disabled. Set to `3600` to reclaim idle sessions. |
-| `config.egressPolicyFailClosed` | `true` | Workers blocked from non-allowlisted domains. |
-| `config.apiDocsEnabled` | `true` | Swagger UI. Disable in production (`"false"`). |
-| `nats.jetstream.syncInterval` | `always` | **Mandatory — do not change.** |
-| `nats.auth.enabled` | `false` | Set `true` in production. |
-| `backup.enabled` | `false` | Set `true` in production (daily pg_dump to MinIO). |
+
+| Key                             | Default  | Notes                                                   |
+| ------------------------------- | -------- | ------------------------------------------------------- |
+| `config.publicBaseUrl`          | `""`     | **Required.** External API URL.                         |
+| `config.streamHost`             | `""`     | **Required.** Hostname for VNC WebSocket streams.       |
+| `config.streamProtocol`         | `""`     | `wss` for HTTPS, `ws` for HTTP.                         |
+| `config.maxSessionAgeHours`     | `24`     | Sessions recycled after this.                           |
+| `config.idleShutdownSeconds`    | `0`      | `0` = disabled. Set to `3600` to reclaim idle sessions. |
+| `config.egressPolicyFailClosed` | `true`   | Workers blocked from non-allowlisted domains.           |
+| `config.apiDocsEnabled`         | `true`   | Swagger UI. Disable in production (`"false"`).          |
+| `nats.jetstream.syncInterval`   | `always` | **Mandatory — do not change.**                          |
+| `nats.auth.enabled`             | `false`  | Set `true` in production.                               |
+| `backup.enabled`                | `false`  | Set `true` in production (daily pg_dump to MinIO).      |
+
 
 ---
 
@@ -250,7 +261,7 @@ networkPolicies:
 
 Tabby validates JWTs from a trusted IdP but does not initiate OAuth flows itself.
 
-> **Important:** The IdP registered here should be the **platform's IdP** (e.g., Frontegg for Adopt-hosted, or the customer's Keycloak/Okta/Azure AD for on-prem). End users authenticate to the platform first — Tabby validates the JWTs the platform produces.
+> **Important:** The IdP registered here should be the **platform's IdP** (e.g., Frontegg). End users authenticate to the platform first — Tabby validates the JWTs the platform produces.
 
 After deployment, register the IdP via the API:
 
@@ -270,12 +281,14 @@ curl -s https://tabby-api.customer.com/admin/identity-providers \
   }'
 ```
 
-| Provider | `issuer_url` | `tenant_id_claim` |
-|---|---|---|
-| Frontegg (Adopt cloud) | `https://adoptai.frontegg.com` | `tenantId` |
-| Okta | `https://DOMAIN.okta.com/oauth2/default` | Custom claim |
-| Azure AD | `https://login.microsoftonline.com/{dir_id}/v2.0` | `tid` |
-| Keycloak | `https://KEYCLOAK/realms/REALM` | Custom mapper |
+
+| Provider               | `issuer_url`                                      | `tenant_id_claim` |
+| ---------------------- | ------------------------------------------------- | ----------------- |
+| Frontegg (Adopt cloud) | `https://adoptai.frontegg.com`                    | `tenantId`        |
+| Okta                   | `https://DOMAIN.okta.com/oauth2/default`          | Custom claim      |
+| Azure AD               | `https://login.microsoftonline.com/{dir_id}/v2.0` | `tid`             |
+| Keycloak               | `https://KEYCLOAK/realms/REALM`                   | Custom mapper     |
+
 
 ---
 
@@ -302,6 +315,7 @@ curl -s https://tabby-api.customer.com/auth/token-exchange \
 ```
 
 Check pods:
+
 ```bash
 kubectl get pods -n browser-hitl
 # Expected: API (2), Controller (1), Egress Proxy (1), Postgres (1), Redis (1), NATS (1), MinIO (1)
@@ -313,54 +327,67 @@ kubectl get pods -n browser-hitl
 ## Troubleshooting
 
 ### Credentials return empty values
+
 `TENANT_ENCRYPTION_KEY` missing or wrong on API pod. Check:
+
 ```bash
 kubectl exec -n browser-hitl deploy/tabby-browser-hitl-api -- printenv TENANT_ENCRYPTION_KEY | wc -c
 # Expected: 65 (64 chars + newline)
 ```
 
 ### Postgres password doesn't change after upgrade
+
 `initdb` password is set once at PVC creation. To change:
+
 ```bash
 kubectl exec -n browser-hitl tabby-browser-hitl-postgres-0 -- \
   psql -U browser_hitl -c "ALTER USER browser_hitl WITH PASSWORD 'new-password';"
 ```
 
 ### Controller restarts repeatedly
+
 Usually NATS not ready yet. Wait 60s. If RBAC error:
+
 ```bash
 kubectl describe rolebinding tabby-browser-hitl-controller -n browser-hitl
 ```
 
 ### Worker never reaches HEALTHY
+
 Check worker logs:
+
 ```bash
 kubectl logs -n browser-hitl <worker-pod> -c worker --tail=100
 ```
+
 Common causes: target domain not in egress allowlist, MFA required (expected — triggers HITL), wrong login credentials.
 
 ### JWKS fetch fails
+
 API can't reach IdP. Check DNS and outbound HTTPS from the pod:
+
 ```bash
 kubectl exec -n browser-hitl deploy/tabby-browser-hitl-api -- \
   curl -sI https://YOUR_IDP/.well-known/openid-configuration
 ```
+
 If private CA: set `NODE_EXTRA_CA_CERTS` in the API deployment.
 
 ---
 
 ## Post-Deployment Checklist
 
-- [ ] All pods `Running`
-- [ ] `GET /health/ready` returns all components `up`
-- [ ] Admin login works
-- [ ] IdP registered and JWKS reachable
-- [ ] Platform JWT validates via `/auth/token-exchange`
-- [ ] `networkPolicies.enabled: true`
-- [ ] `nats.auth.enabled: true`
-- [ ] `egressPolicyFailClosed: "true"`
-- [ ] `tenantEncryptionKey` is 64 hex chars
-- [ ] `backup.enabled: true`
-- [ ] `apiDocsEnabled: "false"`
-- [ ] TLS enabled on ingress
-- [ ] Values file not committed to git
+- All pods `Running`
+- `GET /health/ready` returns all components `up`
+- Admin login works
+- IdP registered and JWKS reachable
+- Platform JWT validates via `/auth/token-exchange`
+- `networkPolicies.enabled: true`
+- `nats.auth.enabled: true`
+- `egressPolicyFailClosed: "true"`
+- `tenantEncryptionKey` is 64 hex chars
+- `backup.enabled: true`
+- `apiDocsEnabled: "false"`
+- TLS enabled on ingress
+- Values file not committed to git
+
