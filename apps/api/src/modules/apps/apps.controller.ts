@@ -77,4 +77,14 @@ export class AppsController {
   async deactivate(@Param('id') id: string, @Req() req: any) {
     return this.appsService.deactivate(id, undefined, req.user.user_id);
   }
+
+  @Delete(':id/destroy')
+  @Roles('Admin')
+  @ApiOperation({ summary: 'Permanently delete application', description: 'Hard-deletes the application and ALL related data (profiles, sessions, interventions, artifacts, auth requests) in a single transaction. Rolled back entirely if any step fails. Returns a summary of deleted rows.' })
+  @ApiParam({ name: 'id', description: 'Application UUID' })
+  @ApiResponse({ status: 200, description: 'App destroyed — returns { deleted: { table: count } }' })
+  @ApiResponse({ status: 404, description: 'App not found' })
+  async destroy(@Param('id') id: string, @Req() req: any) {
+    return this.appsService.destroy(id, req.user.user_id);
+  }
 }

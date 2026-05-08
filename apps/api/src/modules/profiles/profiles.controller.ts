@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Get, Body, Param, Query, Req, UseGuards, HttpCode, ForbiddenException,
+  Controller, Post, Get, Delete, Body, Param, Query, Req, UseGuards, HttpCode, ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiProperty } from '@nestjs/swagger';
 import {
@@ -125,5 +125,17 @@ export class ProfilesController {
   async rollback(@Param('id') id: string, @Req() req: any) {
     const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
     return this.profilesService.rollback(id, tenantId, req.user.user_id);
+  }
+
+  @Delete(':id')
+  @Roles('Admin')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Delete service profile', description: 'Permanently deletes a profile version. Child versions that reference this profile as parent are detached (parent_version_id set to null). Admin role required.' })
+  @ApiParam({ name: 'id', description: 'Profile UUID' })
+  @ApiResponse({ status: 204, description: 'Profile deleted' })
+  @ApiResponse({ status: 404, description: 'Profile not found' })
+  async remove(@Param('id') id: string, @Req() req: any) {
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    await this.profilesService.remove(id, tenantId, req.user.user_id);
   }
 }
