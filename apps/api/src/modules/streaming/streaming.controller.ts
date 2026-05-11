@@ -511,20 +511,17 @@ export class StreamingController {
   async verifyEmail(
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Body() body: { email?: string },
-    @Res() res: Response,
-  ): Promise<void> {
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ status: string }> {
     const email = (body?.email || '').trim().toLowerCase();
     if (!email) throw new BadRequestException('email is required');
 
-    // Unified error message to prevent session/email enumeration.
     const denyMsg = 'Access denied';
 
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new ForbiddenException(denyMsg);
     if (!session.owner_user_id) throw new ForbiddenException(denyMsg);
 
-    // Only match by owner_user_id directly — no tenant-wide fallback.
-    // This prevents any tenant member from accessing another user's session.
     const ownerUser = await this.userRepo.findOne({ where: { id: session.owner_user_id } });
     if (!ownerUser || ownerUser.email?.toLowerCase() !== email) {
       throw new ForbiddenException(denyMsg);
@@ -551,7 +548,7 @@ export class StreamingController {
       path: '/',
     });
 
-    res.status(200).json({ status: 'ok' });
+    return { status: 'ok' };
   }
 
   @Get(':sessionId')
