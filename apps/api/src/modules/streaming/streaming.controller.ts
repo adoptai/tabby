@@ -496,6 +496,15 @@ export class StreamingController {
    * on the IdP) before this endpoint can succeed. Federated users whose owner_user_id is an
    * external sub but who have no local user row must authenticate via OAuth instead.
    */
+  @Get(':sessionId/clear-vnc-auth')
+  async clearVncAuth(
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    res.clearCookie('tabby_vnc', { path: '/' });
+    res.redirect(302, `/vnc/${sessionId}`);
+  }
+
   @Post(':sessionId/verify-email')
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(200)
@@ -591,7 +600,7 @@ export class StreamingController {
           cookieValid = true;
         } else if (vncPayload.type === 'vnc_access') {
           // Valid JWT but wrong user or wrong tenant — show 403 immediately.
-          const errorPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied</title><link rel="icon" href="data:,"><style>html,body{margin:0;padding:0;height:100%;background:#0b1020;color:#f8fafc;font-family:ui-sans-serif,system-ui,sans-serif;display:flex;align-items:center;justify-content:center}.card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:32px;max-width:400px;width:100%;text-align:center}h2{margin:0 0 8px;font-size:20px;color:#f87171}p{margin:0 0 20px;color:#94a3b8;font-size:14px;line-height:1.5}a{display:inline-block;margin-top:4px;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600}a:hover{background:#2563eb}</style></head><body><div class="card"><h2>Access Denied</h2><p>You are logged in as a different user than the owner of this session.</p><a href="#" onclick="document.cookie='tabby_vnc=;Max-Age=0;Path=/';window.location.reload();return false;">Try with a different account</a></div></body></html>`;
+          const errorPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied</title><link rel="icon" href="data:,"><style>html,body{margin:0;padding:0;height:100%;background:#0b1020;color:#f8fafc;font-family:ui-sans-serif,system-ui,sans-serif;display:flex;align-items:center;justify-content:center}.card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:32px;max-width:400px;width:100%;text-align:center}h2{margin:0 0 8px;font-size:20px;color:#f87171}p{margin:0 0 16px;color:#94a3b8;font-size:14px;line-height:1.5}a{display:inline-block;margin-top:4px;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600}a:hover{background:#2563eb}.hint{margin-top:16px;color:#64748b;font-size:12px}</style></head><body><div class="card"><h2>Access Denied</h2><p>You are logged in as a different user than the owner of this session.</p><a href="/vnc/${sessionId}/clear-vnc-auth">Try with a different account</a><p class="hint">You may need to log out of the platform first before signing in with a different account.</p></div></body></html>`;
           res.setHeader('content-type', 'text/html; charset=utf-8');
           res.setHeader('cache-control', 'no-store');
           res.status(403).send(errorPage);
