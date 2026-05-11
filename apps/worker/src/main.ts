@@ -1,6 +1,7 @@
 import { initSentry } from '@browser-hitl/shared';
 initSentry('worker');
 
+import * as Sentry from '@sentry/node';
 import { chromium, Browser, BrowserContext, Page, LaunchOptions } from 'playwright';
 import { CHROMIUM_FLAGS, CDP_PORTS, PORTS } from '@browser-hitl/shared';
 import { HealthServer } from './health-server';
@@ -266,6 +267,7 @@ async function main() {
     screenshotFallback = new ScreenshotFallback(page);
   } catch (error) {
     console.error(`Worker error: ${error}`);
+    Sentry.captureException(error);
     await db.updateHealthResult(sessionId, classifyWorkerError(error));
   }
 }
@@ -285,7 +287,9 @@ function classifyWorkerError(error: unknown): 'AUTH_FAIL' | 'TRANSIENT_FAIL' {
   return 'TRANSIENT_FAIL';
 }
 
-main().catch(error => {
+main().catch(async (error) => {
   console.error(`Fatal error: ${error}`);
+  Sentry.captureException(error);
+  await Sentry.flush(2000);
   process.exit(1);
 });
