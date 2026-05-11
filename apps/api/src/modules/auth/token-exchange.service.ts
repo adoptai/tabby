@@ -139,7 +139,7 @@ export class TokenExchangeService {
     }
 
     // 6. Resolve tenant — dynamic from JWT claim or static from IdP registration
-    let resolvedTenantId: string = idp.tenant_id || '';
+    let resolvedTenantId = '';
     if (idp.tenant_id_claim) {
       const claimValue = String(verifiedPayload[idp.tenant_id_claim] || '');
       if (!claimValue) {

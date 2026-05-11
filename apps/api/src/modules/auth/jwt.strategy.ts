@@ -104,7 +104,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           resolvedTenantId = tenant.id;
         }
       } else {
-        resolvedTenantId = idp.tenant_id || '';
+        resolvedTenantId = '';
       }
 
       return {

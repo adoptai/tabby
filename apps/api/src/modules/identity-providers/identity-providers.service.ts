@@ -23,7 +23,8 @@ export class IdentityProvidersService {
       throw new ConflictException('An identity provider already exists. Only one IdP is supported. Update or delete the existing one first.');
     }
 
-    const toSave = { ...data, tenant_id: null };
+    const toSave = { ...data };
+    delete (toSave as any).tenant_id;
     if (data.client_secret_plaintext) {
       toSave.client_secret = this.oauthProvider.encryptSecret(data.client_secret_plaintext);
     }
