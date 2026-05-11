@@ -571,8 +571,20 @@ export class AuthController implements OnModuleDestroy {
 
     if (!userId) throw new UnauthorizedException('Could not extract user identity from userinfo');
 
-    // Resolve or auto-provision tenant
+    // Resolve tenant — from JWT claim, or from the target session if no claim is configured
     let resolvedTenantId = '';
+
+    // Derive tenant from the VNC session if no claim is configured
+    if (!resolvedTenantId) {
+      const sessionMatch = stored.postLoginRedirectUri.match(/\/vnc\/([0-9a-f-]{36})/i);
+      if (sessionMatch) {
+        const rows = await this.tenantRepo.query(
+          'SELECT tenant_id FROM sessions WHERE id = $1 LIMIT 1', [sessionMatch[1]],
+        );
+        if (rows?.[0]?.tenant_id) resolvedTenantId = rows[0].tenant_id;
+      }
+    }
+
     if (tenantIdClaimValue && idp.tenant_id_claim) {
       const tenant = await this.tenantRepo.findOne({ where: { id: tenantIdClaimValue } });
       if (!tenant) {
