@@ -138,8 +138,11 @@ export class TokenExchangeService {
       throw new UnauthorizedException('JWT missing user identifier claim');
     }
 
-    // 6. Resolve tenant — dynamic from JWT claim or static from IdP registration
+    // 6. Resolve tenant from JWT claim
     let resolvedTenantId = '';
+    if (!idp.tenant_id_claim) {
+      throw new UnauthorizedException('IdP has no tenant_id_claim configured — cannot resolve tenant from JWT');
+    }
     if (idp.tenant_id_claim) {
       const claimValue = String(verifiedPayload[idp.tenant_id_claim] || '');
       if (!claimValue) {
