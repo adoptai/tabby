@@ -720,6 +720,11 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
     <script>
       var SESSION_ID = ${JSON.stringify(sessionId)};
       var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
+      // Also check URL fragment for stream token (server never sees #fragment)
+      if (!STREAM_TOKEN) {
+        var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
+        STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
+      }
 
       document.getElementById('emailInput').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') verify();
