@@ -1,6 +1,7 @@
 import {
   Controller, Post, Get, Delete, Body, Param, HttpCode,
   UseGuards, Req, Res, ParseUUIDPipe, UnauthorizedException, Query, BadRequestException,
+  Logger, OnModuleDestroy,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
@@ -145,17 +146,23 @@ class TokenExchangeDto {
 // Controller
 // =====================================================================
 
-// OAuth state payload stored in Redis under oauth:state:{uuid} (5-min TTL)
+/** Module-level constant — avoids repeating the env-read inline everywhere. */
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
+
+// OAuth state payload stored in Redis under oauth:state:{hex} (5-min TTL)
 interface OAuthStatePayload {
   codeVerifier: string;
   idpId: string;
   postLoginRedirectUri: string;
+  /** Stream token stored here so it never travels through the IdP redirect URI (M-4). */
+  streamToken?: string;
 }
 
 @ApiTags('Authentication')
 @ApiBearerAuth()
 @Controller()
-export class AuthController {
+export class AuthController implements OnModuleDestroy {
+  private readonly logger = new Logger(AuthController.name);
   private readonly redis: Redis;
 
   constructor(
@@ -172,10 +179,16 @@ export class AuthController {
     @InjectRepository(UserEntity)
     private readonly userRepo: Repository<UserEntity>,
   ) {
+    // H-4: Redis client is instantiated directly (same pattern as StreamTokenService).
+    // onModuleDestroy closes it to prevent connection leaks on hot-reload / test teardown.
     this.redis = new Redis(requireEnv('REDIS_URL', { testDefault: 'redis://localhost:6379' }), {
       maxRetriesPerRequest: 3,
       lazyConnect: false,
     });
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.redis.quit();
   }
 
   // =================================================================
@@ -448,6 +461,7 @@ export class AuthController {
     @Param('idpId', ParseUUIDPipe) idpId: string,
     @Query('redirect_uri') redirectUri: string,
     @Query('post_login') postLogin: string,
+    @Query('stream_token') streamToken: string,
     @Res() res: any,
   ) {
     // Accept either redirect_uri (legacy admin-UI) or post_login (VNC gate)
@@ -457,17 +471,19 @@ export class AuthController {
     const idp = await this.idpRepo.findOne({ where: { id: idpId, enabled: true } });
     if (!idp || !idp.auth_url) throw new BadRequestException('IdP not found or not OAuth-configured');
 
-    const state = crypto.randomUUID();
+    // H-1: Use randomBytes(32) instead of randomUUID() for 256-bit entropy.
+    const state = crypto.randomBytes(32).toString('hex');
     const codeVerifier = this.oauthProvider.generateCodeVerifier();
     const codeChallenge = this.oauthProvider.computeCodeChallenge(codeVerifier);
 
-    // Store state in Redis with 5-min TTL (multi-replica safe)
-    const statePayload: OAuthStatePayload = { codeVerifier, idpId, postLoginRedirectUri };
+    // Store state in Redis with 5-min TTL (multi-replica safe).
+    // M-4: streamToken is stored in Redis state — NOT in the redirect URI — so it
+    // never appears in IdP server logs, browser Referer headers, or browser history.
+    const statePayload: OAuthStatePayload = { codeVerifier, idpId, postLoginRedirectUri, streamToken: streamToken || undefined };
     await this.redis.set(`oauth:state:${state}`, JSON.stringify(statePayload), 'EX', 300);
 
     // Always use the generic callback URL so one redirect URI covers all IdPs
-    const publicBaseUrl = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
-    const callbackUrl = `${publicBaseUrl}/auth/oauth/callback`;
+    const callbackUrl = `${PUBLIC_BASE_URL}/auth/oauth/callback`;
 
     const authUrl = this.oauthProvider.buildAuthorizationUrl(idp, callbackUrl, state, codeChallenge);
     return res.redirect(authUrl);
@@ -491,7 +507,9 @@ export class AuthController {
 
   /**
    * Legacy per-IdP callback kept for backward compatibility.
-   * Delegates to the same handler; idpId param is validated against Redis state.
+   * Delegates to the generic handler. When idpIdHint is provided it is validated
+   * against the idpId stored in Redis state — it does NOT gate state retrieval.
+   * New integrations should register {PUBLIC_BASE_URL}/auth/oauth/callback instead.
    */
   @ApiOperation({ summary: 'OAuth callback (legacy per-IdP route)', description: 'Backward-compatible route. Prefer /auth/oauth/callback for new integrations.' })
   @Get('auth/oauth/:idpId/callback')
@@ -513,10 +531,20 @@ export class AuthController {
     error: string,
     res: any,
   ) {
-    if (error) throw new UnauthorizedException(`OAuth error: ${error}`);
+    // H-3: Whitelist the OAuth error param to prevent open reflection of IdP-controlled text.
+    if (error) {
+      const ALLOWED_OAUTH_ERRORS = [
+        'access_denied', 'server_error', 'temporarily_unavailable',
+        'invalid_request', 'unauthorized_client', 'unsupported_response_type', 'invalid_scope',
+      ];
+      const safeError = ALLOWED_OAUTH_ERRORS.includes(error) ? error : 'unknown_error';
+      throw new UnauthorizedException(`OAuth error: ${safeError}`);
+    }
     if (!code || !state) throw new BadRequestException('Missing code or state');
 
-    // Retrieve and delete state atomically
+    // Retrieve and delete state atomically.
+    // Note: getdel requires Redis 6.2+. For older deployments, replace with
+    // a GET + DEL pipeline (non-atomic, but the PKCE verifier mitigates replay risk).
     const key = `oauth:state:${state}`;
     const raw = await this.redis.getdel(key);
     if (!raw) throw new UnauthorizedException('Invalid or expired OAuth state');
@@ -532,8 +560,7 @@ export class AuthController {
     if (!idp) throw new UnauthorizedException('IdP not found');
 
     // Use the generic callback URL that was passed when initiating the flow
-    const publicBaseUrl = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
-    const callbackUrl = `${publicBaseUrl}/auth/oauth/callback`;
+    const callbackUrl = `${PUBLIC_BASE_URL}/auth/oauth/callback`;
 
     // Exchange auth code for tokens
     const tokens = await this.oauthProvider.exchangeCode(idp, code, stored.codeVerifier, callbackUrl);
@@ -614,11 +641,18 @@ export class AuthController {
           existing.email = email;
           await this.userRepo.save(existing);
         }
-      } catch { /* duplicate key race — ignore */ }
+      } catch (err: any) {
+        // H-2: Only suppress Postgres duplicate-key races (code 23505).
+        // All other errors are logged so they don't silently leave users without a local row.
+        if (err?.code !== '23505') {
+          this.logger.warn(`Auto-provision user failed: ${err?.message}`);
+        }
+      }
     }
 
-    // Set HttpOnly VNC access cookie
-    const isHttps = (process.env.PUBLIC_BASE_URL || '').startsWith('https://') || process.env.NODE_ENV === 'production';
+    // Set HttpOnly VNC access cookie.
+    // Cookie domain is intentionally omitted: scopes to the exact API host.
+    const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
     res.cookie('tabby_vnc', vncToken, {
       httpOnly: true,
       secure: isHttps,
@@ -628,15 +662,21 @@ export class AuthController {
     });
 
     // Determine redirect destination
-    const postLoginRedirectUri = stored.postLoginRedirectUri;
-    const publicBase = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
+    let postLoginRedirectUri = stored.postLoginRedirectUri;
+
+    // M-4: If a stream token was stored in Redis state (VNC flow), reconstruct
+    // the final redirect with the token now — it was never in the OAuth redirect URI.
+    if (stored.streamToken) {
+      const sep = postLoginRedirectUri.includes('?') ? '&' : '?';
+      postLoginRedirectUri = `${postLoginRedirectUri}${sep}token=${encodeURIComponent(stored.streamToken)}`;
+    }
 
     // Only allow relative paths or same-origin URLs (prevent open redirect + JWT leak)
     const isRelative = postLoginRedirectUri.startsWith('/');
     if (!isRelative) {
       try {
         const parsed = new URL(postLoginRedirectUri);
-        const allowed = new URL(publicBase);
+        const allowed = new URL(PUBLIC_BASE_URL);
         if (parsed.origin !== allowed.origin) {
           throw new UnauthorizedException('post_login must be a relative path or same-origin URL');
         }
@@ -646,13 +686,17 @@ export class AuthController {
       }
     }
 
+    // M-2: Only suppress _token for known VNC paths. All other paths (relative or
+    // absolute same-origin) receive _token so the admin-UI can authenticate.
     const isVncRedirect = postLoginRedirectUri.startsWith('/vnc/') || postLoginRedirectUri.startsWith('/s/');
 
-    if (isVncRedirect || isRelative) {
-      return res.redirect(`${publicBase}${postLoginRedirectUri}`);
+    if (isVncRedirect) {
+      return res.redirect(`${PUBLIC_BASE_URL}${postLoginRedirectUri}`);
     }
 
-    // Absolute same-origin URL (admin-UI flow)
-    return res.redirect(`${postLoginRedirectUri}${postLoginRedirectUri.includes('?') ? '&' : '?'}_token=${encodeURIComponent(token)}`);
+    // Relative or absolute same-origin non-VNC path — always include _token.
+    const separator = postLoginRedirectUri.includes('?') ? '&' : '?';
+    const dest = isRelative ? `${PUBLIC_BASE_URL}${postLoginRedirectUri}` : postLoginRedirectUri;
+    return res.redirect(`${dest}${separator}_token=${encodeURIComponent(token)}`);
   }
 }

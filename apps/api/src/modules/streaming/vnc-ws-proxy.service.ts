@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { SessionEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
+import { parseCookie } from '../../common/utils/cookie';
 
 @Injectable()
 export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
@@ -95,24 +96,33 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Defense-in-depth: if a tabby_vnc cookie is present, validate it.
-      // Absent cookie is allowed (stream token alone is sufficient for backward compat).
+      // C-2: The tabby_vnc cookie is MANDATORY when the session has an owner_user_id.
+      // Stream token alone is not sufficient — it can appear in logs, Referer headers,
+      // or browser history. The cookie is HttpOnly and set only after OAuth/email-gate.
+      // Sessions without owner_user_id are unaffected by this block.
       if (session.owner_user_id) {
         const cookieHeader = Array.isArray(request.headers.cookie)
           ? request.headers.cookie.join('; ')
           : request.headers.cookie || '';
-        const vncCookie = this.parseVncCookie(cookieHeader);
-        if (vncCookie !== null) {
-          try {
-            const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string }>(vncCookie);
-            if (vncPayload.type !== 'vnc_access' || vncPayload.owner_user_id !== session.owner_user_id) {
-              this.rejectUpgrade(clientSocket, 401, 'VNC cookie owner mismatch');
-              return;
-            }
-          } catch {
-            this.rejectUpgrade(clientSocket, 401, 'Invalid VNC access cookie');
+        const vncCookie = parseCookie(cookieHeader, 'tabby_vnc');
+        if (!vncCookie) {
+          this.rejectUpgrade(clientSocket, 401, 'VNC access cookie required');
+          return;
+        }
+        try {
+          const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string; tenant_id: string }>(vncCookie);
+          // M-5: Validate both owner_user_id AND tenant_id to prevent cross-tenant access.
+          if (
+            vncPayload.type !== 'vnc_access'
+            || vncPayload.owner_user_id !== session.owner_user_id
+            || vncPayload.tenant_id !== session.tenant_id
+          ) {
+            this.rejectUpgrade(clientSocket, 403, 'VNC cookie owner mismatch');
             return;
           }
+        } catch {
+          this.rejectUpgrade(clientSocket, 401, 'Invalid VNC access cookie');
+          return;
         }
       }
 
@@ -245,21 +255,6 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
     socket.once('close', () => {
       this.trackedSockets.delete(socket);
     });
-  }
-
-  private parseVncCookie(cookieHeader: string): string | null {
-    if (!cookieHeader) return null;
-    for (const part of cookieHeader.split(';')) {
-      const [k, ...v] = part.split('=');
-      if (k && k.trim() === 'tabby_vnc') {
-        try {
-          return decodeURIComponent(v.join('=').trim());
-        } catch {
-          return null;
-        }
-      }
-    }
-    return null;
   }
 
   private resolveStreamToken(url: URL, request: IncomingMessage): string | null {
