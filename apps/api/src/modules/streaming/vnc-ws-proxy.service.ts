@@ -110,12 +110,10 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
           return;
         }
         try {
-          const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string; tenant_id: string }>(vncCookie);
-          // M-5: Validate both owner_user_id AND tenant_id to prevent cross-tenant access.
+          const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string }>(vncCookie);
           if (
             vncPayload.type !== 'vnc_access'
             || vncPayload.owner_user_id !== session.owner_user_id
-            || vncPayload.tenant_id !== session.tenant_id
           ) {
             this.rejectUpgrade(clientSocket, 403, 'VNC cookie owner mismatch');
             return;

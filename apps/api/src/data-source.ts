@@ -19,6 +19,7 @@ import { AddAppOwnerUserId1708300000014 } from './migrations/1708300000014-AddAp
 import { MultiTenantCloud1708300000015 } from './migrations/1708300000015-MultiTenantCloud';
 import { GenericOAuth1708300000016 } from './migrations/1708300000016-GenericOAuth';
 import { NullablePasswordHash1708300000017 } from './migrations/1708300000017-NullablePasswordHash';
+import { GlobalIdp1708300000018 } from './migrations/1708300000018-GlobalIdp';
 
 export const dataSourceOptions: DataSourceOptions = {
   type: 'postgres',
@@ -26,7 +27,7 @@ export const dataSourceOptions: DataSourceOptions = {
     testDefault: 'postgresql://postgres:postgres@localhost:5432/browser_hitl',
   }),
   entities: Object.values(entities),
-  migrations: [InitialSchema1708300000000, WorkerRLS1708300000001, AgentClients1708300000002, AuthRequests1708300000003, LoginQueue1708300000004, AccountLockout1708300000005, ArtifactCascadeDelete1708300000006, ServiceProfiles1708300000007, ProfileAppLink1708300000008, GenericHumanInput1708300000009, AddIdentityProviders1708300000010, AddOwnerUserIds1708300000011, AddAppTemplates1708300000012, AddIdleShutdown1708300000013, AddAppOwnerUserId1708300000014, MultiTenantCloud1708300000015, GenericOAuth1708300000016, NullablePasswordHash1708300000017],
+  migrations: [InitialSchema1708300000000, WorkerRLS1708300000001, AgentClients1708300000002, AuthRequests1708300000003, LoginQueue1708300000004, AccountLockout1708300000005, ArtifactCascadeDelete1708300000006, ServiceProfiles1708300000007, ProfileAppLink1708300000008, GenericHumanInput1708300000009, AddIdentityProviders1708300000010, AddOwnerUserIds1708300000011, AddAppTemplates1708300000012, AddIdleShutdown1708300000013, AddAppOwnerUserId1708300000014, MultiTenantCloud1708300000015, GenericOAuth1708300000016, NullablePasswordHash1708300000017, GlobalIdp1708300000018],
   migrationsRun: true, // Run migrations on startup per spec section 15.13
   synchronize: false,   // Never auto-sync; use migrations only
   logging: process.env.NODE_ENV === 'development' ? ['error', 'warn', 'migration'] : ['error'],

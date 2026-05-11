@@ -72,7 +72,6 @@ export class ShortLinkController {
             vncPayload.type === 'vnc_access'
             && session
             && vncPayload.owner_user_id === session.owner_user_id
-            && vncPayload.tenant_id === session.tenant_id
           ) {
             res.redirect(302, url);
             return;
@@ -86,7 +85,7 @@ export class ShortLinkController {
       // No fallback to the bootstrap-admin tenant — each tenant must configure its own IdP.
       if (session) {
         const idp = await this.idpRepo.findOne({
-          where: { tenant_id: session.tenant_id, enabled: true, auth_url: Not(IsNull()) },
+          where: { enabled: true, auth_url: Not(IsNull()) },
         });
         if (idp) {
           const postLogin = `/s/${shortId}`;
@@ -632,7 +631,7 @@ export class StreamingController {
     session: SessionEntity,
   ): Promise<void> {
     let idp = await this.idpRepo.findOne({
-      where: { tenant_id: session.tenant_id, enabled: true, auth_url: Not(IsNull()) },
+      where: { enabled: true, auth_url: Not(IsNull()) },
     });
     // No fallback to the bootstrap-admin tenant — each tenant must have its own
     // IdP configured. Without one the email gate is offered instead.

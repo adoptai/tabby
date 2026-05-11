@@ -9,12 +9,12 @@ export class IdentityProviderEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar' })
-  tenant_id: string;
+  @Column({ type: 'varchar', nullable: true })
+  tenant_id: string | null;
 
-  @ManyToOne(() => TenantEntity)
+  @ManyToOne(() => TenantEntity, { nullable: true })
   @JoinColumn({ name: 'tenant_id' })
-  tenant: TenantEntity;
+  tenant: TenantEntity | null;
 
   @Column({ type: 'varchar' })
   name: string;

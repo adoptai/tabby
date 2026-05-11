@@ -572,7 +572,7 @@ export class AuthController implements OnModuleDestroy {
     if (!userId) throw new UnauthorizedException('Could not extract user identity from userinfo');
 
     // Resolve or auto-provision tenant
-    let resolvedTenantId: string = idp.tenant_id;
+    let resolvedTenantId: string = idp.tenant_id || '';
     if (tenantIdClaimValue && idp.tenant_id_claim) {
       const tenant = await this.tenantRepo.findOne({ where: { id: tenantIdClaimValue } });
       if (!tenant) {
