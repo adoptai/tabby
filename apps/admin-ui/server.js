@@ -1,7 +1,25 @@
+// New Relic Node agent — must be required before anything else.
+if (process.env.NEWRELIC_ENABLED === 'true' && process.env.NEW_RELIC_LICENSE_KEY) {
+  // eslint-disable-next-line global-require
+  require('newrelic');
+}
+
 const http = require('http');
 
 const port = Number(process.env.PORT || 8000);
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+// New Relic Browser SDK config — env-driven, no hardcoded values.
+// The bootstrap script in lib/newrelic-browser.js is loaded via a
+// dynamic import that is gated on `NEXT_PUBLIC_NEWRELIC_ENABLED === 'true'`.
+const newRelicBrowserEnabled =
+  process.env.NEXT_PUBLIC_NEWRELIC_ENABLED === 'true';
+const newRelicBrowserConfig = {
+  enabled: newRelicBrowserEnabled,
+  licenseKey: process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_LICENSE_KEY || '',
+  applicationID: process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_APP_ID || '',
+  accountID: process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_ACCOUNT_ID || '',
+};
 
 const html = `<!doctype html>
 <html lang="en">
@@ -9,6 +27,21 @@ const html = `<!doctype html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Browser HITL Admin UI</title>
+    <script>
+      // New Relic Browser config — populated server-side from env. The
+      // bootstrap module is loaded via dynamic import gated on
+      // NEXT_PUBLIC_NEWRELIC_ENABLED so disabled-mode is zero-cost.
+      window.__NEWRELIC_BROWSER_CONFIG__ = ${JSON.stringify({
+        licenseKey: newRelicBrowserConfig.licenseKey,
+        applicationID: newRelicBrowserConfig.applicationID,
+        accountID: newRelicBrowserConfig.accountID,
+      })};
+      ${
+        newRelicBrowserEnabled
+          ? "if (typeof window !== 'undefined') { import('/_nr/newrelic-browser.js').catch(function(){}); }"
+          : '// New Relic Browser disabled (NEXT_PUBLIC_NEWRELIC_ENABLED!=="true")'
+      }
+    </script>
     <style>
       :root {
         color-scheme: light;
@@ -510,10 +543,34 @@ const html = `<!doctype html>
   </body>
 </html>`;
 
+const path = require('path');
+const fs = require('fs');
+const nrBrowserPath = path.join(__dirname, 'lib', 'newrelic-browser.js');
+let nrBrowserSource = '';
+try {
+  nrBrowserSource = fs.readFileSync(nrBrowserPath, 'utf8');
+} catch (_e) {
+  nrBrowserSource = '';
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
+  // Serve the gated Browser SDK loader module. Only fetched at runtime when
+  // `NEXT_PUBLIC_NEWRELIC_ENABLED === 'true'` because the dynamic import in
+  // the HTML head is itself gated.
+  if (req.url === '/_nr/newrelic-browser.js') {
+    if (!newRelicBrowserEnabled || !nrBrowserSource) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'newrelic_disabled' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' });
+    res.end(nrBrowserSource);
     return;
   }
 
