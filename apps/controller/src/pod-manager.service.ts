@@ -396,6 +396,10 @@ export class PodManagerService {
       { name: 'CHART_VERSION', value: process.env.CHART_VERSION || '' },
       { name: 'EXTRACT_TAB_TIMEOUT_MS', value: process.env.EXTRACT_TAB_TIMEOUT_MS || '' },
       { name: 'EXTRACT_TAB_POLL_INTERVAL_MS', value: process.env.EXTRACT_TAB_POLL_INTERVAL_MS || '' },
+      { name: 'NEWRELIC_ENABLED', value: process.env.WORKER_NEWRELIC_ENABLED || process.env.NEWRELIC_ENABLED || 'false' },
+      { name: 'NEW_RELIC_LICENSE_KEY', value: process.env.NEW_RELIC_LICENSE_KEY || '' },
+      { name: 'NEW_RELIC_APP_NAME', value: process.env.WORKER_NEW_RELIC_APP_NAME || 'Adopt Tabby Worker' },
+      { name: 'NEW_RELIC_ENVIRONMENT', value: process.env.NEW_RELIC_ENVIRONMENT || 'production' },
     ];
 
     // VNC mode needs DISPLAY for Xvfb; CDP mode does not
