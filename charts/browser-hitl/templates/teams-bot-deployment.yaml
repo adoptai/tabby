@@ -37,7 +37,18 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "browser-hitl.configmapName" . }}
+            # New Relic license key — optional. See api-deployment.yaml.
+            - secretRef:
+                name: newrelic-license
+                optional: true
           env:
+            # New Relic APM toggle (see apps/teams-bot/newrelic.js).
+            - name: NEWRELIC_ENABLED
+              value: {{ .Values.teamsBot.newrelic.enabled | default false | quote }}
+            - name: NEW_RELIC_APP_NAME
+              value: "Adopt Tabby Teams Bot"
+            - name: NEW_RELIC_ENVIRONMENT
+              value: {{ .Values.teamsBot.newrelic.environment | default "production" | quote }}
             - name: MICROSOFT_APP_ID
               valueFrom:
                 secretKeyRef:
