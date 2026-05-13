@@ -18,8 +18,8 @@ export class UserEntity {
   @Column({ type: 'varchar' })
   email: string;
 
-  @Column({ type: 'varchar' })
-  password_hash: string;
+  @Column({ type: 'varchar', nullable: true })
+  password_hash: string | null;
 
   @Column({ type: 'enum', enum: ['Admin', 'Operator', 'Viewer'] })
   role: string;

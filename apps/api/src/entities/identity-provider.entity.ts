@@ -1,20 +1,12 @@
 import {
-  Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn,
+  Entity, PrimaryGeneratedColumn, Column,
   CreateDateColumn, UpdateDateColumn,
 } from 'typeorm';
-import { TenantEntity } from './tenant.entity';
 
 @Entity('identity_providers')
 export class IdentityProviderEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
-
-  @Column({ type: 'varchar' })
-  tenant_id: string;
-
-  @ManyToOne(() => TenantEntity)
-  @JoinColumn({ name: 'tenant_id' })
-  tenant: TenantEntity;
 
   @Column({ type: 'varchar' })
   name: string;

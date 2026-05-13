@@ -2,11 +2,13 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   InternalServerErrorException,
   NotFoundException,
   Param,
+  ParseUUIDPipe,
   Post,
   Query,
   Req,
@@ -16,18 +18,36 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SessionEntity, InterventionEntity } from '../../entities';
+import { JwtService } from '@nestjs/jwt';
+import { SessionEntity, InterventionEntity, IdentityProviderEntity, UserEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
+import { randomUUID, randomBytes } from 'crypto';
+import { Not, IsNull } from 'typeorm';
+import { Throttle } from '@nestjs/throttler';
+import { parseCookie } from '../../common/utils/cookie';
+
+/** Module-level constant — avoids repeating the env-read inline everywhere. */
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
 
 @Controller('s')
 export class ShortLinkController {
-  constructor(private readonly streamTokenService: StreamTokenService) {}
+  constructor(
+    private readonly streamTokenService: StreamTokenService,
+    private readonly jwtService: JwtService,
+    @InjectRepository(SessionEntity)
+    private readonly sessionRepo: Repository<SessionEntity>,
+    @InjectRepository(IdentityProviderEntity)
+    private readonly idpRepo: Repository<IdentityProviderEntity>,
+    @InjectRepository(UserEntity)
+    private readonly userRepo: Repository<UserEntity>,
+  ) {}
 
   @Get(':shortId')
   async redirect(
     @Param('shortId') shortId: string,
+    @Req() req: Request,
     @Res() res: any,
   ): Promise<void> {
     const url = await this.streamTokenService.resolveShortLink(shortId);
@@ -35,6 +55,47 @@ export class ShortLinkController {
       res.status(404).send('Link expired or not found');
       return;
     }
+
+    // Extract sessionId from the resolved URL (pattern: /vnc/{sessionId}?token=...)
+    const sessionIdMatch = url.match(/\/vnc\/([0-9a-f-]{36})/i);
+    if (sessionIdMatch) {
+      const sessionId = sessionIdMatch[1];
+      const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
+
+      const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+
+      if (cookieToken) {
+        try {
+          const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string; tenant_id: string }>(cookieToken);
+          // M-5: Validate both owner_user_id AND tenant_id.
+          if (
+            vncPayload.type === 'vnc_access'
+            && session
+            && vncPayload.owner_user_id === session.owner_user_id
+          ) {
+            res.redirect(302, url);
+            return;
+          }
+        } catch {
+          // Invalid cookie — fall through to OAuth redirect
+        }
+      }
+
+      // No valid cookie: redirect to OAuth login with post_login set to this short-link.
+      // No fallback to the bootstrap-admin tenant — each tenant must configure its own IdP.
+      if (session) {
+        const idp = await this.idpRepo.findOne({
+          where: { enabled: true, auth_url: Not(IsNull()) },
+        });
+        if (idp) {
+          const postLogin = `/s/${shortId}`;
+          res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?post_login=${encodeURIComponent(postLogin)}`);
+          return;
+        }
+      }
+    }
+
+    // No session context or no OAuth configured: redirect directly
     res.redirect(302, url);
   }
 }
@@ -281,10 +342,15 @@ export class StreamingController {
 
   constructor(
     private readonly streamTokenService: StreamTokenService,
+    private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
     @InjectRepository(InterventionEntity)
     private readonly interventionRepo: Repository<InterventionEntity>,
+    @InjectRepository(IdentityProviderEntity)
+    private readonly idpRepo: Repository<IdentityProviderEntity>,
+    @InjectRepository(UserEntity)
+    private readonly userRepo: Repository<UserEntity>,
   ) {}
 
   @Get('assets/*')
@@ -425,9 +491,70 @@ export class StreamingController {
     return { status: 'delivered' };
   }
 
+  /**
+   * Email gate: the session owner must have been auto-provisioned (allow_auto_provision=true
+   * on the IdP) before this endpoint can succeed. Federated users whose owner_user_id is an
+   * external sub but who have no local user row must authenticate via OAuth instead.
+   */
+  @Get(':sessionId/clear-vnc-auth')
+  async clearVncAuth(
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    res.clearCookie('tabby_vnc', { path: '/' });
+    res.redirect(302, `/vnc/${sessionId}`);
+  }
+
+  @Post(':sessionId/verify-email')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @HttpCode(200)
+  async verifyEmail(
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Body() body: { email?: string },
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ status: string }> {
+    const email = (body?.email || '').trim().toLowerCase();
+    if (!email) throw new BadRequestException('email is required');
+
+    const denyMsg = 'Access denied';
+
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) throw new ForbiddenException(denyMsg);
+    if (!session.owner_user_id) throw new ForbiddenException(denyMsg);
+
+    const ownerUser = await this.userRepo.findOne({ where: { id: session.owner_user_id } });
+    if (!ownerUser || ownerUser.email?.toLowerCase() !== email) {
+      throw new ForbiddenException(denyMsg);
+    }
+
+    const vncPayload = {
+      sub: ownerUser.id,
+      tenant_id: session.tenant_id,
+      type: 'vnc_access',
+      owner_user_id: session.owner_user_id,
+      jti: randomUUID(),
+    };
+    const vncToken = this.jwtService.sign(vncPayload, { expiresIn: 3600 });
+
+    // Cookie domain is intentionally omitted: scopes to the exact API host.
+    // In the two-host topology (tabby-api.* + tabby-admin.*) this is correct —
+    // the VNC viewer is served from the API host, so the cookie is only sent there.
+    const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
+    res.cookie('tabby_vnc', vncToken, {
+      httpOnly: true,
+      secure: isHttps,
+      sameSite: 'lax',
+      maxAge: 3600 * 1000,
+      path: '/',
+    });
+
+    return { status: 'ok' };
+  }
+
   @Get(':sessionId')
   async openStream(
-    @Param('sessionId') sessionId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Req() req: Request,
     @Res() res: Response,
     @Query('token') token?: string,
   ): Promise<void> {
@@ -449,6 +576,43 @@ export class StreamingController {
       throw new BadRequestException('Cannot open stream for TERMINATED session');
     }
 
+    // ── Auth gate ──────────────────────────────────────────────────────────
+    if (session.owner_user_id) {
+      const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
+
+      if (!cookieToken) {
+        // No cookie — go through OAuth / email gate.
+        return this.redirectToAuth(res, sessionId, token, session);
+      }
+
+      let cookieValid = false;
+      try {
+        const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string; tenant_id: string }>(cookieToken);
+        // Cookie must match both owner_user_id AND tenant_id to prevent cross-tenant access.
+        if (
+          vncPayload.type === 'vnc_access'
+          && vncPayload.owner_user_id === session.owner_user_id
+          && vncPayload.tenant_id === session.tenant_id
+        ) {
+          cookieValid = true;
+        } else if (vncPayload.type === 'vnc_access') {
+          // Valid JWT but wrong user or wrong tenant — show 403 immediately.
+          const errorPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied</title><link rel="icon" href="data:,"><style>html,body{margin:0;padding:0;height:100%;background:#0b1020;color:#f8fafc;font-family:ui-sans-serif,system-ui,sans-serif;display:flex;align-items:center;justify-content:center}.card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:32px;max-width:400px;width:100%;text-align:center}h2{margin:0 0 8px;font-size:20px;color:#f87171}p{margin:0 0 16px;color:#94a3b8;font-size:14px;line-height:1.5}a{display:inline-block;margin-top:4px;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600}a:hover{background:#2563eb}.hint{margin-top:16px;color:#64748b;font-size:12px}</style></head><body><div class="card"><h2>Access Denied</h2><p>You are logged in as a different user than the owner of this session.</p><a href="/vnc/${sessionId}/clear-vnc-auth">Try with a different account</a><p class="hint">You may need to log out of the platform first before signing in with a different account.</p></div></body></html>`;
+          res.setHeader('content-type', 'text/html; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.status(403).send(errorPage);
+          return;
+        }
+      } catch {
+        // Invalid/expired cookie — redirect to OAuth/email gate.
+      }
+
+      if (!cookieValid) {
+        return this.redirectToAuth(res, sessionId, token, session);
+      }
+    }
+    // ── End auth gate ──────────────────────────────────────────────────────
+
     const page = this.renderViewerPage(sessionId, token);
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
@@ -457,10 +621,150 @@ export class StreamingController {
     res.status(200).send(page);
   }
 
+  /**
+   * Redirect to OAuth login (or email gate fallback) when a valid tabby_vnc
+   * cookie is absent.  Extracted from openStream to keep that method readable.
+   *
+   * M-4: The stream token is NOT included in the post_login URL that travels
+   * through the IdP.  Instead it is stored in the OAuth Redis state alongside
+   * the PKCE verifier and recovered in handleOauthCallback, so it never appears
+   * in IdP server logs or browser Referer headers.
+   */
+  private async redirectToAuth(
+    res: Response,
+    sessionId: string,
+    token: string | undefined,
+    session: SessionEntity,
+  ): Promise<void> {
+    let idp = await this.idpRepo.findOne({
+      where: { enabled: true, auth_url: Not(IsNull()) },
+    });
+    // No fallback to the bootstrap-admin tenant — each tenant must have its own
+    // IdP configured. Without one the email gate is offered instead.
+
+    if (idp) {
+      if (token) {
+        // Token in query param — redirect directly to OAuth.
+        // The stream token is passed as stream_token and stored in Redis state
+        // so it does NOT appear in the IdP redirect URI (M-4).
+        const params = new URLSearchParams({
+          post_login: `/vnc/${sessionId}`,
+          stream_token: token,
+        });
+        res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
+        return;
+      }
+      // No query token — serve bridge page to extract #fragment token client-side,
+      // then redirect to OAuth. The bridge page passes the token via stream_token param.
+      const oauthLoginUrl = `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login`;
+      const nonce = randomBytes(16).toString('base64');
+      res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.setHeader('cache-control', 'no-store');
+      const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
+var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
+var t=new URLSearchParams(h).get('token')||'';
+var p=new URLSearchParams({post_login:'/vnc/'+${JSON.stringify(sessionId)}});
+if(t)p.set('stream_token',t);
+window.location.href='${oauthLoginUrl}?'+p.toString();
+</script></body></html>`;
+      res.status(200).send(bridge);
+      return;
+    }
+
+    // No OAuth configured: render email gate fallback
+    const emailGatePage = this.renderEmailGatePage(sessionId, token);
+    const nonce = randomBytes(16).toString('base64');
+    res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('pragma', 'no-cache');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.status(200).send(emailGatePage.replace('<script>', `<script nonce="${nonce}">`));
+  }
+
+  private renderEmailGatePage(sessionId: string, token?: string): string {
+    // sessionId is guaranteed to be a UUID by ParseUUIDPipe on the caller.
+    // JSON.stringify is used for all values injected into script context to
+    // prevent XSS even if input validation is bypassed.
+    return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verify Access</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
+      .card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 32px; max-width: 380px; width: 100%; }
+      h2 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0 0 20px; color: #94a3b8; font-size: 14px; }
+      input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 15px; outline: none; }
+      input[type="email"]:focus { border-color: #3b82f6; }
+      button { margin-top: 14px; width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      #msg { margin-top: 10px; font-size: 13px; color: #f87171; min-height: 18px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Verify your identity</h2>
+      <p>Enter the email address associated with this session to view the browser stream.</p>
+      <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
+      <button id="submitBtn" onclick="verify()">Continue</button>
+      <div id="msg"></div>
+    </div>
+    <script>
+      var SESSION_ID = ${JSON.stringify(sessionId)};
+      var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
+      // Also check URL fragment for stream token (server never sees #fragment)
+      if (!STREAM_TOKEN) {
+        var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
+        STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
+      }
+
+      document.getElementById('emailInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') verify();
+      });
+
+      function verify() {
+        var email = document.getElementById('emailInput').value.trim();
+        if (!email) return;
+        var btn = document.getElementById('submitBtn');
+        var msg = document.getElementById('msg');
+        btn.disabled = true;
+        msg.textContent = '';
+        fetch('/vnc/' + SESSION_ID + '/verify-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email }),
+          credentials: 'same-origin',
+        })
+          .then(function(r) {
+            if (r.ok) {
+              var dest = '/vnc/' + SESSION_ID;
+              if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
+              window.location.href = dest;
+            } else {
+              r.json().catch(function() { return {}; }).then(function(d) {
+                msg.textContent = d.message || 'Access denied. Please check your email.';
+              });
+              btn.disabled = false;
+            }
+          })
+          .catch(function() {
+            msg.textContent = 'Network error. Please try again.';
+            btn.disabled = false;
+          });
+      }
+    </script>
+  </body>
+</html>`;
+  }
+
   private renderViewerPage(sessionId: string, token?: string): string {
-    // Embed sessionId and stream token in DOM data-attributes so the
-    // client-side script can read them without conflicting with the TS
-    // template literal interpolations used elsewhere in this method.
+    // sessionId is guaranteed UUID by ParseUUIDPipe. JSON.stringify is used
+    // for all values injected into data-attributes and script context.
     const safeSessionId = sessionId.replace(/"/g, '');
     const safeToken = (token ?? '').replace(/"/g, '');
     return `<!doctype html>

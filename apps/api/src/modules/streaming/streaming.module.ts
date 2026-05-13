@@ -6,14 +6,20 @@ import { VncStreamProvider } from './vnc-stream.provider';
 import { CdpStreamProvider } from './cdp-stream.provider';
 import { CdpWsProxyService } from './cdp-ws-proxy.service';
 import { StreamProviderFactory } from './stream-provider.factory';
-import { SessionEntity, ApplicationEntity, InterventionEntity } from '../../entities';
+import {
+  SessionEntity, ApplicationEntity, InterventionEntity,
+  IdentityProviderEntity, UserEntity,
+} from '../../entities';
 import { StreamingController, CdpStreamingController, ShortLinkController } from './streaming.controller';
 import { VncWsProxyService } from './vnc-ws-proxy.service';
 import { resolveJwtSigningKey } from '../auth/jwt-config';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([SessionEntity, ApplicationEntity, InterventionEntity]),
+    TypeOrmModule.forFeature([
+      SessionEntity, ApplicationEntity, InterventionEntity,
+      IdentityProviderEntity, UserEntity,
+    ]),
     JwtModule.register({
       secret: resolveJwtSigningKey(),
       signOptions: { expiresIn: '10m' },
