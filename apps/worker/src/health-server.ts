@@ -1,4 +1,5 @@
 import express from 'express';
+import helmet from 'helmet';
 import { Server } from 'http';
 import { testSentry } from '@browser-hitl/shared';
 
@@ -16,6 +17,7 @@ export class HealthServer {
 
   start(port: number): void {
     const app = express();
+    app.use(helmet());
 
     app.get('/health', (_req, res) => {
       if (this.healthy) {
