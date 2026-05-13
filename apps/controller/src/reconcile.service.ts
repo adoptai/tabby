@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import * as Sentry from '@sentry/node';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThan, Repository } from 'typeorm';
 import { SessionState, StreamingMode } from '@browser-hitl/shared';
@@ -77,6 +78,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       await this.doReconcile();
     } catch (error) {
       this.logger.error(`Reconcile error: ${error}`);
+      Sentry.captureException(error);
     } finally {
       this.reconciling = false;
     }
