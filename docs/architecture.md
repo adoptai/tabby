@@ -116,7 +116,7 @@ sequenceDiagram
     participant K8s as Kubernetes API
     participant Worker as Worker Pod
 
-    Platform->>API: POST /agent/credentials\n{appId, tenantId}
+    Platform->>API: POST /credentials/request\n{appId, tenantId}
     API->>PG: Check existing HEALTHY session
     alt No healthy session
         API->>PG: Create session record\nstate=STARTING
