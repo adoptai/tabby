@@ -75,6 +75,12 @@ api:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # -- New Relic APM toggle. When enabled, conditional require('newrelic') in
+  # apps/api/src/main.ts loads the agent. License key comes from the
+  # `newrelic-license` Secret mounted via envFrom.
+  newrelic:
+    enabled: false
+    environment: "production"
 
 # =============================================================================
 # Session Controller (NestJS standalone) - Port 8090
@@ -99,6 +105,10 @@ controller:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # -- New Relic APM toggle for the controller process.
+  newrelic:
+    enabled: false
+    environment: "production"
 
 # =============================================================================
 # Browser Worker (Dynamic pods created by controller)
@@ -125,6 +135,12 @@ worker:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # -- New Relic APM toggle propagated from the controller into each
+  # dynamically created worker Pod (see pod-manager.service.ts). The worker
+  # entry file gates `require('newrelic')` on these env values.
+  newrelic:
+    enabled: false
+    environment: "production"
 
 # =============================================================================
 # Slack Bot - Per spec section 15.7: request 0.25 vCPU, 256 MB RAM
@@ -147,6 +163,10 @@ slackBot:
   slackSigningSecret: ""
   slackAppToken: ""
   slackDefaultChannel: ""
+  # -- New Relic APM toggle for the Slack bot.
+  newrelic:
+    enabled: false
+    environment: "production"
 
 # =============================================================================
 # Teams Bot - Per spec section 15.7: request 0.25 vCPU, 256 MB RAM
@@ -169,6 +189,10 @@ teamsBot:
   microsoftAppId: ""
   microsoftAppPassword: ""
   teamsDefaultChannel: ""
+  # -- New Relic APM toggle for the Teams bot.
+  newrelic:
+    enabled: false
+    environment: "production"
 
 # =============================================================================
 # Admin UI (Next.js) - Port 8000
@@ -187,6 +211,17 @@ adminUi:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # -- New Relic APM toggle for the Next.js admin UI (server-side).
+  # `browser` sub-block configures the client-side Browser SDK loaded via the
+  # NEXT_PUBLIC_* env vars surfaced by the deployment template.
+  newrelic:
+    enabled: false
+    environment: "production"
+    browser:
+      enabled: false
+      licenseKey: ""
+      applicationId: ""
+      accountId: ""
 
 # =============================================================================
 # PostgreSQL - Per spec section 15.10: single replica, 20Gi PVC
