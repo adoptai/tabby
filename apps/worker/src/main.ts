@@ -176,6 +176,9 @@ async function main() {
 
     const page = await context.newPage();
 
+    // Register execute endpoint on the health server
+    healthServer.setPage(page);
+
     // Start CDP relay server if in CDP mode
     if (streamingMode === 'cdp') {
       const { CdpRelayServer } = await import('./cdp-relay-server');

@@ -40,6 +40,9 @@ export * from './profile-version.types';
 // CDP Whitelist (command/event allow-lists)
 export * from './cdp-whitelist';
 
+// Execute Endpoint Types
+export * from './execute-types';
+
 // Environment helpers
 export * from './env';
 
