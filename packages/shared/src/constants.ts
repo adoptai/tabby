@@ -69,6 +69,7 @@ export const REDIS_KEYS = {
   extractLock: (tenantId: string, profileId: string, credSetId: string) => `extract_lock:${tenantId}:${profileId}:${credSetId}`,
   extractRequest: (sessionId: string) => `extract_request:${sessionId}`,
   extractDone: (sessionId: string) => `extract_done:${sessionId}`,
+  executeBrowserLock: (sessionId: string) => `execute_browser_lock:${sessionId}`,
 } as const;
 
 export const REDIS_TTL = {
@@ -78,6 +79,7 @@ export const REDIS_TTL = {
   EXTRACT_LOCK_SECONDS: 30,
   EXTRACT_REQUEST_SECONDS: 60,
   EXTRACT_DONE_SECONDS: 10,
+  EXECUTE_BROWSER_LOCK_SECONDS: 65,
 } as const;
 
 // ============================================================

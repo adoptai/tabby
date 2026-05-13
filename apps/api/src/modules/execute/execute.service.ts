@@ -8,8 +8,11 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { EXECUTE_LIMITS, PORTS } from '@browser-hitl/shared';
-import type { ExecuteFetchRequest, ExecuteFetchResponse } from '@browser-hitl/shared';
+import { EXECUTE_LIMITS, PORTS, REDIS_KEYS, REDIS_TTL, BROWSER_COMMANDS } from '@browser-hitl/shared';
+import type {
+  ExecuteFetchRequest, ExecuteFetchResponse,
+  ExecuteBrowserRequest, ExecuteBrowserResponse,
+} from '@browser-hitl/shared';
 import { CredentialsService } from '../credentials/credentials.service';
 import Redis from 'ioredis';
 import { requireEnv } from '@browser-hitl/shared';
@@ -120,6 +123,130 @@ export class ExecuteService {
       throw new BadGatewayException(`Worker unreachable: ${message}`);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  async executeBrowser(params: {
+    tenantId: string;
+    profileId: string;
+    request: ExecuteBrowserRequest;
+    role?: string;
+    allowedProfiles?: string[];
+    ownerUserId?: string | null;
+  }): Promise<ExecuteBrowserResponse> {
+    const {
+      tenantId, profileId, request,
+      role, allowedProfiles = [], ownerUserId,
+    } = params;
+
+    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+      throw new BadRequestException(`Agent not authorized for profile "${profileId}"`);
+    }
+
+    if (!request.command || !BROWSER_COMMANDS.includes(request.command as any)) {
+      throw new BadRequestException(
+        `Invalid command "${request.command}". Valid: ${BROWSER_COMMANDS.join(', ')}`,
+      );
+    }
+
+    await this.enforceBrowserRateLimit(profileId);
+
+    const profile = await this.credentialsService.resolveActiveProfile(
+      tenantId, profileId, ownerUserId,
+    );
+    const session = await this.credentialsService.findHealthySession(
+      tenantId, profile.app_id, ownerUserId,
+    );
+
+    if (!session.pod_name) {
+      throw new ConflictException('Session has no assigned worker pod');
+    }
+
+    // Acquire session consumer lock (mandatory per integration notes)
+    const lockKey = REDIS_KEYS.executeBrowserLock(session.id);
+    const lockAcquired = await this.acquireSessionLock(lockKey);
+    if (!lockAcquired) {
+      throw new ConflictException(
+        'Session is currently being driven by another consumer. Try again shortly.',
+      );
+    }
+
+    const workerUrl = `http://${session.pod_name}-worker.${this.workerNamespace}.svc.cluster.local:${PORTS.WORKER_HEALTH}/execute/browser`;
+    const timeoutMs = Math.min(
+      request.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS,
+      EXECUTE_LIMITS.MAX_TIMEOUT_MS,
+    );
+
+    const abortController = new AbortController();
+    const timer = setTimeout(() => abortController.abort(), timeoutMs + 5000);
+
+    try {
+      const workerResponse = await fetch(workerUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command: request.command,
+          params: request.params || {},
+          timeout_ms: timeoutMs,
+        } satisfies ExecuteBrowserRequest),
+        signal: abortController.signal,
+      });
+
+      const result = await workerResponse.json() as ExecuteBrowserResponse;
+      return result;
+    } catch (err: unknown) {
+      if (err instanceof ConflictException) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('abort')) {
+        throw new GatewayTimeoutException('Worker browser command timed out');
+      }
+      throw new BadGatewayException(`Worker unreachable: ${message}`);
+    } finally {
+      clearTimeout(timer);
+      await this.releaseSessionLock(lockKey);
+    }
+  }
+
+  private async acquireSessionLock(lockKey: string): Promise<boolean> {
+    try {
+      const result = await this.redis.set(
+        lockKey,
+        Date.now().toString(),
+        'EX',
+        REDIS_TTL.EXECUTE_BROWSER_LOCK_SECONDS,
+        'NX',
+      );
+      return result === 'OK';
+    } catch (err) {
+      this.logger.warn(`Session lock check failed (allowing request): ${err}`);
+      return true;
+    }
+  }
+
+  private async releaseSessionLock(lockKey: string): Promise<void> {
+    try {
+      await this.redis.del(lockKey);
+    } catch {
+      // Best-effort release
+    }
+  }
+
+  private async enforceBrowserRateLimit(profileId: string): Promise<void> {
+    const key = `execute_browser_rate:${profileId}`;
+    try {
+      const count = await this.redis.incr(key);
+      if (count === 1) {
+        await this.redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
+      }
+      if (count > EXECUTE_LIMITS.BROWSER_RATE_LIMIT_PER_MIN) {
+        throw new HttpException(
+          `Rate limit exceeded for profile "${profileId}" (${EXECUTE_LIMITS.BROWSER_RATE_LIMIT_PER_MIN}/min)`,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    } catch (err) {
+      if (err instanceof HttpException && err.getStatus() === HttpStatus.TOO_MANY_REQUESTS) throw err;
+      this.logger.warn(`Browser rate limit check failed (allowing request): ${err}`);
     }
   }
 

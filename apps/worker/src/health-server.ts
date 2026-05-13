@@ -3,6 +3,7 @@ import { Server } from 'http';
 import { testSentry } from '@browser-hitl/shared';
 import type { Page } from 'playwright';
 import { registerExecuteHandler } from './execute-handler';
+import { registerBrowserHandler, cleanupHarListeners } from './execute-browser-handler';
 
 /**
  * Worker Health HTTP Server per spec section 15.5.
@@ -10,10 +11,12 @@ import { registerExecuteHandler } from './execute-handler';
  * GET /status - Session state details for observability
  * POST /health/sentry-test - Fire test error to Sentry
  * POST /execute/fetch - Run fetch() inside the browser (registered via setPage)
+ * POST /execute/browser - Run browser commands (registered via setPage)
  */
 export class HealthServer {
   private server: Server | null = null;
   private app: Express | null = null;
+  private page: Page | null = null;
   private healthy = true;
 
   constructor(private readonly sessionId: string) {}
@@ -24,15 +27,23 @@ export class HealthServer {
    * to the already-running Express app.
    */
   setPage(page: Page): void {
+    this.page = page;
     if (this.app) {
       registerExecuteHandler(this.app, page);
-      console.log('Execute handler registered on /execute/fetch');
+      registerBrowserHandler(this.app, page);
+      console.log('Execute handlers registered on /execute/fetch and /execute/browser');
+    }
+  }
+
+  cleanupBeforeShutdown(): void {
+    if (this.page) {
+      cleanupHarListeners(this.page);
     }
   }
 
   start(port: number): void {
     const app = express();
-    app.use(express.json({ limit: '2mb' }));
+    app.use(express.json({ limit: '10mb' }));
     this.app = app;
 
     app.get('/health', (_req, res) => {

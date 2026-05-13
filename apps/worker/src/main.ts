@@ -67,6 +67,7 @@ async function main() {
     recyclingMonitor?.stop();
     screenshotFallback?.stop();
     cdpRelay?.stop();
+    healthServer.cleanupBeforeShutdown();
     if (context) {
       await context.close();
     }
