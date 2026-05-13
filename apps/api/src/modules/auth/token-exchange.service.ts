@@ -138,12 +138,15 @@ export class TokenExchangeService {
       throw new UnauthorizedException('JWT missing user identifier claim');
     }
 
-    // 6. Resolve tenant from JWT claim
+    // 6. Resolve tenant: prefer JWT claim, fall back to session context (tenantId arg)
     let resolvedTenantId = '';
     if (!idp.tenant_id_claim) {
-      throw new UnauthorizedException('IdP has no tenant_id_claim configured — cannot resolve tenant from JWT');
-    }
-    if (idp.tenant_id_claim) {
+      if (tenantId) {
+        resolvedTenantId = tenantId;
+      } else {
+        throw new UnauthorizedException('IdP has no tenant_id_claim configured and no session tenant context available');
+      }
+    } else if (idp.tenant_id_claim) {
       const claimValue = String(verifiedPayload[idp.tenant_id_claim] || '');
       if (!claimValue) {
         throw new UnauthorizedException(`JWT missing tenant claim: ${idp.tenant_id_claim}`);
