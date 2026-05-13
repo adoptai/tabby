@@ -3,7 +3,7 @@ import { SessionEntity } from './entities/session.entity';
 import { ApplicationEntity } from './entities/application.entity';
 import * as k8s from '@kubernetes/client-node';
 import { createHmac } from 'node:crypto';
-import { CDP_PORTS, StreamingMode } from '@browser-hitl/shared';
+import { CDP_PORTS, PORTS, StreamingMode } from '@browser-hitl/shared';
 
 /**
  * Pod Manager Service
@@ -121,6 +121,38 @@ export class PodManagerService {
       this.logger.log(`CDP service ${serviceName} deleted`);
     } catch (error) {
       this.logger.error(`Failed to delete CDP service ${serviceName}: ${error}`);
+    }
+  }
+
+  /**
+   * Create a per-session ClusterIP service for the worker health/execute endpoint.
+   * Enables API-side execute proxy to reach the worker via K8s DNS.
+   */
+  async createWorkerService(sessionId: string, podName: string): Promise<string> {
+    const serviceName = this.buildWorkerServiceName(podName);
+    try {
+      const serviceSpec = this.buildWorkerServiceSpec(serviceName, sessionId);
+      this.logger.log(`Creating worker service ${serviceName} for session ${sessionId}`);
+      await this.createService(serviceSpec);
+      this.logger.log(`Worker service ${serviceName} created`);
+      return serviceName;
+    } catch (error) {
+      this.logger.error(`Failed to create worker service ${serviceName}: ${error}`);
+      throw error;
+    }
+  }
+
+  async deleteWorkerService(sessionId: string, podName?: string): Promise<void> {
+    const serviceName = podName
+      ? this.buildWorkerServiceName(podName)
+      : this.buildWorkerServiceName(this.buildPodName(sessionId));
+
+    try {
+      this.logger.log(`Deleting worker service ${serviceName}`);
+      await this.deleteService(serviceName);
+      this.logger.log(`Worker service ${serviceName} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete worker service ${serviceName}: ${error}`);
     }
   }
 
@@ -564,12 +596,16 @@ export class PodManagerService {
           },
         ],
         ingress: [
-          // Allow API service to proxy WebSocket traffic (noVNC:6080 or CDP:9223).
+          // Allow API service to proxy WebSocket traffic (noVNC:6080 or CDP:9223)
+          // and execute endpoint traffic (8091).
           {
             from: [{
               podSelector: { matchLabels: { 'app.kubernetes.io/component': 'api' } },
             }],
-            ports: [{ port: streamPort, protocol: 'TCP' }],
+            ports: [
+              { port: streamPort, protocol: 'TCP' },
+              { port: PORTS.WORKER_HEALTH, protocol: 'TCP' },
+            ],
           },
           // Allow NGINX ingress to stream port
           {
@@ -600,6 +636,10 @@ export class PodManagerService {
     return `${podName}-cdp`;
   }
 
+  private buildWorkerServiceName(podName: string): string {
+    return `${podName}-worker`;
+  }
+
   private buildCdpServiceSpec(serviceName: string, sessionId: string) {
     return {
       apiVersion: 'v1',
@@ -622,6 +662,35 @@ export class PodManagerService {
             name: 'cdp-relay',
             port: CDP_PORTS.CDP_RELAY,
             targetPort: 'cdp-relay',
+            protocol: 'TCP',
+          },
+        ],
+      },
+    };
+  }
+
+  private buildWorkerServiceSpec(serviceName: string, sessionId: string) {
+    return {
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          app: 'browser-worker-execute',
+          'session-id': sessionId,
+        },
+      },
+      spec: {
+        type: 'ClusterIP',
+        selector: {
+          'session-id': sessionId,
+        },
+        ports: [
+          {
+            name: 'worker-health',
+            port: PORTS.WORKER_HEALTH,
+            targetPort: PORTS.WORKER_HEALTH,
             protocol: 'TCP',
           },
         ],
