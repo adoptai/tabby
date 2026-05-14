@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
   REGISTRY: ghcr.io/adoptai/tabby
   CHART_REGISTRY: ghcr.io/adoptai/charts
 
