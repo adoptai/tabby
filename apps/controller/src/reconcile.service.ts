@@ -212,6 +212,9 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createNoVncService(savedSession.id, podName);
       }
 
+      // Create worker service for execute endpoint access
+      await this.podManager.createWorkerService(savedSession.id, podName);
+
       // Generate NetworkPolicy
       await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode);
 
@@ -230,12 +233,14 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
           } else {
             await this.podManager.deleteNoVncService(savedSession.id, podName);
           }
+          await this.podManager.deleteWorkerService(savedSession.id, podName);
         } else {
           if (streamingMode === StreamingMode.CDP) {
             await this.podManager.deleteCdpService(savedSession.id);
           } else {
             await this.podManager.deleteNoVncService(savedSession.id);
           }
+          await this.podManager.deleteWorkerService(savedSession.id);
         }
         await this.podManager.deleteNetworkPolicy(savedSession.id);
       } catch (cleanupError) {
@@ -259,9 +264,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     if (session.pod_name) {
       await this.podManager.deleteWorkerPod(session.pod_name);
     }
-    // Clean up both service types (only one will exist, the other is a no-op)
+    // Clean up all service types (only one streaming service will exist, the other is a no-op)
     await this.podManager.deleteNoVncService(session.id, session.pod_name || undefined);
     await this.podManager.deleteCdpService(session.id, session.pod_name || undefined);
+    await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
     await this.podManager.deleteNetworkPolicy(session.id);
 
     this.logger.log(`Terminated session ${session.id}`);
@@ -349,9 +355,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       }
       await this.sessionRepo.update(session.id, { pod_name: null });
 
-      // Best-effort cleanup of residual per-session resources (both service types).
+      // Best-effort cleanup of residual per-session resources (all service types).
       await this.podManager.deleteNoVncService(session.id, session.pod_name);
       await this.podManager.deleteCdpService(session.id, session.pod_name);
+      await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
       await this.podManager.deleteNetworkPolicy(session.id);
     }
 
@@ -372,6 +379,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.deleteWorkerPod(workerPod.podName);
         await this.podManager.deleteNoVncService(workerPod.sessionId, workerPod.podName);
         await this.podManager.deleteCdpService(workerPod.sessionId, workerPod.podName);
+        await this.podManager.deleteWorkerService(workerPod.sessionId, workerPod.podName);
         await this.podManager.deleteNetworkPolicy(workerPod.sessionId);
       }
     }

@@ -148,6 +148,7 @@ describe('ReconcileService checkRecycling', () => {
       deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
       deleteNoVncService: jest.fn().mockResolvedValue(undefined),
       deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
     };
     const service = buildService({
