@@ -1,0 +1,2 @@
+This file is a temporary marker used to test GitHub Actions template injection hardening.
+It will be deleted after verification is complete.
