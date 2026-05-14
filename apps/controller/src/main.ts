@@ -1,3 +1,10 @@
+// New Relic Node agent — must be required before anything else.
+// eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+if (process.env.NEWRELIC_ENABLED === 'true' && process.env.NEW_RELIC_LICENSE_KEY) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+  require('newrelic');
+}
+
 import 'reflect-metadata';
 import { initSentry } from '@browser-hitl/shared';
 initSentry('controller');

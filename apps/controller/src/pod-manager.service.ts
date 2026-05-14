@@ -334,6 +334,14 @@ export class PodManagerService {
       { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
       { name: 'APP_ENV', value: process.env.APP_ENV || '' },
       { name: 'CHART_VERSION', value: process.env.CHART_VERSION || '' },
+      // New Relic APM — propagate the controller's toggle and license
+      // into each dynamically-created worker pod. The worker entry file
+      // (apps/worker/src/main.ts) gates `require('newrelic')` on these
+      // values, so absent/empty == disabled.
+      { name: 'NEWRELIC_ENABLED', value: process.env.WORKER_NEWRELIC_ENABLED || process.env.NEWRELIC_ENABLED || 'false' },
+      { name: 'NEW_RELIC_LICENSE_KEY', value: process.env.NEW_RELIC_LICENSE_KEY || '' },
+      { name: 'NEW_RELIC_APP_NAME', value: process.env.WORKER_NEW_RELIC_APP_NAME || 'Adopt Tabby Worker' },
+      { name: 'NEW_RELIC_ENVIRONMENT', value: process.env.NEW_RELIC_ENVIRONMENT || 'production' },
     ];
 
     // VNC mode needs DISPLAY for Xvfb; CDP mode does not
