@@ -222,6 +222,11 @@ adminUi:
       licenseKey: ""
       applicationId: ""
       accountId: ""
+      # Comma-separated list of backend origins that should receive
+      # `traceparent` on outbound fetch/XHR from the admin UI. Without this
+      # list the SDK collects data but the trace never stitches to the
+      # backend. Example: "https://tabby-api.example.com,https://api.example.com"
+      allowedOrigins: ""
 
 # =============================================================================
 # PostgreSQL - Per spec section 15.10: single replica, 20Gi PVC
