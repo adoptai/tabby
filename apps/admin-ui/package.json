@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@browser-hitl/shared": "workspace:*",
-    "@newrelic/browser-agent": "^1.298.0",
     "@sentry/node": "^10.51.0",
     "newrelic": "^12.0.0",
     "next": "^15.5.16",
