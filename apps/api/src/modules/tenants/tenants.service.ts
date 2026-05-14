@@ -120,6 +120,7 @@ export class TenantsService {
         'auth_requests',     // → sessions, applications, tenants
         'artifact_bundles',  // → sessions, applications, tenants
         'interventions',     // → sessions, applications, tenants
+        'session_batons',    // → sessions (no tenant_id, FK to sessions.id)
         'sessions',          // → applications, tenants
         'service_profiles',  // → applications, tenants
         'user_identities',   // → users, tenants
@@ -136,6 +137,11 @@ export class TenantsService {
         if (table === 'login_queue') {
           result = await qr.query(
             `DELETE FROM login_queue WHERE auth_request_id IN (SELECT id FROM auth_requests WHERE tenant_id = $1)`,
+            [id],
+          );
+        } else if (table === 'session_batons') {
+          result = await qr.query(
+            `DELETE FROM session_batons WHERE session_id IN (SELECT id FROM sessions WHERE tenant_id = $1)`,
             [id],
           );
         } else {
