@@ -26,9 +26,11 @@ jobs:
     steps:
       - name: Validate manual trigger
         if: github.event_name == 'workflow_dispatch'
+        env:
+          CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
         run: |
-          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
-            echo "::error::You must type 'deploy' to confirm. Got: '${{ github.event.inputs.confirm }}'"
+          if [ "$CONFIRM_INPUT" != "deploy" ]; then
+            echo "::error::You must type 'deploy' to confirm."
             exit 1
           fi
 

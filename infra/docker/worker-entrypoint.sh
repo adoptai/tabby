@@ -38,7 +38,7 @@ done
 export DISPLAY=:99
 
 # Step 5: Start x11vnc (bound to localhost only - accessed by noVNC sidecar)
-x11vnc -display :99 -forever -nopw -rfbport 5900 -listen 127.0.0.1 &
+x11vnc -display :99 -forever -nopw -rfbport 5900 -listen 127.0.0.1 -clip PRIMARY,CLIPBOARD &
 X11VNC_PID=$!
 
 echo "Xvfb PID=$XVFB_PID, x11vnc PID=$X11VNC_PID"

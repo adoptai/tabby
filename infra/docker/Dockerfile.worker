@@ -11,7 +11,7 @@ FROM mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312
 
 # Install Xvfb and x11vnc for headed browser + VNC streaming
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb x11vnc && \
+    xvfb x11vnc xclip autocutsel && \
     rm -rf /var/lib/apt/lists/*
 
 # Install pnpm
