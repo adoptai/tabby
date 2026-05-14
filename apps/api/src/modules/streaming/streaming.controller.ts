@@ -1030,35 +1030,30 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         stateEl.textContent = 'Disconnected (' + (event.detail?.clean ? 'clean' : 'error') + ')';
       });
 
-      // Clipboard paste: operator copies text locally → presses Ctrl+V → text is typed into VNC.
+      // Clipboard paste: operator copies text locally → Ctrl+V → typed into VNC field.
       //
-      // noVNC calls stopEvent() (preventDefault + stopPropagation) on EVERY keydown on its canvas.
-      // We register on document in capture phase so our handler fires before noVNC's canvas handler.
-      // stopPropagation() prevents noVNC from ever seeing the keydown (so it never calls
-      // preventDefault), which allows the browser to fire the paste event normally.
-      //
-      // Instead of using the RFB clipboard protocol (ClientCutText / ExtendedClipboard), we type
-      // each character directly via sendKey(). This avoids the extended-clipboard request/provide
-      // round-trip and the timing race where Ctrl+V arrives before clipboard data is ready.
-      document.addEventListener('keydown', (event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
-          event.stopPropagation(); // prevent noVNC from seeing Ctrl+V and calling preventDefault
-          // Do NOT call preventDefault here — browser must fire the paste event
-        }
-      }, true);
-
-      document.addEventListener('paste', (event) => {
-        const text = event.clipboardData?.getData('text/plain');
-        if (!text) return;
-        event.preventDefault();
-        event.stopPropagation();
-        // Type each character as a key event — no clipboard protocol, no timing issues.
-        // ASCII printable (0x20–0x7e): keysym == codepoint. Non-ASCII: 0x01000000 + codepoint.
+      // Canvas elements do NOT receive browser paste events — only text inputs do.
+      // noVNC focuses a <canvas> for keyboard input and calls stopEvent() (preventDefault +
+      // stopPropagation) on every keydown. We intercept Ctrl+V in the capture phase on
+      // document (before noVNC's bubble-phase handler on the canvas), read the system
+      // clipboard via the async Clipboard API, and type each character via sendKey().
+      function typeTextViaRfb(text) {
         for (const char of [...text]) {
           const cp = char.codePointAt(0);
           const keysym = (cp >= 0x20 && cp <= 0x7e) ? cp : (0x01000000 + cp);
           rfb.sendKey(keysym, '', true);
           rfb.sendKey(keysym, '', false);
+        }
+      }
+
+      document.addEventListener('keydown', (event) => {
+        if (!(event.ctrlKey || event.metaKey) || event.key !== 'v') return;
+        event.stopPropagation();
+        event.preventDefault();
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText()
+            .then((text) => { if (text) typeTextViaRfb(text); })
+            .catch(() => {});
         }
       }, true);
     </script>
