@@ -37,11 +37,16 @@ done
 # Step 4: DISPLAY is already set via ENV in Dockerfile
 export DISPLAY=:99
 
-# Step 5: Start x11vnc (bound to localhost only - accessed by noVNC sidecar)
+# Step 5: Keep PRIMARY and CLIPBOARD in sync inside the X session so apps
+# that read one selection type still see text pasted via the other.
+autocutsel -display :99 -s CLIPBOARD -fork
+autocutsel -display :99 -s PRIMARY -fork
+
+# Step 6: Start x11vnc (bound to localhost only - accessed by noVNC sidecar)
 x11vnc -display :99 -forever -nopw -rfbport 5900 -listen 127.0.0.1 -clip PRIMARY,CLIPBOARD &
 X11VNC_PID=$!
 
 echo "Xvfb PID=$XVFB_PID, x11vnc PID=$X11VNC_PID"
 
-# Step 6-8: Start the Node.js worker (launches Playwright, health server, login DSL)
+# Step 7-9: Start the Node.js worker (launches Playwright, health server, login DSL)
 exec node /app/apps/worker/dist/main.js

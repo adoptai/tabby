@@ -1029,6 +1029,16 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
       rfb.addEventListener('disconnect', (event) => {
         stateEl.textContent = 'Disconnected (' + (event.detail?.clean ? 'clean' : 'error') + ')';
       });
+
+      // Clipboard paste: intercept Ctrl+V and forward text to VNC via RFB ClientCutText.
+      // The paste event provides clipboardData without needing clipboard-read permission,
+      // so this works over HTTP and without explicit user permission prompts.
+      document.addEventListener('paste', (event) => {
+        const text = event.clipboardData?.getData('text/plain');
+        if (text) {
+          rfb.clipboardPasteFrom(text);
+        }
+      });
     </script>
   </body>
 </html>`;
