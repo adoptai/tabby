@@ -399,6 +399,10 @@ config:
   deployEnvironment: ""
   # Swagger/OpenAPI docs at /api/docs — set "false" to disable (e.g. production)
   apiDocsEnabled: "true"
+  # Sentry error tracking — disabled by default; enable in production cloud only (not on-prem)
+  sentryDsn: ""
+  sentryEnabled: "false"
+  sentryTracesSampleRate: "0.1"
   # Bypass proxy for in-cluster/local endpoints while keeping external egress on proxy.
   egressProxyBypassList: "localhost;127.0.0.1;::1;*.svc;*.svc.cluster.local;*.cluster.local;test-harness;browser-hitl-test-harness"
   # Egress proxy

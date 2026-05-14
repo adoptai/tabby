@@ -6,6 +6,7 @@ describe('VncWsProxyService token resolution', () => {
       { httpAdapter: { getHttpServer: () => ({ on: jest.fn(), off: jest.fn() }) } } as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   }
 

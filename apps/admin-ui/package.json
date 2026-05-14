@@ -10,13 +10,14 @@
   },
   "dependencies": {
     "@browser-hitl/shared": "workspace:*",
-    "next": "^15.1.6",
+    "@sentry/node": "^10.51.0",
+    "next": "^15.5.16",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0"
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.3"
   }
 }

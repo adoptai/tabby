@@ -7,6 +7,7 @@ import * as jwt from 'jsonwebtoken';
 import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
 import { TenantEntity } from '../../entities/tenant.entity';
 import { UserIdentityEntity } from '../../entities/user-identity.entity';
+import { UserEntity } from '../../entities/user.entity';
 import { ExternalJwksService } from './external-jwks.service';
 import { JwtPayload } from './auth.service';
 import { AuditService } from '../audit/audit.service';
@@ -39,6 +40,8 @@ export class TokenExchangeService {
     private readonly tenantRepo: Repository<TenantEntity>,
     @InjectRepository(UserIdentityEntity)
     private readonly identityRepo: Repository<UserIdentityEntity>,
+    @InjectRepository(UserEntity)
+    private readonly userRepo: Repository<UserEntity>,
     private readonly jwksService: ExternalJwksService,
     private readonly jwtService: JwtService,
     private readonly auditService: AuditService,
@@ -135,9 +138,15 @@ export class TokenExchangeService {
       throw new UnauthorizedException('JWT missing user identifier claim');
     }
 
-    // 6. Resolve tenant — dynamic from JWT claim or static from IdP registration
-    let resolvedTenantId = idp.tenant_id;
-    if (idp.tenant_id_claim) {
+    // 6. Resolve tenant: prefer JWT claim, fall back to session context (tenantId arg)
+    let resolvedTenantId = '';
+    if (!idp.tenant_id_claim) {
+      if (tenantId) {
+        resolvedTenantId = tenantId;
+      } else {
+        throw new UnauthorizedException('IdP has no tenant_id_claim configured and no session tenant context available');
+      }
+    } else if (idp.tenant_id_claim) {
       const claimValue = String(verifiedPayload[idp.tenant_id_claim] || '');
       if (!claimValue) {
         throw new UnauthorizedException(`JWT missing tenant claim: ${idp.tenant_id_claim}`);
@@ -186,6 +195,30 @@ export class TokenExchangeService {
       event_type: 'auth.token_exchange.issued',
       payload: { idp_id: idp.id, owner_user_id: ownerUserId, mode: 'oidc_jwt', resolved_tenant: resolvedTenantId },
     });
+
+    // Auto-provision federated user in users table (for email gate + audit trail)
+    if (email && idp.allow_auto_provision) {
+      try {
+        const existing = await this.userRepo.findOne({ where: { id: ownerUserId } });
+        if (!existing) {
+          const newUser = this.userRepo.create({
+            id: ownerUserId,
+            tenant_id: resolvedTenantId,
+            email,
+            password_hash: null,
+            role,
+            status: 'ACTIVE',
+          });
+          await this.userRepo.save(newUser);
+          this.logger.log(`Auto-provisioned federated user: ${ownerUserId} (${email})`);
+        } else if (existing.email !== email) {
+          existing.email = email;
+          await this.userRepo.save(existing);
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to auto-provision user ${ownerUserId}: ${(err as Error).message}`);
+      }
+    }
 
     return {
       access_token: token,

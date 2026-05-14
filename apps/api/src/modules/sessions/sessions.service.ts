@@ -44,7 +44,8 @@ export class SessionsService {
 
     if (desiredSessions > tenant.max_sessions) {
       throw new BadRequestException(
-        `desired_sessions (${desiredSessions}) exceeds tenant max_sessions (${tenant.max_sessions})`,
+        `desired_sessions (${desiredSessions}) exceeds tenant max_sessions (${tenant.max_sessions}). `
+        + `To increase the limit, call PATCH /tenants/${tenantId} with { "max_sessions": <new_limit> }.`,
       );
     }
 
