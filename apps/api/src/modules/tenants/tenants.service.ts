@@ -126,7 +126,6 @@ export class TenantsService {
         'user_identities',   // → users, tenants
         'agent_clients',     // → tenants
         'users',             // → tenants
-        'identity_providers',// → tenants
         'audit_events',      // → tenants
         'app_templates',     // → tenants
         'applications',      // → tenants
