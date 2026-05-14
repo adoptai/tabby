@@ -1032,20 +1032,11 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
 
       // Clipboard paste: operator copies text locally → Ctrl+V → typed into VNC field.
       //
-      // Canvas elements never receive paste events, and navigator.clipboard.readText()
-      // is unreliable (permission revoked after first call in some browsers). Instead we
-      // use a hidden textarea as clipboard bridge:
-      //   1. keydown capture: stopPropagation (hides Ctrl+V from noVNC) + focus textarea
-      //   2. Do NOT preventDefault — browser still processes the paste shortcut
-      //   3. Paste lands in the now-focused textarea → paste event fires there
-      //   4. paste handler: read clipboardData, return focus to VNC, type via sendKey
-      const clipBridge = document.createElement('textarea');
-      clipBridge.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;z-index:-1;overflow:hidden;';
-      clipBridge.setAttribute('tabindex', '-1');
-      clipBridge.setAttribute('autocomplete', 'off');
-      clipBridge.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(clipBridge);
-
+      // Canvas elements do NOT receive browser paste events — only text inputs do.
+      // noVNC focuses a <canvas> for keyboard input and calls stopEvent() (preventDefault +
+      // stopPropagation) on every keydown. We intercept Ctrl+V in the capture phase on
+      // document (before noVNC's bubble-phase handler on the canvas), read the system
+      // clipboard via the async Clipboard API, and type each character via sendKey().
       function typeTextViaRfb(text) {
         for (const char of [...text]) {
           const cp = char.codePointAt(0);
@@ -1055,19 +1046,15 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         }
       }
 
-      clipBridge.addEventListener('paste', (event) => {
-        const text = event.clipboardData?.getData('text/plain');
-        event.preventDefault();
-        clipBridge.value = '';
-        rfb.focus();
-        if (text) typeTextViaRfb(text);
-      });
-
       document.addEventListener('keydown', (event) => {
         if (!(event.ctrlKey || event.metaKey) || event.key !== 'v') return;
         event.stopPropagation();
-        clipBridge.value = '';
-        clipBridge.focus();
+        event.preventDefault();
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText()
+            .then((text) => { if (text) typeTextViaRfb(text); })
+            .catch(() => {});
+        }
       }, true);
     </script>
   </body>
