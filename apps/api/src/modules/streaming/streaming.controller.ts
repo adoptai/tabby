@@ -693,7 +693,6 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Verify Access</title>
-    <link rel="icon" href="data:," />
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
       .card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 32px; max-width: 380px; width: 100%; }
@@ -711,7 +710,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
       <h2>Verify your identity</h2>
       <p>Enter the email address associated with this session to view the browser stream.</p>
       <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
-      <button id="submitBtn" onclick="verify()">Continue</button>
+      <button id="submitBtn">Continue</button>
       <div id="msg"></div>
     </div>
     <script>
@@ -723,6 +722,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
       }
 
+      document.getElementById('submitBtn').addEventListener('click', verify);
       document.getElementById('emailInput').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') verify();
       });
