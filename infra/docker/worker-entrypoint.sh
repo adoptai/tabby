@@ -39,8 +39,9 @@ export DISPLAY=:99
 
 # Step 5: Keep PRIMARY and CLIPBOARD in sync inside the X session so apps
 # that read one selection type still see text pasted via the other.
-autocutsel -display :99 -s CLIPBOARD -fork
-autocutsel -display :99 -s PRIMARY -fork
+# Non-fatal: clipboard sync is a convenience feature, not required for worker startup.
+autocutsel -display :99 -s CLIPBOARD -fork || true
+autocutsel -display :99 -s PRIMARY -fork || true
 
 # Step 6: Start x11vnc (bound to localhost only - accessed by noVNC sidecar)
 x11vnc -display :99 -forever -nopw -rfbport 5900 -listen 127.0.0.1 -clip PRIMARY,CLIPBOARD &
