@@ -711,7 +711,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
       <h2>Verify your identity</h2>
       <p>Enter the email address associated with this session to view the browser stream.</p>
       <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
-      <button id="submitBtn" onclick="verify()">Continue</button>
+      <button id="submitBtn">Continue</button>
       <div id="msg"></div>
     </div>
     <script>
@@ -723,6 +723,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
       }
 
+      document.getElementById('submitBtn').addEventListener('click', verify);
       document.getElementById('emailInput').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') verify();
       });
@@ -778,6 +779,13 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
       html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; }
       #toolbar { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #1e293b; background: #111827; }
       #state { font-size: 12px; color: #93c5fd; }
+      #clipboard-group { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+      #clipboard-input { width: 200px; padding: 4px 8px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #f8fafc; font-size: 12px; outline: none; }
+      #clipboard-input:focus { border-color: #3b82f6; }
+      #clipboard-input::placeholder { color: #64748b; }
+      #clipboard-send { padding: 4px 10px; background: #3b82f6; color: white; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+      #clipboard-send:hover { background: #2563eb; }
+      #clipboard-status { font-size: 11px; color: #6ee7b7; min-width: 16px; }
       #screen { width: 100%; height: calc(100% - 45px); }
     </style>
   </head>
@@ -785,20 +793,25 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
     <div id="toolbar">
       <strong>Browser HITL Stream</strong>
       <span id="state">Connecting...</span>
+      <div id="clipboard-group">
+        <input id="clipboard-input" type="password" placeholder="Paste here, then Ctrl+V in VNC" autocomplete="off" />
+        <button id="clipboard-send">Send</button>
+        <span id="clipboard-status"></span>
+      </div>
     </div>
     <div id="screen"></div>
 
     <!-- HITL panel: operator clicks "Mark as Resolved" to unblock the worker -->
     <div id="hitl-panel" style="
-      position: fixed; top: 8px; right: 8px; z-index: 9999;
-      padding: 10px 14px; background: rgba(15,23,42,0.9); color: white;
-      border-radius: 8px; font: 13px/1.4 system-ui, sans-serif;
-      max-width: 280px;
+      position: fixed; bottom: 12px; right: 12px; z-index: 9999;
+      padding: 16px 20px; background: rgba(15,23,42,0.95); color: white;
+      border-radius: 10px; font: 15px/1.5 system-ui, sans-serif;
+      max-width: 340px;
     ">
-      <div id="hitl-status">Checking session…</div>
+      <div id="hitl-status" style="font-size: 15px;">Checking session…</div>
       <button id="resolveBtn" disabled style="
-        margin-top: 8px; padding: 8px 14px; background: #22c55e; color: white;
-        border: none; border-radius: 6px; font-weight: 600; width: 100%; opacity: 0.5;
+        margin-top: 10px; padding: 12px 18px; background: #22c55e; color: white;
+        border: none; border-radius: 8px; font-weight: 600; font-size: 15px; width: 100%; opacity: 0.5;
         cursor: pointer;
       ">Mark as Resolved</button>
     </div>
@@ -1030,15 +1043,29 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         stateEl.textContent = 'Disconnected (' + (event.detail?.clean ? 'clean' : 'error') + ')';
       });
 
-      // Clipboard paste: intercept Ctrl+V and forward text to VNC via RFB ClientCutText.
-      // The paste event provides clipboardData without needing clipboard-read permission,
-      // so this works over HTTP and without explicit user permission prompts.
-      document.addEventListener('paste', (event) => {
-        const text = event.clipboardData?.getData('text/plain');
-        if (text) {
-          rfb.clipboardPasteFrom(text);
-        }
+      // Clipboard panel: paste text into the input, it sets the VNC remote clipboard.
+      // Then Ctrl+V inside the VNC session pastes from the remote clipboard normally.
+      const clipInput = document.getElementById('clipboard-input');
+      const clipSend = document.getElementById('clipboard-send');
+      const clipStatus = document.getElementById('clipboard-status');
+
+      function sendClipboard() {
+        const text = clipInput.value;
+        if (!text) return;
+        rfb.clipboardPasteFrom(text);
+        clipStatus.textContent = '✓';
+        setTimeout(() => { clipStatus.textContent = ''; }, 2000);
+      }
+
+      clipInput.addEventListener('paste', () => {
+        setTimeout(sendClipboard, 0);
       });
+      clipInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { sendClipboard(); rfb.focus(); }
+        e.stopPropagation();
+      });
+      clipInput.addEventListener('keyup', (e) => { e.stopPropagation(); });
+      clipSend.addEventListener('click', () => { sendClipboard(); rfb.focus(); });
     </script>
   </body>
 </html>`;

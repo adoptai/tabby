@@ -215,7 +215,7 @@ Recent migrations (newest first):
 19. **No initContainers for Postgres/Redis/MinIO/NATS** — Removed (required `runAsUser: 0`, rejected by PodSecurityAdmission in restricted namespaces). `fsGroup` handles volume ownership instead.
 20. **Concurrent auto-provisioning race on `credentials/request`** — Catches Postgres duplicate-key (23505) and retries the lookup. See `apps/api/src/modules/credentials/credentials.service.ts`.
 21. **Admin-UI ingress route gated on `adminUi.enabled`** — The `{{- if .Values.adminUi.enabled }}` block in `charts/browser-hitl/templates/ingress.yaml` controls the `/` route. Disabling admin-UI removes it cleanly.
-22. **VNC access requires OAuth authentication** — Opening a VNC viewer URL sets a `tabby_vnc` HttpOnly cookie (1h TTL) via OAuth callback. Without it, the user hits the IdP login wall. Falls back to email gate if no OAuth IdP is configured. Wrong user → 403 (not a redirect loop). `vnc_access_policy` on the IdP config controls scope: `owner` (default, session owner only) or `tenant` (any user in the tenant).
+22. **VNC access requires OAuth authentication** — Opening a VNC viewer URL sets a `tabby_vnc` HttpOnly cookie (1h TTL) via OAuth callback. Without it, the user hits the IdP login wall. Falls back to email gate if no OAuth IdP is configured. Wrong user → 403 (not a redirect loop). Currently owner-only (session owner matched via `owner_user_id` in cookie).
 
 ## Git
 
