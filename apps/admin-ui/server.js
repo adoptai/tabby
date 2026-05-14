@@ -19,6 +19,11 @@ const newRelicBrowserConfig = {
   licenseKey: process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_LICENSE_KEY || '',
   applicationID: process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_APP_ID || '',
   accountID: process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_ACCOUNT_ID || '',
+  // Comma-separated list of backend origins that should receive the W3C
+  // `traceparent` header on outbound fetch/XHR. Without this list the SDK
+  // collects browser-side data but the trace never stitches to the backend.
+  allowedOrigins:
+    process.env.NEXT_PUBLIC_NEW_RELIC_BROWSER_ALLOWED_ORIGINS || '',
 };
 
 const html = `<!doctype html>
@@ -35,6 +40,7 @@ const html = `<!doctype html>
         licenseKey: newRelicBrowserConfig.licenseKey,
         applicationID: newRelicBrowserConfig.applicationID,
         accountID: newRelicBrowserConfig.accountID,
+        allowedOrigins: newRelicBrowserConfig.allowedOrigins,
       })};
       ${
         newRelicBrowserEnabled

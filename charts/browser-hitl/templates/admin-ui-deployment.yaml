@@ -60,6 +60,11 @@ spec:
               value: {{ .Values.adminUi.newrelic.browser.applicationId | default "" | quote }}
             - name: NEXT_PUBLIC_NEW_RELIC_BROWSER_ACCOUNT_ID
               value: {{ .Values.adminUi.newrelic.browser.accountId | default "" | quote }}
+            # Comma-separated list of backend origins that receive `traceparent`
+            # on outbound fetch/XHR. Without this list the Browser SDK collects
+            # data but never stitches to the backend trace.
+            - name: NEXT_PUBLIC_NEW_RELIC_BROWSER_ALLOWED_ORIGINS
+              value: {{ .Values.adminUi.newrelic.browser.allowedOrigins | default "" | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
