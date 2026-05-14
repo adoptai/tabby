@@ -34,17 +34,18 @@ export class AppTemplatesService {
     return saved;
   }
 
-  async findAll(tenantId: string) {
+  async findAll(tenantId?: string) {
+    const where = tenantId ? { tenant_id: tenantId } : {};
     return this.templateRepo.find({
-      where: { tenant_id: tenantId },
+      where,
       order: { created_at: 'DESC' },
     });
   }
 
-  async findOne(tenantId: string, id: string) {
-    const template = await this.templateRepo.findOne({
-      where: { id, tenant_id: tenantId },
-    });
+  async findOne(tenantId: string | undefined, id: string) {
+    const where: Record<string, string> = { id };
+    if (tenantId) where.tenant_id = tenantId;
+    const template = await this.templateRepo.findOne({ where });
     if (!template) throw new NotFoundException('App template not found');
     return template;
   }

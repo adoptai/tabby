@@ -145,4 +145,31 @@ export class StreamTokenService implements OnModuleDestroy {
 
     return { valid: true, payload };
   }
+
+  async createShortLink(url: string): Promise<string> {
+    const shortId = Math.random().toString(36).slice(2, 10); // 8 random chars
+    await this.redis.set(`vnc:short:${shortId}`, url, 'EX', 600);
+    return shortId;
+  }
+
+  async resolveShortLink(shortId: string): Promise<string | null> {
+    return this.redis.get(`vnc:short:${shortId}`);
+  }
+
+  /**
+   * Write a human-input value to Redis so the worker can pick it up.
+   * Mirrors the core logic of HitlService.submitInput without the audit/
+   * observability overhead — used by the stream-token-authenticated HITL
+   * proxy endpoints that sit inside StreamingController.
+   */
+  async writeHumanInput(
+    sessionId: string,
+    stepIndex: number,
+    inputType: string,
+    value: string,
+  ): Promise<void> {
+    const redisKey = REDIS_KEYS.humanInput(sessionId, stepIndex);
+    const payload = JSON.stringify({ input_type: inputType, value });
+    await this.redis.set(redisKey, payload, 'EX', REDIS_TTL.HUMAN_INPUT_SECONDS);
+  }
 }

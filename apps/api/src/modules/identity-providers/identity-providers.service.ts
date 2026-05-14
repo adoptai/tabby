@@ -17,14 +17,14 @@ export class IdentityProvidersService {
   ) {}
 
   async create(tenantId: string, data: Partial<IdentityProviderEntity> & { client_secret_plaintext?: string }, actorId: string) {
-    const existing = await this.idpRepo.findOne({
-      where: { tenant_id: tenantId, name: data.name },
-    });
-    if (existing) {
-      throw new ConflictException(`IdP with name "${data.name}" already exists`);
+    // Only one IdP allowed — global, not per-tenant
+    const count = await this.idpRepo.count();
+    if (count > 0) {
+      throw new ConflictException('An identity provider already exists. Only one IdP is supported. Update or delete the existing one first.');
     }
 
-    const toSave = { ...data, tenant_id: tenantId };
+    const toSave = { ...data };
+    delete (toSave as any).tenant_id;
     if (data.client_secret_plaintext) {
       toSave.client_secret = this.oauthProvider.encryptSecret(data.client_secret_plaintext);
     }
@@ -44,17 +44,16 @@ export class IdentityProvidersService {
     return saved;
   }
 
-  async findAll(tenantId: string) {
+  async findAll(_tenantId?: string) {
     const idps = await this.idpRepo.find({
-      where: { tenant_id: tenantId },
       order: { created_at: 'DESC' },
     });
     return idps.map(this.maskSecret);
   }
 
-  async findOne(tenantId: string, id: string) {
+  async findOne(_tenantId: string, id: string) {
     const idp = await this.idpRepo.findOne({
-      where: { id, tenant_id: tenantId },
+      where: { id },
     });
     if (!idp) throw new NotFoundException('Identity provider not found');
     return this.maskSecret(idp);

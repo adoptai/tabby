@@ -42,6 +42,32 @@ describe('resolveCredentials', () => {
       await expect(resolveCredentials('k8s:secret/')).rejects.toThrow('Invalid credential_ref');
     });
 
+    it('rejects path traversal in secret name', async () => {
+      await expect(resolveCredentials('k8s:secret/../etc/passwd')).rejects.toThrow(
+        'Invalid credential_ref',
+      );
+    });
+
+    it('rejects secret name with slash', async () => {
+      await expect(resolveCredentials('k8s:secret/sub/dir')).rejects.toThrow(
+        'Invalid credential_ref',
+      );
+    });
+
+    it('rejects secret name with dots', async () => {
+      await expect(resolveCredentials('k8s:secret/..secret')).rejects.toThrow(
+        'Invalid credential_ref',
+      );
+    });
+
+    it('accepts valid secret names with letters, digits, hyphens and underscores', async () => {
+      process.env.CREDENTIALS_MOUNT_PATH = '/nonexistent';
+      process.env.WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK = 'false';
+      await expect(resolveCredentials('k8s:secret/my-secret_123')).rejects.toThrow(
+        'Credentials not found',
+      );
+    });
+
     it('uses env fallback when WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK=true', async () => {
       process.env.CREDENTIALS_MOUNT_PATH = '/nonexistent';
       process.env.WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK = 'true';

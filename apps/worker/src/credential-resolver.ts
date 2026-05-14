@@ -18,7 +18,7 @@ export async function resolveCredentials(credentialRef: string): Promise<Resolve
   }
 
   const secretName = credentialRef.replace('k8s:secret/', '').trim();
-  if (!secretName) {
+  if (!secretName || !/^[a-zA-Z0-9_-]+$/.test(secretName)) {
     throw new Error(`Invalid credential_ref: ${credentialRef}`);
   }
 

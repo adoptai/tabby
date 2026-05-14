@@ -1,8 +1,8 @@
 import {
-  Injectable, NotFoundException, BadRequestException, ForbiddenException,
+  Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { ApplicationEntity, TenantEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -31,12 +31,15 @@ interface CreateAppInput {
 
 @Injectable()
 export class AppsService {
+  private readonly logger = new Logger(AppsService.name);
+
   constructor(
     @InjectRepository(ApplicationEntity)
     private readonly appRepo: Repository<ApplicationEntity>,
     @InjectRepository(TenantEntity)
     private readonly tenantRepo: Repository<TenantEntity>,
     private readonly auditService: AuditService,
+    private readonly dataSource: DataSource,
   ) {}
 
   private validateConfigs(input: CreateAppInput): void {
@@ -210,5 +213,63 @@ export class AppsService {
     });
 
     return { app_id: id, desired_session_count: 0 };
+  }
+
+  async destroy(id: string, actorId: string): Promise<{ deleted: Record<string, number> }> {
+    const app = await this.findOne(id);
+    const deleted: Record<string, number> = {};
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+
+    try {
+      const tables = [
+        'login_queue',
+        'auth_requests',
+        'artifact_bundles',
+        'interventions',
+        'sessions',
+        'service_profiles',
+      ];
+
+      for (const table of tables) {
+        let result;
+        if (table === 'login_queue') {
+          result = await qr.query(
+            `DELETE FROM login_queue WHERE auth_request_id IN (SELECT id FROM auth_requests WHERE app_id = $1)`,
+            [id],
+          );
+        } else {
+          result = await qr.query(`DELETE FROM ${table} WHERE app_id = $1`, [id]);
+        }
+        const count = result[1] ?? result?.rowCount ?? 0;
+        if (count > 0) {
+          deleted[table] = count;
+          this.logger.log(`Deleted ${count} rows from ${table} for app ${id}`);
+        }
+      }
+
+      await qr.query(`DELETE FROM applications WHERE id = $1`, [id]);
+      deleted['applications'] = 1;
+
+      await qr.commitTransaction();
+    } catch (err) {
+      await qr.rollbackTransaction();
+      this.logger.error(`App destruction rolled back for ${id}: ${(err as Error).message}`);
+      throw err;
+    } finally {
+      await qr.release();
+    }
+
+    await this.auditService.log({
+      tenant_id: app.tenant_id,
+      actor_type: 'human',
+      actor_id: actorId,
+      event_type: 'app.destroyed',
+      payload: { app_id: id, name: app.name, deleted },
+    });
+
+    return { deleted };
   }
 }

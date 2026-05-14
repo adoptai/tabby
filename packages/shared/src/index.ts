@@ -42,3 +42,6 @@ export * from './cdp-whitelist';
 
 // Environment helpers
 export * from './env';
+
+// Sentry
+export * from './sentry';

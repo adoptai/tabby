@@ -1,14 +1,14 @@
 import {
-  Controller, Post, Get, Put, Delete, Body, Param, Req,
+  Controller, Post, Get, Put, Delete, Body, Param, Query, Req,
   UseGuards, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { IsString, MinLength, IsOptional, IsObject, IsInt, Min } from 'class-validator';
 import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard';
 import { AppTemplatesService } from './app-templates.service';
 
 class CreateAppTemplateDto {
-  @ApiProperty({ required: false, description: 'Target tenant ID. Defaults to caller\'s tenant.' })
+  @ApiProperty({ required: false, description: 'Target tenant ID. Admin-only: override to create in another tenant. Non-admin callers always use their own tenant.' })
   @IsOptional() @IsString()
   tenant_id?: string;
 
@@ -57,25 +57,29 @@ export class AppTemplatesController {
   constructor(private readonly templateService: AppTemplatesService) {}
 
   @Post()
-  @Roles('Admin')
   @HttpCode(201)
-  @ApiOperation({ summary: 'Create app template', description: 'Create a reusable app config template for auto-provisioning per-user sessions.' })
+  @ApiOperation({ summary: 'Create app template', description: 'Create a reusable app config template for auto-provisioning. Any authenticated user can create templates in their own tenant. Admins can override tenant_id to create in another tenant.' })
   async create(@Body() dto: CreateAppTemplateDto, @Req() req: any) {
-    const tenantId = dto.tenant_id || req.user.tenant_id;
+    const tenantId = (req.user.role === 'Admin' && dto.tenant_id) ? dto.tenant_id : req.user.tenant_id;
     return this.templateService.create(tenantId, dto, req.user.user_id);
   }
 
   @Get()
-  @Roles('Admin')
-  @ApiOperation({ summary: 'List app templates' })
-  async findAll(@Req() req: any) {
+  @ApiOperation({ summary: 'List app templates', description: 'Returns templates for the caller\'s tenant. Admins can pass ?tenant_id= to query another tenant, or omit to see all.' })
+  @ApiQuery({ name: 'tenant_id', required: false, description: 'Filter by tenant (Admin only). Non-admins always see their own tenant.' })
+  async findAll(@Req() req: any, @Query('tenant_id') queryTenantId?: string) {
+    if (req.user.role === 'Admin') {
+      return this.templateService.findAll(queryTenantId);
+    }
     return this.templateService.findAll(req.user.tenant_id);
   }
 
   @Get(':id')
-  @Roles('Admin')
   @ApiOperation({ summary: 'Get app template details' })
   async findOne(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    if (req.user.role === 'Admin') {
+      return this.templateService.findOne(undefined, id);
+    }
     return this.templateService.findOne(req.user.tenant_id, id);
   }
 

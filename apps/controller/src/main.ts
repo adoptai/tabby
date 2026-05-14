@@ -1,4 +1,7 @@
 import 'reflect-metadata';
+import { initSentry } from '@browser-hitl/shared';
+initSentry('controller');
+
 import { NestFactory } from '@nestjs/core';
 import { ControllerModule } from './controller.module';
 import { PORTS } from '@browser-hitl/shared';
