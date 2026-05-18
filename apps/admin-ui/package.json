@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@browser-hitl/shared": "workspace:*",
-    "@sentry/node": "^10.51.0",
+    "@sentry/node": "^10.53.1",
     "next": "^15.5.16",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
