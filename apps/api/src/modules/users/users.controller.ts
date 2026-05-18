@@ -1,6 +1,7 @@
 import {
-  Controller, Post, Get, Body, Query, Req, UseGuards, HttpCode,
+  Controller, Post, Get, Delete, Param, Body, Query, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
+import { ApiParam } from '@nestjs/swagger';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty } from '@nestjs/swagger';
 import { IsEmail, IsString, MinLength, IsIn, IsUUID, Matches } from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -59,5 +60,14 @@ export class UsersController {
     @Req() req: any,
   ) {
     return this.usersService.findAll(req.user.tenant_id, query.limit, query.offset);
+  }
+
+  @Delete(':id')
+  @Roles('Admin')
+  @ApiOperation({ summary: 'Delete user and all owned resources', description: 'Deletes a user and cascades to all their sessions, apps, profiles, and artifacts. Admin role required.' })
+  @ApiParam({ name: 'id', description: 'User ID' })
+  @ApiResponse({ status: 200, description: 'User deleted with summary of cleaned resources' })
+  async remove(@Param('id') id: string, @Req() req: any) {
+    return this.usersService.remove(id, req.user.user_id);
   }
 }
