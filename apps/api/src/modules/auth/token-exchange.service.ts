@@ -132,8 +132,11 @@ export class TokenExchangeService {
     // 4. JWT expiry is already validated by jsonwebtoken.verify() (checks exp claim)
     // No additional age check needed — Frontegg JWTs have 24h TTL and users stay logged in
 
-    // 5. Extract owner_user_id from configured claim
-    const ownerUserId = String(verifiedPayload[idp.user_id_claim] || verifiedPayload.sub || '');
+    // 5. Extract owner_user_id — prefer stable cross-app userId (Frontegg API tokens
+    // have a different `sub` per application, but `userId` is always the real user ID)
+    this.logger.log(`Token exchange claims: sub=${verifiedPayload.sub}, userId=${(verifiedPayload as any).userId}, type=${verifiedPayload.type}`);
+    const ownerUserId = String((verifiedPayload as any).userId || verifiedPayload[idp.user_id_claim] || verifiedPayload.sub || '');
+    this.logger.log(`Resolved ownerUserId: ${ownerUserId}`);
     if (!ownerUserId) {
       throw new UnauthorizedException('JWT missing user identifier claim');
     }
