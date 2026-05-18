@@ -36,9 +36,11 @@ function buildService(overrides: Record<string, any> = {}) {
   const auditService = overrides.auditService ?? createMockAuditService();
 
   const service = Object.create(TokenExchangeService.prototype);
+  (service as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   (service as any).idpRepo = idpRepo;
   (service as any).tenantRepo = tenantRepo;
   (service as any).identityRepo = identityRepo;
+  (service as any).userRepo = { findOne: jest.fn(), create: jest.fn(), save: jest.fn() };
   (service as any).jwksService = jwksService;
   (service as any).jwtService = jwtService;
   (service as any).auditService = auditService;
@@ -222,6 +224,37 @@ describe('TokenExchangeService', () => {
         subject_token: fakeJwt,
         subject_token_type: 'oidc_jwt',
       })).rejects.toThrow('Tenant not found');
+    });
+
+    it('prefers userId over sub for owner_user_id (API token fallback)', async () => {
+      const { service, idpRepo, jwksService, auditService } = buildService();
+
+      idpRepo.findOne.mockResolvedValue({
+        id: 'idp-1',
+        tenant_id: 'tenant-1',
+        tenant_id_claim: null,
+        issuer_url: 'https://auth.example.com',
+        audience: null,
+        user_id_claim: 'sub',
+        default_role: 'Operator',
+        allow_auto_provision: false,
+      });
+
+      jwksService.getPublicKey.mockResolvedValue('mock-pem');
+      (jwt.verify as jest.Mock).mockReturnValue({
+        iss: 'https://auth.example.com',
+        sub: 'app-scoped-id',
+        userId: 'stable-user-id',
+        type: 'userApiToken',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const result = await service.exchange({
+        subject_token: fakeJwt,
+        subject_token_type: 'oidc_jwt',
+      }, 'tenant-1');
+
+      expect(result.owner_user_id).toBe('stable-user-id');
     });
   });
 
