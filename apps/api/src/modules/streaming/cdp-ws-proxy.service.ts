@@ -163,7 +163,25 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
     const backendWs = new WebSocket(backendUrl);
     this.trackSocket(backendWs);
 
+    // Tracks in-flight JSON-RPC request IDs so matching backend responses are forwarded.
+    // Capped to avoid unbounded growth on sessions with dropped responses (e.g. very long
+    // sessions with transient backend packet loss). When the cap is hit the oldest quarter
+    // is evicted — callers will not receive those responses but the connection stays alive.
     const pendingIds = new Set<number>();
+    const PENDING_IDS_MAX = 500;
+
+    function trackPendingId(id: number): void {
+      if (pendingIds.size >= PENDING_IDS_MAX) {
+        // Set iteration order is insertion order — evict the oldest quarter.
+        const evictCount = Math.floor(PENDING_IDS_MAX / 4);
+        let i = 0;
+        for (const stale of pendingIds) {
+          if (i++ >= evictCount) break;
+          pendingIds.delete(stale);
+        }
+      }
+      pendingIds.add(id);
+    }
 
     backendWs.on('error', (err) => {
       this.logger.warn(
@@ -222,7 +240,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
 
       // Track pending request IDs
       if (typeof msg.id === 'number') {
-        pendingIds.add(msg.id);
+        trackPendingId(msg.id);
       }
 
       if (backendWs.readyState === WebSocket.OPEN) {

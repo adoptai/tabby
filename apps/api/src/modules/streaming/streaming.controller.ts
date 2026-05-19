@@ -31,6 +31,137 @@ import { parseCookie } from '../../common/utils/cookie';
 /** Module-level constant — avoids repeating the env-read inline everywhere. */
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
 
+/**
+ * Redirect to OAuth login (or email gate fallback) when a valid tabby_vnc cookie is absent.
+ * Shared by VNC and CDP viewers — pass `prefix` to control which path is used.
+ *
+ * M-4: The stream token is NOT included in the post_login URL that travels through the IdP.
+ * Instead it is stored in the OAuth Redis state alongside the PKCE verifier and recovered in
+ * handleOauthCallback, so it never appears in IdP server logs or browser Referer headers.
+ */
+async function redirectToAuth(
+  res: Response,
+  sessionId: string,
+  token: string | undefined,
+  idpRepo: Repository<IdentityProviderEntity>,
+  prefix: 'vnc' | 'cdp',
+): Promise<void> {
+  const idp = await idpRepo.findOne({ where: { enabled: true, auth_url: Not(IsNull()) } });
+
+  if (idp) {
+    if (token) {
+      const params = new URLSearchParams({ post_login: `/${prefix}/${sessionId}`, stream_token: token });
+      res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
+      return;
+    }
+    const oauthLoginUrl = `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login`;
+    const nonce = randomBytes(16).toString('base64');
+    res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    const escapedId = JSON.stringify(sessionId);
+    const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
+var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
+var t=new URLSearchParams(h).get('token')||'';
+var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
+if(t)p.set('stream_token',t);
+window.location.href='${oauthLoginUrl}?'+p.toString();
+</script></body></html>`;
+    res.status(200).send(bridge);
+    return;
+  }
+
+  // No OAuth configured: render email gate fallback.
+  // sessionId is guaranteed to be a UUID by ParseUUIDPipe on the caller.
+  // JSON.stringify is used for all values injected into script context.
+  const emailGatePage = renderEmailGatePage(sessionId, token, prefix);
+  const nonce = randomBytes(16).toString('base64');
+  res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
+  res.setHeader('content-type', 'text/html; charset=utf-8');
+  res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('pragma', 'no-cache');
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.status(200).send(emailGatePage.replace('<script>', `<script nonce="${nonce}">`));
+}
+
+function renderEmailGatePage(sessionId: string, token: string | undefined, prefix: 'vnc' | 'cdp'): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verify Access</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
+      .card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 32px; max-width: 380px; width: 100%; }
+      h2 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0 0 20px; color: #94a3b8; font-size: 14px; }
+      input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 15px; outline: none; }
+      input[type="email"]:focus { border-color: #3b82f6; }
+      button { margin-top: 14px; width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      #msg { margin-top: 10px; font-size: 13px; color: #f87171; min-height: 18px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Verify your identity</h2>
+      <p>Enter the email address associated with this session to view the browser stream.</p>
+      <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
+      <button id="submitBtn">Continue</button>
+      <div id="msg"></div>
+    </div>
+    <script>
+      var SESSION_ID = ${JSON.stringify(sessionId)};
+      var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
+      // Also check URL fragment for stream token (server never sees #fragment)
+      if (!STREAM_TOKEN) {
+        var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
+        STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
+      }
+
+      document.getElementById('submitBtn').addEventListener('click', verify);
+      document.getElementById('emailInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') verify();
+      });
+
+      function verify() {
+        var email = document.getElementById('emailInput').value.trim();
+        if (!email) return;
+        var btn = document.getElementById('submitBtn');
+        var msg = document.getElementById('msg');
+        btn.disabled = true;
+        msg.textContent = '';
+        var PREFIX = ${JSON.stringify(prefix)};
+        fetch('/' + PREFIX + '/' + SESSION_ID + '/verify-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email }),
+          credentials: 'same-origin',
+        })
+          .then(function(r) {
+            if (r.ok) {
+              var dest = '/' + PREFIX + '/' + SESSION_ID;
+              if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
+              window.location.href = dest;
+            } else {
+              r.json().catch(function() { return {}; }).then(function(d) {
+                msg.textContent = d.message || 'Access denied. Please check your email.';
+              });
+              btn.disabled = false;
+            }
+          })
+          .catch(function() {
+            msg.textContent = 'Network error. Please try again.';
+            btn.disabled = false;
+          });
+      }
+    </script>
+  </body>
+</html>`;
+}
+
 @Controller('s')
 export class ShortLinkController {
   constructor(
@@ -203,7 +334,7 @@ export class CdpStreamingController {
       const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
 
       if (!cookieToken) {
-        return this.redirectToAuth(res, sessionId, token, session, 'cdp');
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'cdp');
       }
 
       let cookieValid = false;
@@ -227,7 +358,7 @@ export class CdpStreamingController {
       }
 
       if (!cookieValid) {
-        return this.redirectToAuth(res, sessionId, token, session, 'cdp');
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'cdp');
       }
     }
     // ── End auth gate ────────────────────────────────────────────────────────
@@ -659,129 +790,6 @@ export class CdpStreamingController {
 </html>`;
   }
 
-  private async redirectToAuth(
-    res: Response,
-    sessionId: string,
-    token: string | undefined,
-    session: SessionEntity,
-    prefix: 'vnc' | 'cdp' = 'cdp',
-  ): Promise<void> {
-    const idp = await this.idpRepo.findOne({
-      where: { enabled: true, auth_url: Not(IsNull()) },
-    });
-
-    if (idp) {
-      if (token) {
-        const params = new URLSearchParams({
-          post_login: `/${prefix}/${sessionId}`,
-          stream_token: token,
-        });
-        res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
-        return;
-      }
-      const oauthLoginUrl = `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login`;
-      const nonce = randomBytes(16).toString('base64');
-      res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
-      res.setHeader('content-type', 'text/html; charset=utf-8');
-      res.setHeader('cache-control', 'no-store');
-      const escapedId = JSON.stringify(sessionId);
-      const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
-var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
-var t=new URLSearchParams(h).get('token')||'';
-var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
-if(t)p.set('stream_token',t);
-window.location.href='${oauthLoginUrl}?'+p.toString();
-</script></body></html>`;
-      res.status(200).send(bridge);
-      return;
-    }
-
-    const emailGatePage = this.renderEmailGatePage(sessionId, token, prefix);
-    const nonce = randomBytes(16).toString('base64');
-    res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
-    res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
-    res.setHeader('pragma', 'no-cache');
-    res.setHeader('x-content-type-options', 'nosniff');
-    res.status(200).send(emailGatePage.replace('<script>', `<script nonce="${nonce}">`));
-  }
-
-  private renderEmailGatePage(sessionId: string, token: string | undefined, prefix: 'vnc' | 'cdp' = 'cdp'): string {
-    return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Verify Access</title>
-    <link rel="icon" href="data:," />
-    <style>
-      html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
-      .card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 32px; max-width: 380px; width: 100%; }
-      h2 { margin: 0 0 8px; font-size: 20px; }
-      p { margin: 0 0 20px; color: #94a3b8; font-size: 14px; }
-      input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 15px; outline: none; }
-      input[type="email"]:focus { border-color: #3b82f6; }
-      button { margin-top: 14px; width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
-      button:disabled { opacity: 0.6; cursor: not-allowed; }
-      #msg { margin-top: 10px; font-size: 13px; color: #f87171; min-height: 18px; }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <h2>Verify your identity</h2>
-      <p>Enter the email address associated with this session to view the browser stream.</p>
-      <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
-      <button id="submitBtn">Continue</button>
-      <div id="msg"></div>
-    </div>
-    <script>
-      var SESSION_ID = ${JSON.stringify(sessionId)};
-      var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
-      if (!STREAM_TOKEN) {
-        var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
-        STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
-      }
-
-      document.getElementById('submitBtn').addEventListener('click', verify);
-      document.getElementById('emailInput').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') verify();
-      });
-
-      function verify() {
-        var email = document.getElementById('emailInput').value.trim();
-        if (!email) return;
-        var btn = document.getElementById('submitBtn');
-        var msg = document.getElementById('msg');
-        btn.disabled = true;
-        msg.textContent = '';
-        var PREFIX = ${JSON.stringify(prefix)};
-        fetch('/' + PREFIX + '/' + SESSION_ID + '/verify-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email }),
-          credentials: 'same-origin',
-        })
-          .then(function(r) {
-            if (r.ok) {
-              var dest = '/' + PREFIX + '/' + SESSION_ID;
-              if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
-              window.location.href = dest;
-            } else {
-              r.json().catch(function() { return {}; }).then(function(d) {
-                msg.textContent = d.message || 'Access denied. Please check your email.';
-              });
-              btn.disabled = false;
-            }
-          })
-          .catch(function() {
-            msg.textContent = 'Network error. Please try again.';
-            btn.disabled = false;
-          });
-      }
-    </script>
-  </body>
-</html>`;
-  }
 }
 
 @ApiTags('Streaming')
@@ -1163,7 +1171,7 @@ export class StreamingController {
 
       if (!cookieToken) {
         // No cookie — go through OAuth / email gate.
-        return this.redirectToAuth(res, sessionId, token, session);
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'vnc');
       }
 
       let cookieValid = false;
@@ -1189,7 +1197,7 @@ export class StreamingController {
       }
 
       if (!cookieValid) {
-        return this.redirectToAuth(res, sessionId, token, session);
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'vnc');
       }
     }
     // ── End auth gate ──────────────────────────────────────────────────────
@@ -1200,144 +1208,6 @@ export class StreamingController {
     res.setHeader('pragma', 'no-cache');
     res.setHeader('x-content-type-options', 'nosniff');
     res.status(200).send(page);
-  }
-
-  /**
-   * Redirect to OAuth login (or email gate fallback) when a valid tabby_vnc
-   * cookie is absent.  Extracted from openStream to keep that method readable.
-   *
-   * M-4: The stream token is NOT included in the post_login URL that travels
-   * through the IdP.  Instead it is stored in the OAuth Redis state alongside
-   * the PKCE verifier and recovered in handleOauthCallback, so it never appears
-   * in IdP server logs or browser Referer headers.
-   */
-  private async redirectToAuth(
-    res: Response,
-    sessionId: string,
-    token: string | undefined,
-    session: SessionEntity,
-    prefix: 'vnc' | 'cdp' = 'vnc',
-  ): Promise<void> {
-    const idp = await this.idpRepo.findOne({
-      where: { enabled: true, auth_url: Not(IsNull()) },
-    });
-
-    if (idp) {
-      if (token) {
-        const params = new URLSearchParams({
-          post_login: `/${prefix}/${sessionId}`,
-          stream_token: token,
-        });
-        res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
-        return;
-      }
-      const oauthLoginUrl = `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login`;
-      const nonce = randomBytes(16).toString('base64');
-      res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
-      res.setHeader('content-type', 'text/html; charset=utf-8');
-      res.setHeader('cache-control', 'no-store');
-      const escapedId = JSON.stringify(sessionId);
-      const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
-var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
-var t=new URLSearchParams(h).get('token')||'';
-var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
-if(t)p.set('stream_token',t);
-window.location.href='${oauthLoginUrl}?'+p.toString();
-</script></body></html>`;
-      res.status(200).send(bridge);
-      return;
-    }
-
-    // No OAuth configured: render email gate fallback
-    const emailGatePage = this.renderEmailGatePage(sessionId, token, prefix);
-    const nonce = randomBytes(16).toString('base64');
-    res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
-    res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
-    res.setHeader('pragma', 'no-cache');
-    res.setHeader('x-content-type-options', 'nosniff');
-    res.status(200).send(emailGatePage.replace('<script>', `<script nonce="${nonce}">`));
-  }
-
-  private renderEmailGatePage(sessionId: string, token: string | undefined, prefix: 'vnc' | 'cdp' = 'vnc'): string {
-    // sessionId is guaranteed to be a UUID by ParseUUIDPipe on the caller.
-    // JSON.stringify is used for all values injected into script context to
-    // prevent XSS even if input validation is bypassed.
-    return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Verify Access</title>
-    <link rel="icon" href="data:," />
-    <style>
-      html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
-      .card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 32px; max-width: 380px; width: 100%; }
-      h2 { margin: 0 0 8px; font-size: 20px; }
-      p { margin: 0 0 20px; color: #94a3b8; font-size: 14px; }
-      input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 15px; outline: none; }
-      input[type="email"]:focus { border-color: #3b82f6; }
-      button { margin-top: 14px; width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
-      button:disabled { opacity: 0.6; cursor: not-allowed; }
-      #msg { margin-top: 10px; font-size: 13px; color: #f87171; min-height: 18px; }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <h2>Verify your identity</h2>
-      <p>Enter the email address associated with this session to view the browser stream.</p>
-      <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
-      <button id="submitBtn">Continue</button>
-      <div id="msg"></div>
-    </div>
-    <script>
-      var SESSION_ID = ${JSON.stringify(sessionId)};
-      var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
-      // Also check URL fragment for stream token (server never sees #fragment)
-      if (!STREAM_TOKEN) {
-        var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
-        STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
-      }
-
-      document.getElementById('submitBtn').addEventListener('click', verify);
-      document.getElementById('emailInput').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') verify();
-      });
-
-      function verify() {
-        var email = document.getElementById('emailInput').value.trim();
-        if (!email) return;
-        var btn = document.getElementById('submitBtn');
-        var msg = document.getElementById('msg');
-        btn.disabled = true;
-        msg.textContent = '';
-        var PREFIX = ${JSON.stringify(prefix)};
-        fetch('/' + PREFIX + '/' + SESSION_ID + '/verify-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email }),
-          credentials: 'same-origin',
-        })
-          .then(function(r) {
-            if (r.ok) {
-              var dest = '/' + PREFIX + '/' + SESSION_ID;
-              if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
-              window.location.href = dest;
-            } else {
-              r.json().catch(function() { return {}; }).then(function(d) {
-                msg.textContent = d.message || 'Access denied. Please check your email.';
-              });
-              btn.disabled = false;
-            }
-          })
-          .catch(function() {
-            msg.textContent = 'Network error. Please try again.';
-            btn.disabled = false;
-          });
-      }
-    </script>
-  </body>
-</html>`;
   }
 
   private renderViewerPage(sessionId: string, appId: string, token?: string): string {
