@@ -590,12 +590,14 @@ export class CdpStreamingController {
 
         var onCanvas = activeEl === canvas || activeEl === document.body || !activeEl;
 
-        // Mac Command → Ctrl: translate Cmd+{v,c,a,x,z} to Ctrl+key for remote browser
+        // Mac Command → Ctrl: translate Cmd+{v,c,a,x,z} to Ctrl+key for remote browser.
+        // Shift is preserved so Cmd+Shift+Z → Ctrl+Shift+Z (redo).
         if (type === 'keyDown' && e.metaKey && onCanvas && 'vcaxz'.indexOf(e.key.toLowerCase()) >= 0) {
           e.preventDefault();
           var vk0 = e.key.toUpperCase().charCodeAt(0);
-          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: e.key, code: e.code, windowsVirtualKeyCode: vk0, nativeVirtualKeyCode: vk0, modifiers: 2 } }));
-          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyUp', key: e.key, code: e.code, windowsVirtualKeyCode: vk0, nativeVirtualKeyCode: vk0, modifiers: 2 } }));
+          var mods0 = 2 | (e.shiftKey ? 8 : 0); // Ctrl + optional Shift
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: e.key, code: e.code, windowsVirtualKeyCode: vk0, nativeVirtualKeyCode: vk0, modifiers: mods0 } }));
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyUp', key: e.key, code: e.code, windowsVirtualKeyCode: vk0, nativeVirtualKeyCode: vk0, modifiers: mods0 } }));
           return;
         }
         // Skip keyUp for Cmd shortcuts (already sent synthetic keyUp above)
@@ -1500,6 +1502,7 @@ export class StreamingController {
       clipSend.addEventListener('click', () => { sendClipboard(); window.rfb.focus(); });
 
       // Mac Command → Ctrl: translate common shortcuts when canvas/body has focus.
+      // Shift is preserved so Cmd+Shift+Z → Ctrl+Shift+Z (redo).
       // Skips when the side panel input is focused so Cmd+V pastes normally into it.
       document.addEventListener('keydown', (event) => {
         if (!event.metaKey) return;
@@ -1510,10 +1513,12 @@ export class StreamingController {
         event.preventDefault();
         event.stopPropagation();
         const keysym = key.charCodeAt(0);
+        if (event.shiftKey) window.rfb.sendKey(0xffe1, 'ShiftLeft', true);
         window.rfb.sendKey(0xffe3, 'ControlLeft', true);
         window.rfb.sendKey(keysym, 'Key' + key.toUpperCase(), true);
         window.rfb.sendKey(keysym, 'Key' + key.toUpperCase(), false);
         window.rfb.sendKey(0xffe3, 'ControlLeft', false);
+        if (event.shiftKey) window.rfb.sendKey(0xffe1, 'ShiftLeft', false);
       }, true);
     </script>
   </body>
