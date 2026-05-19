@@ -99,7 +99,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const validation = await this.streamTokenService.validateToken(token);
+      const validation = this.streamTokenService.verifyToken(token);
       if (!validation.valid) {
         this.rejectUpgrade(socket, 401, validation.reason);
         return;

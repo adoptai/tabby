@@ -574,6 +574,14 @@ export class CdpStreamingController {
       document.addEventListener('keydown', function(e) { sendKey('keyDown', e); });
       document.addEventListener('keyup', function(e) { sendKey('keyUp', e); });
 
+      var KEY_VK = {
+        'Backspace':8,'Tab':9,'Enter':13,'Escape':27,'Space':32,
+        'PageUp':33,'PageDown':34,'End':35,'Home':36,
+        'ArrowLeft':37,'ArrowUp':38,'ArrowRight':39,'ArrowDown':40,
+        'Delete':46,'F1':112,'F2':113,'F3':114,'F4':115,'F5':116,
+        'F6':117,'F7':118,'F8':119,'F9':120,'F10':121,'F11':122,'F12':123,
+      };
+
       function sendKey(type, e) {
         if (!ws || ws.readyState !== 1) return;
         // Never send keys while an input inside the side panel is focused
@@ -585,8 +593,9 @@ export class CdpStreamingController {
         // Mac Command → Ctrl: translate Cmd+{v,c,a,x,z} to Ctrl+key for remote browser
         if (type === 'keyDown' && e.metaKey && onCanvas && 'vcaxz'.indexOf(e.key.toLowerCase()) >= 0) {
           e.preventDefault();
-          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: e.key, code: e.code, modifiers: 2 } }));
-          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyUp', key: e.key, code: e.code, modifiers: 2 } }));
+          var vk0 = e.key.toUpperCase().charCodeAt(0);
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: e.key, code: e.code, windowsVirtualKeyCode: vk0, nativeVirtualKeyCode: vk0, modifiers: 2 } }));
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyUp', key: e.key, code: e.code, windowsVirtualKeyCode: vk0, nativeVirtualKeyCode: vk0, modifiers: 2 } }));
           return;
         }
         // Skip keyUp for Cmd shortcuts (already sent synthetic keyUp above)
@@ -595,6 +604,7 @@ export class CdpStreamingController {
         }
 
         if (onCanvas) e.preventDefault();
+        var vk = e.key.length === 1 ? e.key.toUpperCase().charCodeAt(0) : (KEY_VK[e.key] || 0);
         ws.send(JSON.stringify({
           id: cmdId++,
           method: 'Input.dispatchKeyEvent',
@@ -603,6 +613,8 @@ export class CdpStreamingController {
             key: e.key,
             code: e.code,
             text: type === 'keyDown' && e.key.length === 1 ? e.key : undefined,
+            windowsVirtualKeyCode: vk,
+            nativeVirtualKeyCode: vk,
             modifiers: (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0)
           }
         }));
