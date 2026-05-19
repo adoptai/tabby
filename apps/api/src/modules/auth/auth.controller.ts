@@ -700,7 +700,9 @@ export class AuthController implements OnModuleDestroy {
 
     // M-2: Only suppress _token for known VNC paths. All other paths (relative or
     // absolute same-origin) receive _token so the admin-UI can authenticate.
-    const isVncRedirect = postLoginRedirectUri.startsWith('/vnc/') || postLoginRedirectUri.startsWith('/s/');
+    const isVncRedirect = postLoginRedirectUri.startsWith('/vnc/')
+      || postLoginRedirectUri.startsWith('/cdp/')
+      || postLoginRedirectUri.startsWith('/s/');
 
     if (isVncRedirect) {
       return res.redirect(`${PUBLIC_BASE_URL}${postLoginRedirectUri}`);

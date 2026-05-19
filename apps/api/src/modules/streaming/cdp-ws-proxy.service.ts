@@ -6,8 +6,10 @@ import { Socket } from 'net';
 import { URL } from 'url';
 import { Repository } from 'typeorm';
 import WebSocket, { WebSocketServer } from 'ws';
+import { JwtService } from '@nestjs/jwt';
 import { SessionEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
+import { parseCookie } from '../../common/utils/cookie';
 import {
   CDP_ALLOWED_COMMANDS,
   CDP_ALLOWED_EVENTS,
@@ -44,6 +46,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly httpAdapterHost: HttpAdapterHost,
     private readonly streamTokenService: StreamTokenService,
+    private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
   ) {}
@@ -118,6 +121,26 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
       if (!session.pod_name) {
         this.rejectUpgrade(socket, 409, 'Session pod is not ready');
         return;
+      }
+
+      // Verify tabby_vnc cookie for sessions that have owner_user_id (same gate as VNC WS proxy)
+      if (session.owner_user_id) {
+        const cookieHeader = (request.headers.cookie as string | undefined) || '';
+        const vncCookie = parseCookie(cookieHeader, 'tabby_vnc');
+        if (!vncCookie) {
+          this.rejectUpgrade(socket, 401, 'Access cookie required');
+          return;
+        }
+        try {
+          const payload = this.jwtService.verify<{ type: string; owner_user_id: string; tenant_id: string }>(vncCookie);
+          if (payload.type !== 'vnc_access' || payload.owner_user_id !== session.owner_user_id) {
+            this.rejectUpgrade(socket, 403, 'Cookie owner mismatch');
+            return;
+          }
+        } catch {
+          this.rejectUpgrade(socket, 401, 'Invalid access cookie');
+          return;
+        }
       }
 
       // Complete the WebSocket upgrade
