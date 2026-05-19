@@ -413,6 +413,7 @@ export class CdpStreamingController {
       #clip-status { font-size: 11px; color: #6ee7b7; min-height: 16px; }
       #restart-confirm { display: none; margin-top: 8px; padding: 10px; background: rgba(220,38,38,0.1); border-radius: 6px; }
       #restart-confirm p { margin: 0 0 8px; font-size: 12px; color: #f87171; }
+      .restart-warning { font-size: 11px; color: #fbbf24; line-height: 1.5; padding: 8px 10px; background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.18); border-radius: 6px; }
       @media (prefers-reduced-motion: reduce) { #side-panel { transition: none; } }
     </style>
   </head>
@@ -455,6 +456,7 @@ export class CdpStreamingController {
           </div>
         </details>
         <div class="psec psec--bottom">
+          <div class="restart-warning">⚠ Only use this if your session is stuck. Make sure to resolve any active HITL step before restarting.</div>
           <button id="restart-btn" class="pbtn pbtn-red">Restart Session</button>
           <div id="restart-confirm">
             <p>This will terminate the current session.</p>
@@ -1261,6 +1263,7 @@ export class StreamingController {
       #clip-status { font-size: 11px; color: #6ee7b7; min-height: 16px; }
       #restart-confirm { display: none; margin-top: 8px; padding: 10px; background: rgba(220,38,38,0.1); border-radius: 6px; }
       #restart-confirm p { margin: 0 0 8px; font-size: 12px; color: #f87171; }
+      .restart-warning { font-size: 11px; color: #fbbf24; line-height: 1.5; padding: 8px 10px; background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.18); border-radius: 6px; }
       @media (prefers-reduced-motion: reduce) { #side-panel { transition: none; } }
     </style>
   </head>
@@ -1297,6 +1300,7 @@ export class StreamingController {
           </div>
         </details>
         <div class="psec psec--bottom">
+          <div class="restart-warning">⚠ Only use this if your session is stuck. Make sure to resolve any active HITL step before restarting.</div>
           <button id="restart-btn" class="pbtn pbtn-red">Restart Session</button>
           <div id="restart-confirm">
             <p>This will terminate the current session.</p>
