@@ -386,12 +386,11 @@ export class CdpStreamingController {
       html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; }
       #toolbar { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #1e293b; background: #111827; }
       #state { font-size: 12px; color: #93c5fd; }
-      #fps { font-size: 12px; color: #6ee7b7; margin-left: auto; }
       #screen { display: flex; justify-content: center; align-items: center; width: 100%; height: calc(100% - 45px); overflow: hidden; }
       canvas { max-width: 100%; max-height: 100%; }
       #reconnect { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #1e293b; padding: 24px; border-radius: 8px; text-align: center; }
       #reconnect button { margin-top: 12px; padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; }
-      #side-panel { position: fixed; top: 44px; right: 0; bottom: 0; width: 300px; background: #111827; border-left: 1px solid #1e293b; box-shadow: -4px 0 24px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 280ms cubic-bezier(0.4,0,0.2,1); will-change: transform; z-index: 9000; display: flex; flex-direction: column; overflow: hidden; }
+      #side-panel { position: fixed; top: 44px; right: 0; bottom: 0; width: 300px; background: #111827; border-left: 1px solid #1e293b; box-shadow: -4px 0 24px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 280ms cubic-bezier(0.4,0,0.2,1); will-change: transform; z-index: 9000; display: flex; flex-direction: column; overflow: visible; }
       #side-panel[aria-expanded="true"] { transform: translateX(0); }
       #panel-toggle { position: absolute; left: -36px; top: 50%; transform: translateY(-50%); width: 36px; height: 56px; background: #111827; border: 1px solid #1e293b; border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 14px; padding: 0; }
       #panel-toggle:hover { background: #1e293b; color: #f8fafc; }
@@ -421,7 +420,6 @@ export class CdpStreamingController {
     <div id="toolbar">
       <strong>Browser HITL Stream (CDP)</strong>
       <span id="state">Connecting...</span>
-      <span id="fps"></span>
     </div>
     <div id="screen">
       <canvas id="canvas"></canvas>
@@ -474,7 +472,6 @@ export class CdpStreamingController {
 
     <script>
       var stateEl = document.getElementById('state');
-      var fpsEl = document.getElementById('fps');
       var canvas = document.getElementById('canvas');
       var ctx = canvas.getContext('2d');
       var reconnectEl = document.getElementById('reconnect');
@@ -484,8 +481,6 @@ export class CdpStreamingController {
 
       var ws = null;
       var cmdId = 1;
-      var frameCount = 0;
-      var lastFpsUpdate = Date.now();
 
       function resolveToken() {
         var hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
@@ -551,13 +546,6 @@ export class CdpStreamingController {
             canvas.height = img.height;
           }
           ctx.drawImage(img, 0, 0);
-          frameCount++;
-          var now = Date.now();
-          if (now - lastFpsUpdate >= 1000) {
-            fpsEl.textContent = frameCount + ' fps';
-            frameCount = 0;
-            lastFpsUpdate = now;
-          }
         };
         img.src = 'data:image/jpeg;base64,' + params.data;
       }
@@ -1226,7 +1214,7 @@ export class StreamingController {
       #toolbar { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #1e293b; background: #111827; }
       #state { font-size: 12px; color: #93c5fd; }
       #screen { width: 100%; height: calc(100% - 45px); }
-      #side-panel { position: fixed; top: 44px; right: 0; bottom: 0; width: 300px; background: #111827; border-left: 1px solid #1e293b; box-shadow: -4px 0 24px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 280ms cubic-bezier(0.4,0,0.2,1); will-change: transform; z-index: 9000; display: flex; flex-direction: column; overflow: hidden; }
+      #side-panel { position: fixed; top: 44px; right: 0; bottom: 0; width: 300px; background: #111827; border-left: 1px solid #1e293b; box-shadow: -4px 0 24px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 280ms cubic-bezier(0.4,0,0.2,1); will-change: transform; z-index: 9000; display: flex; flex-direction: column; overflow: visible; }
       #side-panel[aria-expanded="true"] { transform: translateX(0); }
       #panel-toggle { position: absolute; left: -36px; top: 50%; transform: translateY(-50%); width: 36px; height: 56px; background: #111827; border: 1px solid #1e293b; border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 14px; padding: 0; }
       #panel-toggle:hover { background: #1e293b; color: #f8fafc; }
