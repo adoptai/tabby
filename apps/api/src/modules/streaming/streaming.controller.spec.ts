@@ -241,7 +241,7 @@ describe('StreamingController — successor', () => {
   it('returns successor URL when a new session exists for the same app', async () => {
     sessionRepo.findOne
       .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1', state: 'TERMINATED' }))
-      .mockResolvedValueOnce(makeSession({ id: 'sess-2', app_id: 'app-1', state: 'STARTING' }));
+      .mockResolvedValueOnce(makeSession({ id: 'sess-2', app_id: 'app-1', state: 'HEALTHY' }));
     appRepo.findOne.mockResolvedValue(makeApp({ browser_policy: null }));
 
     const result = await controller.getSuccessor('sess-1', 'valid-token');
@@ -252,10 +252,17 @@ describe('StreamingController — successor', () => {
     expect(streamTokenService.generateToken).toHaveBeenCalledWith('sess-2', 'user-1');
   });
 
+  it('throws NotFoundException when successor is still STARTING (pod not ready)', async () => {
+    sessionRepo.findOne
+      .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1', state: 'TERMINATED' }))
+      .mockResolvedValueOnce(null); // STARTING excluded from query
+    await expect(controller.getSuccessor('sess-1', 'valid-token')).rejects.toThrow(NotFoundException);
+  });
+
   it('uses CDP URL prefix when streaming_mode is cdp', async () => {
     sessionRepo.findOne
       .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1', state: 'TERMINATED' }))
-      .mockResolvedValueOnce(makeSession({ id: 'sess-2', app_id: 'app-1', state: 'STARTING' }));
+      .mockResolvedValueOnce(makeSession({ id: 'sess-2', app_id: 'app-1', state: 'HEALTHY' }));
     appRepo.findOne.mockResolvedValue(makeApp({ browser_policy: { streaming_mode: 'cdp' } }));
 
     const result = await controller.getSuccessor('sess-1', 'valid-token');

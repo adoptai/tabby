@@ -481,6 +481,8 @@ export class CdpStreamingController {
 
       var ws = null;
       var cmdId = 1;
+      var autoRetryCount = 0;
+      var AUTO_RETRY_MAX = 20; // ~60s total at 3s intervals
 
       function resolveToken() {
         var hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
@@ -505,6 +507,7 @@ export class CdpStreamingController {
 
         ws.onopen = function() {
           stateEl.textContent = 'Connected';
+          autoRetryCount = 0;
           ws.send(JSON.stringify({
             id: cmdId++,
             method: 'Page.startScreencast',
@@ -529,8 +532,14 @@ export class CdpStreamingController {
         };
 
         ws.onclose = function() {
-          stateEl.textContent = 'Disconnected';
-          reconnectEl.style.display = 'block';
+          if (autoRetryCount < AUTO_RETRY_MAX) {
+            autoRetryCount++;
+            stateEl.textContent = 'Connecting… (' + autoRetryCount + ')';
+            setTimeout(connect, 3000);
+          } else {
+            stateEl.textContent = 'Disconnected';
+            reconnectEl.style.display = 'block';
+          }
         };
 
         ws.onerror = function() {
@@ -1113,11 +1122,12 @@ export class StreamingController {
     }
 
     // Find a non-terminated session for the same app that was created AFTER the original.
+    // STARTING is excluded: the pod isn't accepting connections yet. The client polls every
+    // 3s, so it picks up the session as soon as it reaches HEALTHY (pod + relay both up).
     // The started_at > original.started_at filter prevents returning a pre-existing sibling
     // session in multi-session apps where desired_session_count > 1.
     const newSession = await this.sessionRepo.findOne({
       where: [
-        { app_id: originalSession.app_id, state: 'STARTING' as any, started_at: MoreThan(originalSession.started_at) },
         { app_id: originalSession.app_id, state: 'HEALTHY' as any, started_at: MoreThan(originalSession.started_at) },
         { app_id: originalSession.app_id, state: 'UNHEALTHY' as any, started_at: MoreThan(originalSession.started_at) },
         { app_id: originalSession.app_id, state: 'LOGIN_NEEDED' as any, started_at: MoreThan(originalSession.started_at) },
