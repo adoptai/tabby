@@ -19,7 +19,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
-import { SessionEntity, InterventionEntity, IdentityProviderEntity, UserEntity } from '../../entities';
+import { SessionEntity, ApplicationEntity, InterventionEntity, IdentityProviderEntity, UserEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
@@ -56,8 +56,8 @@ export class ShortLinkController {
       return;
     }
 
-    // Extract sessionId from the resolved URL (pattern: /vnc/{sessionId}?token=...)
-    const sessionIdMatch = url.match(/\/vnc\/([0-9a-f-]{36})/i);
+    // Extract sessionId from the resolved URL (pattern: /vnc/{id} or /cdp/{id})
+    const sessionIdMatch = url.match(/\/(?:vnc|cdp)\/([0-9a-f-]{36})/i);
     if (sessionIdMatch) {
       const sessionId = sessionIdMatch[1];
       const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
@@ -105,8 +105,13 @@ export class ShortLinkController {
 export class CdpStreamingController {
   constructor(
     private readonly streamTokenService: StreamTokenService,
+    private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
+    @InjectRepository(IdentityProviderEntity)
+    private readonly idpRepo: Repository<IdentityProviderEntity>,
+    @InjectRepository(UserEntity)
+    private readonly userRepo: Repository<UserEntity>,
   ) {}
 
   @Get(':sessionId/auth')
@@ -127,31 +132,106 @@ export class CdpStreamingController {
     return { authorized: true, session_id: sessionId };
   }
 
+  @Get(':sessionId/clear-cdp-auth')
+  async clearCdpAuth(
+    @Param('sessionId') sessionId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    res.clearCookie('tabby_vnc', { path: '/' });
+    res.redirect(302, `/cdp/${sessionId}`);
+  }
+
+  @Post(':sessionId/verify-email')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @HttpCode(200)
+  async verifyCdpEmail(
+    @Param('sessionId') sessionId: string,
+    @Body() body: { email?: string },
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ status: string }> {
+    const email = (body?.email || '').trim().toLowerCase();
+    if (!email) throw new BadRequestException('email is required');
+
+    const denyMsg = 'Access denied';
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) throw new ForbiddenException(denyMsg);
+    if (!session.owner_user_id) throw new ForbiddenException(denyMsg);
+
+    const ownerUser = await this.userRepo.findOne({ where: { id: session.owner_user_id } });
+    if (!ownerUser || ownerUser.email?.toLowerCase() !== email) throw new ForbiddenException(denyMsg);
+
+    const vncToken = this.jwtService.sign({
+      sub: ownerUser.id,
+      tenant_id: session.tenant_id,
+      type: 'vnc_access',
+      owner_user_id: session.owner_user_id,
+      jti: randomUUID(),
+    }, { expiresIn: 3600 });
+
+    const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
+    res.cookie('tabby_vnc', vncToken, {
+      httpOnly: true,
+      secure: isHttps,
+      sameSite: 'lax',
+      maxAge: 3600 * 1000,
+      path: '/',
+    });
+
+    return { status: 'ok' };
+  }
+
   @Get(':sessionId')
   async openStream(
     @Param('sessionId') sessionId: string,
+    @Req() req: Request,
     @Res() res: Response,
     @Query('token') token?: string,
   ): Promise<void> {
     if (token) {
       const result = this.streamTokenService.verifyToken(token);
-      if (!result.valid) {
-        throw new UnauthorizedException(result.reason);
-      }
-      if (result.payload.session_id !== sessionId) {
-        throw new UnauthorizedException('Token is not valid for this session');
-      }
+      if (!result.valid) throw new UnauthorizedException(result.reason);
+      if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
     }
 
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
-    if (!session) {
-      throw new NotFoundException('Session not found');
-    }
-    if (session.state === 'TERMINATED') {
-      throw new BadRequestException('Cannot open stream for TERMINATED session');
-    }
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.state === 'TERMINATED') throw new BadRequestException('Cannot open stream for TERMINATED session');
 
-    const page = this.renderCdpViewerPage(sessionId, token);
+    // ── Auth gate (same pattern as VNC) ─────────────────────────────────────
+    if (session.owner_user_id) {
+      const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
+
+      if (!cookieToken) {
+        return this.redirectToAuth(res, sessionId, token, session, 'cdp');
+      }
+
+      let cookieValid = false;
+      try {
+        const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string; tenant_id: string }>(cookieToken);
+        if (
+          vncPayload.type === 'vnc_access'
+          && vncPayload.owner_user_id === session.owner_user_id
+          && vncPayload.tenant_id === session.tenant_id
+        ) {
+          cookieValid = true;
+        } else if (vncPayload.type === 'vnc_access') {
+          const errorPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Access Denied</title><link rel="icon" href="data:,"><style>html,body{margin:0;padding:0;height:100%;background:#0b1020;color:#f8fafc;font-family:ui-sans-serif,system-ui,sans-serif;display:flex;align-items:center;justify-content:center}.card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:32px;max-width:400px;width:100%;text-align:center}h2{margin:0 0 8px;font-size:20px;color:#f87171}p{margin:0 0 16px;color:#94a3b8;font-size:14px;line-height:1.5}a{display:inline-block;margin-top:4px;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600}a:hover{background:#2563eb}</style></head><body><div class="card"><h2>Access Denied</h2><p>You are logged in as a different user than the owner of this session.</p><a href="/cdp/${sessionId}/clear-cdp-auth">Try with a different account</a></div></body></html>`;
+          res.setHeader('content-type', 'text/html; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.status(403).send(errorPage);
+          return;
+        }
+      } catch {
+        // Invalid/expired cookie — redirect to auth
+      }
+
+      if (!cookieValid) {
+        return this.redirectToAuth(res, sessionId, token, session, 'cdp');
+      }
+    }
+    // ── End auth gate ────────────────────────────────────────────────────────
+
+    const page = this.renderCdpViewerPage(sessionId, session.app_id, token);
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('pragma', 'no-cache');
@@ -159,7 +239,10 @@ export class CdpStreamingController {
     res.status(200).send(page);
   }
 
-  private renderCdpViewerPage(sessionId: string, token?: string): string {
+  private renderCdpViewerPage(sessionId: string, appId: string, token?: string): string {
+    const safeSessionId = sessionId.replace(/"/g, '');
+    const safeToken = (token ?? '').replace(/"/g, '');
+    const safeAppId = appId.replace(/"/g, '');
     return `<!doctype html>
 <html lang="en">
   <head>
@@ -176,6 +259,30 @@ export class CdpStreamingController {
       canvas { max-width: 100%; max-height: 100%; }
       #reconnect { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #1e293b; padding: 24px; border-radius: 8px; text-align: center; }
       #reconnect button { margin-top: 12px; padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; }
+      #side-panel { position: fixed; top: 44px; right: 0; bottom: 0; width: 300px; background: #111827; border-left: 1px solid #1e293b; box-shadow: -4px 0 24px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 280ms cubic-bezier(0.4,0,0.2,1); will-change: transform; z-index: 9000; display: flex; flex-direction: column; overflow: hidden; }
+      #side-panel[aria-expanded="true"] { transform: translateX(0); }
+      #panel-toggle { position: absolute; left: -36px; top: 50%; transform: translateY(-50%); width: 36px; height: 56px; background: #111827; border: 1px solid #1e293b; border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 14px; padding: 0; }
+      #panel-toggle:hover { background: #1e293b; color: #f8fafc; }
+      #panel-content { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; font-size: 13px; color: #e2e8f0; }
+      .psec { display: flex; flex-direction: column; gap: 8px; }
+      .psec--bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid #1e293b; }
+      details > summary { list-style: none; cursor: pointer; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; padding: 4px 0; user-select: none; display: flex; align-items: center; gap: 6px; }
+      details > summary::marker, details > summary::-webkit-details-marker { display: none; }
+      details > summary::before { content: '▶'; font-size: 9px; transition: transform 200ms; }
+      details[open] > summary::before { transform: rotate(90deg); }
+      .psec input[type="password"] { width: 100%; box-sizing: border-box; padding: 8px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 13px; outline: none; }
+      .psec input[type="password"]:focus { border-color: #3b82f6; }
+      .pbtn { padding: 9px 14px; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; width: 100%; }
+      .pbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .pbtn-blue { background: #3b82f6; } .pbtn-blue:hover:not(:disabled) { background: #2563eb; }
+      .pbtn-green { background: #22c55e; } .pbtn-green:hover:not(:disabled) { background: #16a34a; }
+      .pbtn-red { background: #dc2626; } .pbtn-red:hover:not(:disabled) { background: #b91c1c; }
+      .srow { display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; }
+      .sval { color: #f8fafc; font-size: 12px; }
+      #clip-status { font-size: 11px; color: #6ee7b7; min-height: 16px; }
+      #restart-confirm { display: none; margin-top: 8px; padding: 10px; background: rgba(220,38,38,0.1); border-radius: 6px; }
+      #restart-confirm p { margin: 0 0 8px; font-size: 12px; color: #f87171; }
+      @media (prefers-reduced-motion: reduce) { #side-panel { transition: none; } }
     </style>
   </head>
   <body>
@@ -191,42 +298,86 @@ export class CdpStreamingController {
       <p>Connection lost</p>
       <button onclick="connect()">Reconnect</button>
     </div>
-    <script>
-      const stateEl = document.getElementById('state');
-      const fpsEl = document.getElementById('fps');
-      const canvas = document.getElementById('canvas');
-      const ctx = canvas.getContext('2d');
-      const reconnectEl = document.getElementById('reconnect');
-      const sessionId = ${JSON.stringify(sessionId)};
-      const initialToken = ${JSON.stringify(token)};
 
-      let ws = null;
-      let cmdId = 1;
-      let frameCount = 0;
-      let lastFpsUpdate = Date.now();
+    <div id="side-panel" role="complementary" aria-label="Session tools" aria-expanded="false">
+      <button id="panel-toggle" aria-label="Toggle session tools">&#9664;</button>
+      <div id="panel-content" inert>
+        <section id="hitl-section" class="psec" style="display:none">
+          <div id="hitl-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5">Checking session…</div>
+          <button id="resolveBtn" class="pbtn pbtn-green" disabled>Mark as Resolved</button>
+        </section>
+        <details open>
+          <summary>Clipboard</summary>
+          <div class="psec">
+            <input id="clip-input" type="password" placeholder="Paste text here, then Ctrl+V in browser" autocomplete="off" />
+            <button id="clip-send" class="pbtn pbtn-blue">Send to browser clipboard</button>
+            <div id="clip-status"></div>
+          </div>
+        </details>
+        <details>
+          <summary>Session Status</summary>
+          <div class="psec">
+            <div class="srow"><span>State</span><span class="sval" id="st-state">—</span></div>
+            <div class="srow"><span>Health</span><span class="sval" id="st-health">—</span></div>
+            <div class="srow"><span>Interventions</span><span class="sval" id="st-interventions">—</span></div>
+            <div class="srow"><span>Retries</span><span class="sval" id="st-retries">—</span></div>
+            <div class="srow"><span>Uptime</span><span class="sval" id="st-uptime">—</span></div>
+          </div>
+        </details>
+        <div class="psec psec--bottom">
+          <button id="restart-btn" class="pbtn pbtn-red">Restart Session</button>
+          <div id="restart-confirm">
+            <p>This will terminate the current session.</p>
+            <button id="restart-yes" class="pbtn pbtn-red">Yes, restart</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel-config" style="display:none"
+      data-session-id="${safeSessionId}"
+      data-stream-token="${safeToken}"
+      data-app-id="${safeAppId}">
+    </div>
+
+    <script>
+      var stateEl = document.getElementById('state');
+      var fpsEl = document.getElementById('fps');
+      var canvas = document.getElementById('canvas');
+      var ctx = canvas.getContext('2d');
+      var reconnectEl = document.getElementById('reconnect');
+      var sidePanel = document.getElementById('side-panel');
+      var sessionId = ${JSON.stringify(sessionId)};
+      var initialToken = ${JSON.stringify(token)};
+
+      var ws = null;
+      var cmdId = 1;
+      var frameCount = 0;
+      var lastFpsUpdate = Date.now();
 
       function resolveToken() {
-        const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
-        const hp = new URLSearchParams(hash);
-        const qp = new URLSearchParams(window.location.search);
+        var hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
+        var hp = new URLSearchParams(hash);
+        var qp = new URLSearchParams(window.location.search);
         return hp.get('token') || qp.get('token') || initialToken;
       }
 
       function connect() {
         reconnectEl.style.display = 'none';
-        const token = resolveToken();
+        var token = resolveToken();
         if (!token) {
           stateEl.textContent = 'Missing stream token';
           return;
         }
+        // Keep panel-config in sync for tokens arriving via URL hash
+        document.getElementById('panel-config').setAttribute('data-stream-token', token);
 
-        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        const url = proto + '://' + window.location.host + '/cdp-ws?session_id=' + encodeURIComponent(sessionId) + '&token=' + encodeURIComponent(token);
+        var proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        var url = proto + '://' + window.location.host + '/cdp-ws?session_id=' + encodeURIComponent(sessionId) + '&token=' + encodeURIComponent(token);
         ws = new WebSocket(url);
 
         ws.onopen = function() {
           stateEl.textContent = 'Connected';
-          // Start screencast
           ws.send(JSON.stringify({
             id: cmdId++,
             method: 'Page.startScreencast',
@@ -236,10 +387,9 @@ export class CdpStreamingController {
 
         ws.onmessage = function(event) {
           try {
-            const msg = JSON.parse(event.data);
+            var msg = JSON.parse(event.data);
             if (msg.method === 'Page.screencastFrame') {
               renderFrame(msg.params);
-              // Acknowledge frame
               ws.send(JSON.stringify({
                 id: cmdId++,
                 method: 'Page.screencastFrameAck',
@@ -262,7 +412,7 @@ export class CdpStreamingController {
       }
 
       function renderFrame(params) {
-        const img = new Image();
+        var img = new Image();
         img.onload = function() {
           if (canvas.width !== img.width || canvas.height !== img.height) {
             canvas.width = img.width;
@@ -270,7 +420,7 @@ export class CdpStreamingController {
           }
           ctx.drawImage(img, 0, 0);
           frameCount++;
-          const now = Date.now();
+          var now = Date.now();
           if (now - lastFpsUpdate >= 1000) {
             fpsEl.textContent = frameCount + ' fps';
             frameCount = 0;
@@ -287,12 +437,12 @@ export class CdpStreamingController {
 
       function sendMouse(type, e) {
         if (!ws || ws.readyState !== 1) return;
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        const x = Math.round((e.clientX - rect.left) * scaleX);
-        const y = Math.round((e.clientY - rect.top) * scaleY);
-        const button = e.button === 0 ? 'left' : e.button === 1 ? 'middle' : 'right';
+        var rect = canvas.getBoundingClientRect();
+        var scaleX = canvas.width / rect.width;
+        var scaleY = canvas.height / rect.height;
+        var x = Math.round((e.clientX - rect.left) * scaleX);
+        var y = Math.round((e.clientY - rect.top) * scaleY);
+        var button = e.button === 0 ? 'left' : e.button === 1 ? 'middle' : 'right';
         ws.send(JSON.stringify({
           id: cmdId++,
           method: 'Input.dispatchMouseEvent',
@@ -300,16 +450,31 @@ export class CdpStreamingController {
         }));
       }
 
-      // Keyboard events
+      // Keyboard events — skip when focus is inside the side panel
       document.addEventListener('keydown', function(e) { sendKey('keyDown', e); });
       document.addEventListener('keyup', function(e) { sendKey('keyUp', e); });
 
       function sendKey(type, e) {
         if (!ws || ws.readyState !== 1) return;
-        // Prevent browser default for most keys when canvas is focused
-        if (document.activeElement === canvas || document.activeElement === document.body) {
+        // Never send keys while an input inside the side panel is focused
+        var activeEl = document.activeElement;
+        if (activeEl && sidePanel && sidePanel.contains(activeEl)) return;
+
+        var onCanvas = activeEl === canvas || activeEl === document.body || !activeEl;
+
+        // Mac Command → Ctrl: translate Cmd+{v,c,a,x,z} to Ctrl+key for remote browser
+        if (type === 'keyDown' && e.metaKey && onCanvas && 'vcaxz'.indexOf(e.key.toLowerCase()) >= 0) {
           e.preventDefault();
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: e.key, code: e.code, modifiers: 2 } }));
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.dispatchKeyEvent', params: { type: 'keyUp', key: e.key, code: e.code, modifiers: 2 } }));
+          return;
         }
+        // Skip keyUp for Cmd shortcuts (already sent synthetic keyUp above)
+        if (type === 'keyUp' && e.metaKey && onCanvas && 'vcaxz'.indexOf(e.key.toLowerCase()) >= 0) {
+          return;
+        }
+
+        if (onCanvas) e.preventDefault();
         ws.send(JSON.stringify({
           id: cmdId++,
           method: 'Input.dispatchKeyEvent',
@@ -323,11 +488,295 @@ export class CdpStreamingController {
         }));
       }
 
-      // Prevent context menu on canvas
       canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
-      // Initial connection
       connect();
+
+      // ── Side panel ────────────────────────────────────────────────────────────
+      (function() {
+        var panel = document.getElementById('side-panel');
+        var toggle = document.getElementById('panel-toggle');
+        var content = document.getElementById('panel-content');
+
+        toggle.addEventListener('click', function() {
+          var open = panel.getAttribute('aria-expanded') === 'true';
+          panel.setAttribute('aria-expanded', String(!open));
+          toggle.innerHTML = open ? '&#9664;' : '&#9654;';
+          if (open) content.setAttribute('inert', ''); else content.removeAttribute('inert');
+        });
+        panel.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') {
+            panel.setAttribute('aria-expanded', 'false');
+            toggle.innerHTML = '&#9664;';
+            content.setAttribute('inert', '');
+            toggle.focus();
+          }
+          e.stopPropagation();
+        });
+        panel.addEventListener('keyup', function(e) { e.stopPropagation(); });
+        panel.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+        panel.addEventListener('mouseup', function(e) { e.stopPropagation(); });
+
+        var cfg = document.getElementById('panel-config');
+        var SESSION_ID = cfg.dataset.sessionId;
+        var TOKEN = cfg.dataset.streamToken || '';
+        if (!TOKEN) {
+          var h0 = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+          TOKEN = new URLSearchParams(h0).get('token') || new URLSearchParams(window.location.search).get('token') || '';
+        }
+        var fromMcp = new URLSearchParams(window.location.search).get('from') === 'mcp';
+        if (fromMcp) document.getElementById('hitl-section').style.display = '';
+
+        var currentStepIndex = null;
+        var resolvedStepIndex = null;
+        var sessionTerminated = false;
+
+        var statusEl = document.getElementById('hitl-status');
+        var resolveBtn = document.getElementById('resolveBtn');
+        var stState = document.getElementById('st-state');
+        var stHealth = document.getElementById('st-health');
+        var stInterventions = document.getElementById('st-interventions');
+        var stRetries = document.getElementById('st-retries');
+        var stUptime = document.getElementById('st-uptime');
+        var restartBtn = document.getElementById('restart-btn');
+        var restartConfirm = document.getElementById('restart-confirm');
+        var restartYes = document.getElementById('restart-yes');
+
+        function poll() {
+          if (sessionTerminated || !TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+              if (!data) return;
+              stState.textContent = data.state || '—';
+              stHealth.textContent = data.health_result_type || '—';
+              stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
+              stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
+              if (data.started_at) {
+                stUptime.textContent = Math.round((Date.now() - new Date(data.started_at).getTime()) / 60000) + 'm';
+              }
+              if (data.state === 'TERMINATED') { sessionTerminated = true; handleTerminated(); return; }
+              if (!fromMcp) return;
+              var pending = data.pending_input_request;
+              if (pending && pending.step_index != null) {
+                currentStepIndex = pending.step_index;
+                statusEl.textContent = 'Step ' + pending.step_index + ' (' + (pending.input_type || 'confirm') + '): ' + (pending.message || pending.label || 'Input needed');
+                if (resolvedStepIndex === null || pending.step_index !== resolvedStepIndex) {
+                  resolveBtn.disabled = false; resolveBtn.style.opacity = '1'; resolveBtn.style.cursor = 'pointer';
+                  resolveBtn.textContent = 'Mark as Resolved'; resolveBtn.style.background = '#22c55e';
+                } else {
+                  resolveBtn.disabled = true; resolveBtn.style.opacity = '0.5';
+                  resolveBtn.textContent = 'Resolved ✓'; resolveBtn.style.background = '#16a34a';
+                }
+              } else {
+                statusEl.textContent = data.state === 'LOGIN_IN_PROGRESS' ? 'Login in progress — waiting…'
+                  : data.state === 'LOGIN_NEEDED' ? 'Login required — waiting for input…' : 'State: ' + (data.state || '—');
+                resolveBtn.disabled = true; resolveBtn.style.opacity = '0.5';
+              }
+            }).catch(function() {});
+        }
+
+        resolveBtn.addEventListener('click', function() {
+          if (resolveBtn.disabled || currentStepIndex === null || !TOKEN) return;
+          resolveBtn.disabled = true; resolveBtn.textContent = 'Resolving…';
+          fetch('/vnc/' + SESSION_ID + '/hitl-resolve?token=' + encodeURIComponent(TOKEN), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'confirm', value: 'resolved', step_index: currentStepIndex }),
+          }).then(function(r) {
+            if (!r.ok) { resolveBtn.disabled = false; resolveBtn.textContent = 'Failed — retry'; return; }
+            resolveBtn.textContent = 'Resolved ✓'; resolveBtn.style.background = '#16a34a';
+            resolvedStepIndex = currentStepIndex;
+            setTimeout(poll, 1500);
+          }).catch(function() { resolveBtn.disabled = false; resolveBtn.textContent = 'Failed — retry'; });
+        });
+
+        restartBtn.addEventListener('click', function() {
+          restartConfirm.style.display = 'block'; restartBtn.style.display = 'none';
+        });
+        restartYes.addEventListener('click', function() {
+          if (!TOKEN) return;
+          restartYes.disabled = true; restartYes.textContent = 'Restarting…';
+          fetch('/vnc/' + SESSION_ID + '/restart?token=' + encodeURIComponent(TOKEN), { method: 'POST' })
+            .then(function(r) {
+              if (!r.ok) { restartYes.disabled = false; restartYes.textContent = 'Failed — try again'; }
+            }).catch(function() { restartYes.disabled = false; restartYes.textContent = 'Failed — try again'; });
+        });
+
+        function handleTerminated() {
+          content.innerHTML = '<div class="psec" style="padding:24px 0;text-align:center">'
+            + '<div style="font-size:15px;font-weight:600;margin-bottom:8px">Session terminated</div>'
+            + '<div id="successor-status" style="color:#94a3b8;font-size:13px">Looking for new session…</div>'
+            + '</div>';
+          panel.setAttribute('aria-expanded', 'true');
+          toggle.innerHTML = '&#9654;';
+          content.removeAttribute('inert');
+          pollForSuccessor();
+        }
+
+        function pollForSuccessor() {
+          if (!TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/successor?token=' + encodeURIComponent(TOKEN))
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+              var el = document.getElementById('successor-status');
+              if (!el) return;
+              if (data && data.url) {
+                var url = data.url;
+                if (fromMcp && url.indexOf('from=mcp') === -1) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'from=mcp';
+                el.innerHTML = '<div style="margin-bottom:12px">New session ready!</div>'
+                  + '<a href="' + url + '" style="display:inline-block;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open new session</a>';
+              } else { setTimeout(pollForSuccessor, 3000); }
+            }).catch(function() { setTimeout(pollForSuccessor, 3000); });
+        }
+
+        // CDP clipboard: Input.insertText types directly into the focused element
+        var clipInput = document.getElementById('clip-input');
+        var clipSend = document.getElementById('clip-send');
+        var clipStatus = document.getElementById('clip-status');
+
+        function sendClipboard() {
+          var text = clipInput.value;
+          if (!text || !ws || ws.readyState !== 1) return;
+          ws.send(JSON.stringify({ id: cmdId++, method: 'Input.insertText', params: { text: text } }));
+          clipStatus.textContent = 'Sent ✓';
+          setTimeout(function() { clipStatus.textContent = ''; }, 2000);
+        }
+        clipInput.addEventListener('paste', function() { setTimeout(sendClipboard, 0); });
+        clipInput.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') sendClipboard();
+          e.stopPropagation();
+        });
+        clipInput.addEventListener('keyup', function(e) { e.stopPropagation(); });
+        clipSend.addEventListener('click', sendClipboard);
+
+        poll();
+        setInterval(poll, 3000);
+      })();
+    </script>
+  </body>
+</html>`;
+  }
+
+  private async redirectToAuth(
+    res: Response,
+    sessionId: string,
+    token: string | undefined,
+    session: SessionEntity,
+    prefix: 'vnc' | 'cdp' = 'cdp',
+  ): Promise<void> {
+    const idp = await this.idpRepo.findOne({
+      where: { enabled: true, auth_url: Not(IsNull()) },
+    });
+
+    if (idp) {
+      if (token) {
+        const params = new URLSearchParams({
+          post_login: `/${prefix}/${sessionId}`,
+          stream_token: token,
+        });
+        res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
+        return;
+      }
+      const oauthLoginUrl = `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login`;
+      const nonce = randomBytes(16).toString('base64');
+      res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.setHeader('cache-control', 'no-store');
+      const escapedId = JSON.stringify(sessionId);
+      const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
+var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
+var t=new URLSearchParams(h).get('token')||'';
+var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
+if(t)p.set('stream_token',t);
+window.location.href='${oauthLoginUrl}?'+p.toString();
+</script></body></html>`;
+      res.status(200).send(bridge);
+      return;
+    }
+
+    const emailGatePage = this.renderEmailGatePage(sessionId, token, prefix);
+    const nonce = randomBytes(16).toString('base64');
+    res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('pragma', 'no-cache');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.status(200).send(emailGatePage.replace('<script>', `<script nonce="${nonce}">`));
+  }
+
+  private renderEmailGatePage(sessionId: string, token: string | undefined, prefix: 'vnc' | 'cdp' = 'cdp'): string {
+    return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verify Access</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
+      .card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 32px; max-width: 380px; width: 100%; }
+      h2 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0 0 20px; color: #94a3b8; font-size: 14px; }
+      input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 15px; outline: none; }
+      input[type="email"]:focus { border-color: #3b82f6; }
+      button { margin-top: 14px; width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      #msg { margin-top: 10px; font-size: 13px; color: #f87171; min-height: 18px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Verify your identity</h2>
+      <p>Enter the email address associated with this session to view the browser stream.</p>
+      <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email" />
+      <button id="submitBtn">Continue</button>
+      <div id="msg"></div>
+    </div>
+    <script>
+      var SESSION_ID = ${JSON.stringify(sessionId)};
+      var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
+      if (!STREAM_TOKEN) {
+        var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
+        STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
+      }
+
+      document.getElementById('submitBtn').addEventListener('click', verify);
+      document.getElementById('emailInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') verify();
+      });
+
+      function verify() {
+        var email = document.getElementById('emailInput').value.trim();
+        if (!email) return;
+        var btn = document.getElementById('submitBtn');
+        var msg = document.getElementById('msg');
+        btn.disabled = true;
+        msg.textContent = '';
+        var PREFIX = ${JSON.stringify(prefix)};
+        fetch('/' + PREFIX + '/' + SESSION_ID + '/verify-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email }),
+          credentials: 'same-origin',
+        })
+          .then(function(r) {
+            if (r.ok) {
+              var dest = '/' + PREFIX + '/' + SESSION_ID;
+              if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
+              window.location.href = dest;
+            } else {
+              r.json().catch(function() { return {}; }).then(function(d) {
+                msg.textContent = d.message || 'Access denied. Please check your email.';
+              });
+              btn.disabled = false;
+            }
+          })
+          .catch(function() {
+            msg.textContent = 'Network error. Please try again.';
+            btn.disabled = false;
+          });
+      }
     </script>
   </body>
 </html>`;
@@ -345,6 +794,8 @@ export class StreamingController {
     private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
+    @InjectRepository(ApplicationEntity)
+    private readonly appRepo: Repository<ApplicationEntity>,
     @InjectRepository(InterventionEntity)
     private readonly interventionRepo: Repository<InterventionEntity>,
     @InjectRepository(IdentityProviderEntity)
@@ -551,6 +1002,126 @@ export class StreamingController {
     return { status: 'ok' };
   }
 
+  /**
+   * Unified panel-state polling endpoint for the side panel (both VNC and CDP viewers).
+   * Returns session state, HITL info, and diagnostic counters in one call.
+   * Authenticated via stream token (same as hitl-state).
+   */
+  @Get(':sessionId/panel-state')
+  async getPanelState(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{
+    state: string;
+    health_result_type: string | null;
+    restart_requested: boolean;
+    pending_input_request: Record<string, unknown> | null;
+    intervention_count: number;
+    retry_count: number;
+    last_health_check: Date | null;
+    started_at: Date;
+    app_id: string;
+  }> {
+    if (!token) throw new UnauthorizedException('Missing stream token');
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) throw new UnauthorizedException(result.reason);
+    if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) throw new NotFoundException('Session not found');
+
+    let pendingInput = session.pending_input_request as Record<string, unknown> | null;
+    if (!pendingInput && (session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED')) {
+      const latestIntervention = await this.interventionRepo.findOne({
+        where: { session_id: sessionId },
+        order: { started_at: 'DESC' },
+      });
+      pendingInput = latestIntervention?.input_request_metadata ?? null;
+    }
+
+    return {
+      state: session.state,
+      health_result_type: session.health_result_type,
+      restart_requested: session.restart_requested,
+      pending_input_request: pendingInput,
+      intervention_count: session.intervention_count,
+      retry_count: session.retry_count,
+      last_health_check: session.last_health_check,
+      started_at: session.started_at,
+      app_id: session.app_id,
+    };
+  }
+
+  /**
+   * Request a session restart. Sets the restart_requested flag; the controller
+   * handles pod termination + recreation on the next reconcile cycle (≤15s).
+   * Authenticated via stream token so the viewer page can call it directly.
+   */
+  @Post(':sessionId/restart')
+  @HttpCode(200)
+  async restartSession(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ message: string; session_id: string; app_id: string }> {
+    if (!token) throw new UnauthorizedException('Missing stream token');
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) throw new UnauthorizedException(result.reason);
+    if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.state === 'TERMINATED') throw new BadRequestException('Cannot restart a TERMINATED session');
+
+    await this.sessionRepo.update(sessionId, { restart_requested: true });
+
+    return { message: 'Restart requested', session_id: sessionId, app_id: session.app_id };
+  }
+
+  /**
+   * Find the replacement session created after a restart.
+   * Returns the new session's viewer URL when ready, 404 while still provisioning.
+   * Authenticated via stream token (uses token's user_id to generate the new stream token).
+   */
+  @Get(':sessionId/successor')
+  async getSuccessor(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ session_id: string; url: string }> {
+    if (!token) throw new UnauthorizedException('Missing stream token');
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) throw new UnauthorizedException(result.reason);
+    if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+
+    const originalSession = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!originalSession) throw new NotFoundException('Session not found');
+
+    // Find a non-terminated session for the same app that was started after the original
+    const newSession = await this.sessionRepo.findOne({
+      where: [
+        { app_id: originalSession.app_id, state: 'STARTING' as any },
+        { app_id: originalSession.app_id, state: 'HEALTHY' as any },
+        { app_id: originalSession.app_id, state: 'UNHEALTHY' as any },
+        { app_id: originalSession.app_id, state: 'LOGIN_NEEDED' as any },
+        { app_id: originalSession.app_id, state: 'LOGIN_IN_PROGRESS' as any },
+      ],
+      order: { started_at: 'DESC' },
+    });
+
+    if (!newSession || newSession.id === sessionId) {
+      throw new NotFoundException('No successor session yet');
+    }
+
+    const newToken = await this.streamTokenService.generateToken(newSession.id, result.payload.user_id);
+
+    const app = await this.appRepo.findOne({ where: { id: originalSession.app_id } });
+    const policy = app?.browser_policy as Record<string, unknown> | null;
+    const mode = typeof policy?.streaming_mode === 'string' ? policy.streaming_mode.toLowerCase() : 'vnc';
+    const base = PUBLIC_BASE_URL.replace(/\/+$/, '');
+    const url = `${base}/${mode}/${newSession.id}#token=${encodeURIComponent(newToken)}`;
+
+    return { session_id: newSession.id, url };
+  }
+
   @Get(':sessionId')
   async openStream(
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
@@ -613,7 +1184,7 @@ export class StreamingController {
     }
     // ── End auth gate ──────────────────────────────────────────────────────
 
-    const page = this.renderViewerPage(sessionId, token);
+    const page = this.renderViewerPage(sessionId, session.app_id, token);
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('pragma', 'no-cache');
@@ -635,36 +1206,31 @@ export class StreamingController {
     sessionId: string,
     token: string | undefined,
     session: SessionEntity,
+    prefix: 'vnc' | 'cdp' = 'vnc',
   ): Promise<void> {
-    let idp = await this.idpRepo.findOne({
+    const idp = await this.idpRepo.findOne({
       where: { enabled: true, auth_url: Not(IsNull()) },
     });
-    // No fallback to the bootstrap-admin tenant — each tenant must have its own
-    // IdP configured. Without one the email gate is offered instead.
 
     if (idp) {
       if (token) {
-        // Token in query param — redirect directly to OAuth.
-        // The stream token is passed as stream_token and stored in Redis state
-        // so it does NOT appear in the IdP redirect URI (M-4).
         const params = new URLSearchParams({
-          post_login: `/vnc/${sessionId}`,
+          post_login: `/${prefix}/${sessionId}`,
           stream_token: token,
         });
         res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
         return;
       }
-      // No query token — serve bridge page to extract #fragment token client-side,
-      // then redirect to OAuth. The bridge page passes the token via stream_token param.
       const oauthLoginUrl = `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login`;
       const nonce = randomBytes(16).toString('base64');
       res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
       res.setHeader('content-type', 'text/html; charset=utf-8');
       res.setHeader('cache-control', 'no-store');
+      const escapedId = JSON.stringify(sessionId);
       const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
 var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
 var t=new URLSearchParams(h).get('token')||'';
-var p=new URLSearchParams({post_login:'/vnc/'+${JSON.stringify(sessionId)}});
+var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
 if(t)p.set('stream_token',t);
 window.location.href='${oauthLoginUrl}?'+p.toString();
 </script></body></html>`;
@@ -673,7 +1239,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
     }
 
     // No OAuth configured: render email gate fallback
-    const emailGatePage = this.renderEmailGatePage(sessionId, token);
+    const emailGatePage = this.renderEmailGatePage(sessionId, token, prefix);
     const nonce = randomBytes(16).toString('base64');
     res.setHeader('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'`);
     res.setHeader('content-type', 'text/html; charset=utf-8');
@@ -683,7 +1249,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
     res.status(200).send(emailGatePage.replace('<script>', `<script nonce="${nonce}">`));
   }
 
-  private renderEmailGatePage(sessionId: string, token?: string): string {
+  private renderEmailGatePage(sessionId: string, token: string | undefined, prefix: 'vnc' | 'cdp' = 'vnc'): string {
     // sessionId is guaranteed to be a UUID by ParseUUIDPipe on the caller.
     // JSON.stringify is used for all values injected into script context to
     // prevent XSS even if input validation is bypassed.
@@ -735,7 +1301,8 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         var msg = document.getElementById('msg');
         btn.disabled = true;
         msg.textContent = '';
-        fetch('/vnc/' + SESSION_ID + '/verify-email', {
+        var PREFIX = ${JSON.stringify(prefix)};
+        fetch('/' + PREFIX + '/' + SESSION_ID + '/verify-email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: email }),
@@ -743,7 +1310,7 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
         })
           .then(function(r) {
             if (r.ok) {
-              var dest = '/vnc/' + SESSION_ID;
+              var dest = '/' + PREFIX + '/' + SESSION_ID;
               if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
               window.location.href = dest;
             } else {
@@ -763,11 +1330,10 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
 </html>`;
   }
 
-  private renderViewerPage(sessionId: string, token?: string): string {
-    // sessionId is guaranteed UUID by ParseUUIDPipe. JSON.stringify is used
-    // for all values injected into data-attributes and script context.
+  private renderViewerPage(sessionId: string, appId: string, token?: string): string {
     const safeSessionId = sessionId.replace(/"/g, '');
     const safeToken = (token ?? '').replace(/"/g, '');
+    const safeAppId = appId.replace(/"/g, '');
     return `<!doctype html>
 <html lang="en">
   <head>
@@ -779,229 +1345,228 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
       html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; }
       #toolbar { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #1e293b; background: #111827; }
       #state { font-size: 12px; color: #93c5fd; }
-      #clipboard-group { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-      #clipboard-input { width: 200px; padding: 4px 8px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #f8fafc; font-size: 12px; outline: none; }
-      #clipboard-input:focus { border-color: #3b82f6; }
-      #clipboard-input::placeholder { color: #64748b; }
-      #clipboard-send { padding: 4px 10px; background: #3b82f6; color: white; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-      #clipboard-send:hover { background: #2563eb; }
-      #clipboard-status { font-size: 11px; color: #6ee7b7; min-width: 16px; }
       #screen { width: 100%; height: calc(100% - 45px); }
+      #side-panel { position: fixed; top: 44px; right: 0; bottom: 0; width: 300px; background: #111827; border-left: 1px solid #1e293b; box-shadow: -4px 0 24px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 280ms cubic-bezier(0.4,0,0.2,1); will-change: transform; z-index: 9000; display: flex; flex-direction: column; overflow: hidden; }
+      #side-panel[aria-expanded="true"] { transform: translateX(0); }
+      #panel-toggle { position: absolute; left: -36px; top: 50%; transform: translateY(-50%); width: 36px; height: 56px; background: #111827; border: 1px solid #1e293b; border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 14px; padding: 0; }
+      #panel-toggle:hover { background: #1e293b; color: #f8fafc; }
+      #panel-content { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; font-size: 13px; color: #e2e8f0; }
+      .psec { display: flex; flex-direction: column; gap: 8px; }
+      .psec--bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid #1e293b; }
+      details > summary { list-style: none; cursor: pointer; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; padding: 4px 0; user-select: none; display: flex; align-items: center; gap: 6px; }
+      details > summary::marker, details > summary::-webkit-details-marker { display: none; }
+      details > summary::before { content: '▶'; font-size: 9px; transition: transform 200ms; }
+      details[open] > summary::before { transform: rotate(90deg); }
+      .psec input[type="password"] { width: 100%; box-sizing: border-box; padding: 8px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 13px; outline: none; }
+      .psec input[type="password"]:focus { border-color: #3b82f6; }
+      .pbtn { padding: 9px 14px; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; width: 100%; }
+      .pbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .pbtn-blue { background: #3b82f6; } .pbtn-blue:hover:not(:disabled) { background: #2563eb; }
+      .pbtn-green { background: #22c55e; } .pbtn-green:hover:not(:disabled) { background: #16a34a; }
+      .pbtn-red { background: #dc2626; } .pbtn-red:hover:not(:disabled) { background: #b91c1c; }
+      .srow { display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; }
+      .sval { color: #f8fafc; font-size: 12px; }
+      #clip-status { font-size: 11px; color: #6ee7b7; min-height: 16px; }
+      #restart-confirm { display: none; margin-top: 8px; padding: 10px; background: rgba(220,38,38,0.1); border-radius: 6px; }
+      #restart-confirm p { margin: 0 0 8px; font-size: 12px; color: #f87171; }
+      @media (prefers-reduced-motion: reduce) { #side-panel { transition: none; } }
     </style>
   </head>
   <body>
     <div id="toolbar">
       <strong>Browser HITL Stream</strong>
       <span id="state">Connecting...</span>
-      <div id="clipboard-group">
-        <input id="clipboard-input" type="password" placeholder="Paste here, then Ctrl+V in VNC" autocomplete="off" />
-        <button id="clipboard-send">Send</button>
-        <span id="clipboard-status"></span>
-      </div>
     </div>
     <div id="screen"></div>
 
-    <!-- HITL panel: operator clicks "Mark as Resolved" to unblock the worker -->
-    <div id="hitl-panel" style="
-      position: fixed; bottom: 12px; right: 12px; z-index: 9999;
-      padding: 16px 20px; background: rgba(15,23,42,0.95); color: white;
-      border-radius: 10px; font: 15px/1.5 system-ui, sans-serif;
-      max-width: 340px;
-    ">
-      <div id="hitl-status" style="font-size: 15px;">Checking session…</div>
-      <button id="resolveBtn" disabled style="
-        margin-top: 10px; padding: 12px 18px; background: #22c55e; color: white;
-        border: none; border-radius: 8px; font-weight: 600; font-size: 15px; width: 100%; opacity: 0.5;
-        cursor: pointer;
-      ">Mark as Resolved</button>
+    <div id="side-panel" role="complementary" aria-label="Session tools" aria-expanded="false">
+      <button id="panel-toggle" aria-label="Toggle session tools">&#9664;</button>
+      <div id="panel-content" inert>
+        <section id="hitl-section" class="psec" style="display:none">
+          <div id="hitl-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5">Checking session…</div>
+          <button id="resolveBtn" class="pbtn pbtn-green" disabled>Mark as Resolved</button>
+        </section>
+        <details open>
+          <summary>Clipboard</summary>
+          <div class="psec">
+            <input id="clip-input" type="password" placeholder="Paste text here, then Ctrl+V in VNC" autocomplete="off" />
+            <button id="clip-send" class="pbtn pbtn-blue">Send to VNC clipboard</button>
+            <div id="clip-status"></div>
+          </div>
+        </details>
+        <details>
+          <summary>Session Status</summary>
+          <div class="psec">
+            <div class="srow"><span>State</span><span class="sval" id="st-state">—</span></div>
+            <div class="srow"><span>Health</span><span class="sval" id="st-health">—</span></div>
+            <div class="srow"><span>Interventions</span><span class="sval" id="st-interventions">—</span></div>
+            <div class="srow"><span>Retries</span><span class="sval" id="st-retries">—</span></div>
+            <div class="srow"><span>Uptime</span><span class="sval" id="st-uptime">—</span></div>
+          </div>
+        </details>
+        <div class="psec psec--bottom">
+          <button id="restart-btn" class="pbtn pbtn-red">Restart Session</button>
+          <div id="restart-confirm">
+            <p>This will terminate the current session.</p>
+            <button id="restart-yes" class="pbtn pbtn-red">Yes, restart</button>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <!-- config: server injects sessionId + stream token as data-attributes -->
-    <div id="hitl-config"
+    <div id="panel-config" style="display:none"
       data-session-id="${safeSessionId}"
       data-stream-token="${safeToken}"
-      style="display:none"
-    ></div>
+      data-app-id="${safeAppId}">
+    </div>
 
     <script>
-      (function () {
-        // Only render the HITL panel when this VNC page was opened from the
-        // MCP flow ("?from=mcp"). Copilot, CE and other surfaces have their
-        // own resolve UI; if the user clicks "Mark as Resolved" inside VNC
-        // for those surfaces, the worker advances but the originating UI is
-        // left waiting forever. Default-hide is the safe choice.
-        var rawHash = window.location.hash.charAt(0) === '#'
-          ? window.location.hash.slice(1) : window.location.hash;
-        var fromParam = new URLSearchParams(window.location.search).get('from')
-          || new URLSearchParams(rawHash).get('from');
-        if (fromParam !== 'mcp') {
-          var panel = document.getElementById('hitl-panel');
-          if (panel) panel.style.display = 'none';
-          return;
-        }
-
-        var cfg = document.getElementById('hitl-config');
-        var SESSION_ID = cfg.getAttribute('data-session-id');
-        // Stream token may be updated from URL hash/query after page load (same
-        // logic the module script uses). We resolve it lazily inside each fetch.
-        function resolveToken() {
-          var stored = cfg.getAttribute('data-stream-token');
-          if (stored) return stored;
-          var hash = window.location.hash.startsWith('#')
-            ? window.location.hash.slice(1) : window.location.hash;
-          return new URLSearchParams(hash).get('token') ||
-            new URLSearchParams(window.location.search).get('token') || '';
-        }
-
-        // step_index from the latest hitl-state poll. Backend falls back to
-        // the most recent intervention.input_request_metadata when the session
-        // pending_input_request was cleared by the controller, so the value
-        // stays correct throughout LOGIN_IN_PROGRESS. Null = no step known —
-        // button stays disabled to prevent submitting to the wrong key.
-        var currentStepIndex = null;
-        // Track which step_index the user has already resolved in this viewer
-        // session, so the button stays disabled after one click and only
-        // re-enables when the worker advances to a NEW step (sequential HITL
-        // like Salesforce password → OTP). Prevents duplicate submissions.
-        var resolvedStepIndex = null;
-
-        // Set of session states (from packages/shared/src/enums.ts SessionState)
-        // where it makes sense to let the user click "Mark as Resolved":
-        //   - LOGIN_NEEDED       → worker is blocked waiting for the human.
-        //   - LOGIN_IN_PROGRESS  → controller transitioned but the worker may
-        //                          still be waiting on input; user clicks to
-        //                          confirm once login is done.
-        // All other states (STARTING, HEALTHY, UNHEALTHY, FAILED, TERMINATED)
-        // disable the button — clicking does nothing useful and prevents the
-        // user from spamming submits with no effect.
-        var ENABLE_STATES = { LOGIN_NEEDED: 1, LOGIN_IN_PROGRESS: 1 };
-
-        function setEnabled(btn, enabled) {
-          btn.disabled = !enabled;
-          btn.style.opacity = enabled ? '1' : '0.5';
-          btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
-          if (enabled) {
-            btn.textContent = 'Mark as Resolved';
-            btn.style.background = '#22c55e';
+      (function() {
+        // ── Panel toggle ──────────────────────────────────────────────────────
+        var panel = document.getElementById('side-panel');
+        var toggle = document.getElementById('panel-toggle');
+        var content = document.getElementById('panel-content');
+        toggle.addEventListener('click', function() {
+          var open = panel.getAttribute('aria-expanded') === 'true';
+          panel.setAttribute('aria-expanded', String(!open));
+          toggle.innerHTML = open ? '&#9664;' : '&#9654;';
+          if (open) content.setAttribute('inert', ''); else content.removeAttribute('inert');
+        });
+        panel.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') {
+            panel.setAttribute('aria-expanded', 'false');
+            toggle.innerHTML = '&#9664;';
+            content.setAttribute('inert', '');
+            toggle.focus();
           }
+          e.stopPropagation();
+        });
+        panel.addEventListener('keyup', function(e) { e.stopPropagation(); });
+        panel.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+        panel.addEventListener('mouseup', function(e) { e.stopPropagation(); });
+
+        // ── Config ────────────────────────────────────────────────────────────
+        var cfg = document.getElementById('panel-config');
+        var SESSION_ID = cfg.dataset.sessionId;
+        var TOKEN = cfg.dataset.streamToken || '';
+        if (!TOKEN) {
+          var h0 = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+          TOKEN = new URLSearchParams(h0).get('token') || new URLSearchParams(window.location.search).get('token') || '';
         }
+        var fromMcp = new URLSearchParams(window.location.search).get('from') === 'mcp';
+        if (fromMcp) document.getElementById('hitl-section').style.display = '';
 
-        function refreshState() {
-          var tok = resolveToken();
-          if (!tok) return;
-          fetch('/vnc/' + SESSION_ID + '/hitl-state?token=' + encodeURIComponent(tok))
-            .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (s) {
-              if (!s) return;
-              var btn = document.getElementById('resolveBtn');
-              var status = document.getElementById('hitl-status');
-              var pending = s.pending_input_request;
-              var state = s.state || 'unknown';
+        var currentStepIndex = null;
+        var resolvedStepIndex = null;
+        var sessionTerminated = false;
 
-              // Always update sticky step_index when pending is observed.
+        var statusEl = document.getElementById('hitl-status');
+        var resolveBtn = document.getElementById('resolveBtn');
+        var stState = document.getElementById('st-state');
+        var stHealth = document.getElementById('st-health');
+        var stInterventions = document.getElementById('st-interventions');
+        var stRetries = document.getElementById('st-retries');
+        var stUptime = document.getElementById('st-uptime');
+        var restartBtn = document.getElementById('restart-btn');
+        var restartConfirm = document.getElementById('restart-confirm');
+        var restartYes = document.getElementById('restart-yes');
+
+        // ── Poll panel-state ──────────────────────────────────────────────────
+        function poll() {
+          if (sessionTerminated || !TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+              if (!data) return;
+              stState.textContent = data.state || '—';
+              stHealth.textContent = data.health_result_type || '—';
+              stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
+              stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
+              if (data.started_at) {
+                stUptime.textContent = Math.round((Date.now() - new Date(data.started_at).getTime()) / 60000) + 'm';
+              }
+              if (data.state === 'TERMINATED') { sessionTerminated = true; handleTerminated(); return; }
+              if (!fromMcp) return;
+              var pending = data.pending_input_request;
               if (pending && pending.step_index != null) {
                 currentStepIndex = pending.step_index;
-              }
-
-              if (state === 'HEALTHY') {
-                status.textContent = 'Session healthy — no pending input.';
-                setEnabled(btn, false);
-                return;
-              }
-              if (state === 'FAILED') {
-                status.textContent = 'Session FAILED: ' + (s.error || 'unknown');
-                setEnabled(btn, false);
-                return;
-              }
-              if (state === 'TERMINATED') {
-                status.textContent = 'Session ended.';
-                setEnabled(btn, false);
-                return;
-              }
-              if (state === 'STARTING') {
-                status.textContent = 'Session is starting — login will be required once the browser is ready.';
-                setEnabled(btn, false);
-                return;
-              }
-              if (state === 'UNHEALTHY') {
-                status.textContent = 'Session is recovering automatically — please wait.';
-                setEnabled(btn, false);
-                return;
-              }
-
-              // LOGIN_NEEDED or LOGIN_IN_PROGRESS — actionable.
-              if (ENABLE_STATES[state]) {
-                if (pending && pending.step_index != null) {
-                  var type = pending.input_type || 'confirm';
-                  var msg = pending.message || pending.label || 'Input needed';
-                  status.textContent = 'Step ' + pending.step_index + ' (' + type + '): ' + msg;
-                  // Only re-enable if this is a NEW step (or first one).
-                  // Prevents the user from clicking again on the same step.
-                  if (resolvedStepIndex === null || pending.step_index !== resolvedStepIndex) {
-                    setEnabled(btn, true);
-                  } else {
-                    setEnabled(btn, false);
-                    btn.textContent = 'Resolved ✓';
-                    btn.style.background = '#16a34a';
-                  }
+                statusEl.textContent = 'Step ' + pending.step_index + ' (' + (pending.input_type || 'confirm') + '): ' + (pending.message || pending.label || 'Input needed');
+                if (resolvedStepIndex === null || pending.step_index !== resolvedStepIndex) {
+                  resolveBtn.disabled = false; resolveBtn.style.opacity = '1'; resolveBtn.style.cursor = 'pointer';
+                  resolveBtn.textContent = 'Mark as Resolved'; resolveBtn.style.background = '#22c55e';
                 } else {
-                  // No step_index resolved yet — button must stay disabled
-                  // because submitting with a default would write to the
-                  // wrong human_input Redis key and the worker would never
-                  // see it.
-                  status.textContent = state === 'LOGIN_IN_PROGRESS'
-                    ? 'Login in progress — waiting for current step…'
-                    : 'Login required — waiting for input details…';
-                  setEnabled(btn, false);
+                  resolveBtn.disabled = true; resolveBtn.style.opacity = '0.5';
+                  resolveBtn.textContent = 'Resolved ✓'; resolveBtn.style.background = '#16a34a';
                 }
-                return;
+              } else {
+                statusEl.textContent = data.state === 'LOGIN_IN_PROGRESS' ? 'Login in progress — waiting…'
+                  : data.state === 'LOGIN_NEEDED' ? 'Login required — waiting for input…' : 'State: ' + (data.state || '—');
+                resolveBtn.disabled = true; resolveBtn.style.opacity = '0.5';
               }
-
-              // Unknown state: be conservative, disable.
-              status.textContent = 'State: ' + state + ' — waiting…';
-              setEnabled(btn, false);
-            })
-            .catch(function () {});
+            }).catch(function() {});
         }
 
-        document.getElementById('resolveBtn').addEventListener('click', function () {
-          // Refuse the click if we never observed a step_index. Posting with
-          // a default would write to the wrong human_input Redis key and the
-          // worker would silently miss the input. setEnabled(false) at this
-          // point is a defense-in-depth — the button should already be disabled.
-          if (currentStepIndex === null) return;
-          var tok = resolveToken();
-          if (!tok) return;
-          var btn = document.getElementById('resolveBtn');
-          btn.disabled = true;
-          btn.textContent = 'Resolving…';
-          fetch('/vnc/' + SESSION_ID + '/hitl-resolve?token=' + encodeURIComponent(tok), {
+        // ── Resolve HITL ──────────────────────────────────────────────────────
+        resolveBtn.addEventListener('click', function() {
+          if (resolveBtn.disabled || currentStepIndex === null || !TOKEN) return;
+          resolveBtn.disabled = true; resolveBtn.textContent = 'Resolving…';
+          fetch('/vnc/' + SESSION_ID + '/hitl-resolve?token=' + encodeURIComponent(TOKEN), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type: 'confirm', value: 'resolved', step_index: currentStepIndex }),
-          })
-            .then(function (res) {
-              if (!res.ok) {
-                btn.textContent = 'Failed — retry';
-                btn.disabled = false;
-                return;
-              }
-              btn.textContent = 'Resolved ✓';
-              btn.style.background = '#16a34a';
-              // Mark this step as resolved so refreshState() doesn't re-enable
-              // the button until the worker advances to a different step_index.
-              resolvedStepIndex = currentStepIndex;
-              setTimeout(refreshState, 1500);
-            })
-            .catch(function () {
-              btn.textContent = 'Failed — retry';
-              btn.disabled = false;
-            });
+          }).then(function(r) {
+            if (!r.ok) { resolveBtn.disabled = false; resolveBtn.textContent = 'Failed — retry'; return; }
+            resolveBtn.textContent = 'Resolved ✓'; resolveBtn.style.background = '#16a34a';
+            resolvedStepIndex = currentStepIndex;
+            setTimeout(poll, 1500);
+          }).catch(function() { resolveBtn.disabled = false; resolveBtn.textContent = 'Failed — retry'; });
         });
 
-        refreshState();
-        setInterval(refreshState, 3000);
+        // ── Restart ───────────────────────────────────────────────────────────
+        restartBtn.addEventListener('click', function() {
+          restartConfirm.style.display = 'block'; restartBtn.style.display = 'none';
+        });
+        restartYes.addEventListener('click', function() {
+          if (!TOKEN) return;
+          restartYes.disabled = true; restartYes.textContent = 'Restarting…';
+          fetch('/vnc/' + SESSION_ID + '/restart?token=' + encodeURIComponent(TOKEN), { method: 'POST' })
+            .then(function(r) {
+              if (!r.ok) { restartYes.disabled = false; restartYes.textContent = 'Failed — try again'; }
+            }).catch(function() { restartYes.disabled = false; restartYes.textContent = 'Failed — try again'; });
+        });
+
+        // ── Handle TERMINATED ─────────────────────────────────────────────────
+        function handleTerminated() {
+          content.innerHTML = '<div class="psec" style="padding:24px 0;text-align:center">'
+            + '<div style="font-size:15px;font-weight:600;margin-bottom:8px">Session terminated</div>'
+            + '<div id="successor-status" style="color:#94a3b8;font-size:13px">Looking for new session…</div>'
+            + '</div>';
+          panel.setAttribute('aria-expanded', 'true');
+          toggle.innerHTML = '&#9654;';
+          content.removeAttribute('inert');
+          pollForSuccessor();
+        }
+
+        function pollForSuccessor() {
+          if (!TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/successor?token=' + encodeURIComponent(TOKEN))
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+              var el = document.getElementById('successor-status');
+              if (!el) return;
+              if (data && data.url) {
+                var url = data.url;
+                if (fromMcp && url.indexOf('from=mcp') === -1) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'from=mcp';
+                el.innerHTML = '<div style="margin-bottom:12px">New session ready!</div>'
+                  + '<a href="' + url + '" style="display:inline-block;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open new session</a>';
+              } else { setTimeout(pollForSuccessor, 3000); }
+            }).catch(function() { setTimeout(pollForSuccessor, 3000); });
+        }
+
+        poll();
+        setInterval(poll, 3000);
       })();
+
     </script>
 
     <script type="module">
@@ -1012,60 +1577,64 @@ window.location.href='${oauthLoginUrl}?'+p.toString();
       const initialToken = ${JSON.stringify(token)};
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
-      const hashParams = new URLSearchParams(hash);
-      const queryParams = new URLSearchParams(window.location.search);
-      const token = hashParams.get('token') || queryParams.get('token') || initialToken;
+      const token = new URLSearchParams(hash).get('token') || new URLSearchParams(window.location.search).get('token') || initialToken;
 
       if (!token) {
         stateEl.textContent = 'Missing stream token';
         throw new Error('Missing stream token');
       }
 
-      // Keep the hitl-config data-attribute in sync so the HITL panel's
-      // resolveToken() picks up a token even when it arrives via URL hash.
-      if (token) {
-        document.getElementById('hitl-config').setAttribute('data-stream-token', token);
-      }
+      // Keep panel-config in sync for tokens arriving via URL hash
+      document.getElementById('panel-config').setAttribute('data-stream-token', token);
 
       const wsUrl = proto + '://' + window.location.host + '/vnc-ws?session_id=' + encodeURIComponent(sessionId);
-      const wsProtocols = ['binary', 'token.' + token];
-
-      const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols });
+      const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + token] });
       rfb.scaleViewport = true;
       rfb.resizeSession = true;
       rfb.background = '#0b1020';
+      window.rfb = rfb;
 
-      rfb.addEventListener('connect', () => {
-        stateEl.textContent = 'Connected';
+      rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; });
+      rfb.addEventListener('disconnect', (e) => {
+        stateEl.textContent = 'Disconnected (' + (e.detail?.clean ? 'clean' : 'error') + ')';
       });
 
-      rfb.addEventListener('disconnect', (event) => {
-        stateEl.textContent = 'Disconnected (' + (event.detail?.clean ? 'clean' : 'error') + ')';
-      });
-
-      // Clipboard panel: paste text into the input, it sets the VNC remote clipboard.
-      // Then Ctrl+V inside the VNC session pastes from the remote clipboard normally.
-      const clipInput = document.getElementById('clipboard-input');
-      const clipSend = document.getElementById('clipboard-send');
-      const clipStatus = document.getElementById('clipboard-status');
+      // Side panel clipboard: paste text → sends to VNC remote clipboard → user Ctrl+V inside VNC
+      const clipInput = document.getElementById('clip-input');
+      const clipSend = document.getElementById('clip-send');
+      const clipStatus = document.getElementById('clip-status');
 
       function sendClipboard() {
         const text = clipInput.value;
-        if (!text) return;
-        rfb.clipboardPasteFrom(text);
-        clipStatus.textContent = '✓';
+        if (!text || !window.rfb) return;
+        window.rfb.clipboardPasteFrom(text);
+        clipStatus.textContent = 'Sent ✓';
         setTimeout(() => { clipStatus.textContent = ''; }, 2000);
       }
-
-      clipInput.addEventListener('paste', () => {
-        setTimeout(sendClipboard, 0);
-      });
+      clipInput.addEventListener('paste', () => { setTimeout(sendClipboard, 0); });
       clipInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { sendClipboard(); rfb.focus(); }
+        if (e.key === 'Enter') { sendClipboard(); window.rfb.focus(); }
         e.stopPropagation();
       });
       clipInput.addEventListener('keyup', (e) => { e.stopPropagation(); });
-      clipSend.addEventListener('click', () => { sendClipboard(); rfb.focus(); });
+      clipSend.addEventListener('click', () => { sendClipboard(); window.rfb.focus(); });
+
+      // Mac Command → Ctrl: translate common shortcuts when canvas/body has focus.
+      // Skips when the side panel input is focused so Cmd+V pastes normally into it.
+      document.addEventListener('keydown', (event) => {
+        if (!event.metaKey) return;
+        const el = document.activeElement;
+        if (el && el.tagName !== 'CANVAS' && el !== document.body) return;
+        const key = event.key.toLowerCase();
+        if (!'vcaxz'.includes(key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const keysym = key.charCodeAt(0);
+        window.rfb.sendKey(0xffe3, 'ControlLeft', true);
+        window.rfb.sendKey(keysym, 'Key' + key.toUpperCase(), true);
+        window.rfb.sendKey(keysym, 'Key' + key.toUpperCase(), false);
+        window.rfb.sendKey(0xffe3, 'ControlLeft', false);
+      }, true);
     </script>
   </body>
 </html>`;
