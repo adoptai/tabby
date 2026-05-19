@@ -108,6 +108,15 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     });
 
     for (const session of activeSessions) {
+      // Handle restart flag before state evaluation.
+      // desired_session_count is unchanged so the next reconcile cycle
+      // creates a fresh replacement session automatically.
+      if (session.restart_requested) {
+        this.logger.log(`Restart requested for session ${session.id} — terminating`);
+        await this.terminateSession(session);
+        await this.sessionRepo.update(session.id, { restart_requested: false });
+        continue;
+      }
       await this.stateMachine.evaluateSession(session);
     }
 
