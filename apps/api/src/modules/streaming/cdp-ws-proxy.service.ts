@@ -133,7 +133,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
         }
         try {
           const payload = this.jwtService.verify<{ type: string; owner_user_id: string; tenant_id: string }>(vncCookie);
-          if (payload.type !== 'vnc_access' || payload.owner_user_id !== session.owner_user_id) {
+          if (payload.type !== 'vnc_access' || payload.owner_user_id !== session.owner_user_id || payload.tenant_id !== session.tenant_id) {
             this.rejectUpgrade(socket, 403, 'Cookie owner mismatch');
             return;
           }

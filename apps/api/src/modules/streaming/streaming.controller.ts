@@ -24,7 +24,7 @@ import { StreamTokenService } from './stream-token.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, randomBytes } from 'crypto';
-import { Not, IsNull } from 'typeorm';
+import { Not, IsNull, MoreThan } from 'typeorm';
 import { Throttle } from '@nestjs/throttler';
 import { parseCookie } from '../../common/utils/cookie';
 
@@ -72,6 +72,7 @@ export class ShortLinkController {
             vncPayload.type === 'vnc_access'
             && session
             && vncPayload.owner_user_id === session.owner_user_id
+            && vncPayload.tenant_id === session.tenant_id
           ) {
             res.redirect(302, url);
             return;
@@ -116,7 +117,7 @@ export class CdpStreamingController {
 
   @Get(':sessionId/auth')
   async authorize(
-    @Param('sessionId') sessionId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Query('token') token?: string,
   ): Promise<{ authorized: true; session_id: string }> {
     if (!token) {
@@ -134,7 +135,7 @@ export class CdpStreamingController {
 
   @Get(':sessionId/clear-cdp-auth')
   async clearCdpAuth(
-    @Param('sessionId') sessionId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Res() res: Response,
   ): Promise<void> {
     res.clearCookie('tabby_vnc', { path: '/' });
@@ -145,7 +146,7 @@ export class CdpStreamingController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(200)
   async verifyCdpEmail(
-    @Param('sessionId') sessionId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Body() body: { email?: string },
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ status: string }> {
@@ -182,7 +183,7 @@ export class CdpStreamingController {
 
   @Get(':sessionId')
   async openStream(
-    @Param('sessionId') sessionId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Req() req: Request,
     @Res() res: Response,
     @Query('token') token?: string,
@@ -1095,19 +1096,28 @@ export class StreamingController {
     const originalSession = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!originalSession) throw new NotFoundException('Session not found');
 
-    // Find a non-terminated session for the same app that was started after the original
+    // Only valid once the original session has terminated; prevents session discovery
+    // by callers who haven't requested a restart yet.
+    if (originalSession.state !== 'TERMINATED') {
+      throw new NotFoundException('No successor session yet');
+    }
+
+    // Find a non-terminated session for the same app that was created AFTER the original.
+    // The started_at > original.started_at filter prevents returning a pre-existing sibling
+    // session in multi-session apps where desired_session_count > 1.
     const newSession = await this.sessionRepo.findOne({
       where: [
-        { app_id: originalSession.app_id, state: 'STARTING' as any },
-        { app_id: originalSession.app_id, state: 'HEALTHY' as any },
-        { app_id: originalSession.app_id, state: 'UNHEALTHY' as any },
-        { app_id: originalSession.app_id, state: 'LOGIN_NEEDED' as any },
-        { app_id: originalSession.app_id, state: 'LOGIN_IN_PROGRESS' as any },
+        { app_id: originalSession.app_id, state: 'STARTING' as any, started_at: MoreThan(originalSession.started_at) },
+        { app_id: originalSession.app_id, state: 'HEALTHY' as any, started_at: MoreThan(originalSession.started_at) },
+        { app_id: originalSession.app_id, state: 'UNHEALTHY' as any, started_at: MoreThan(originalSession.started_at) },
+        { app_id: originalSession.app_id, state: 'LOGIN_NEEDED' as any, started_at: MoreThan(originalSession.started_at) },
+        { app_id: originalSession.app_id, state: 'LOGIN_IN_PROGRESS' as any, started_at: MoreThan(originalSession.started_at) },
+        { app_id: originalSession.app_id, state: 'FAILED' as any, started_at: MoreThan(originalSession.started_at) },
       ],
       order: { started_at: 'DESC' },
     });
 
-    if (!newSession || newSession.id === sessionId) {
+    if (!newSession) {
       throw new NotFoundException('No successor session yet');
     }
 

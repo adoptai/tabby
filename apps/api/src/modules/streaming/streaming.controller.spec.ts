@@ -254,7 +254,7 @@ describe('StreamingController — successor', () => {
 
   it('uses CDP URL prefix when streaming_mode is cdp', async () => {
     sessionRepo.findOne
-      .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1' }))
+      .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1', state: 'TERMINATED' }))
       .mockResolvedValueOnce(makeSession({ id: 'sess-2', app_id: 'app-1', state: 'STARTING' }));
     appRepo.findOne.mockResolvedValue(makeApp({ browser_policy: { streaming_mode: 'cdp' } }));
 
@@ -265,7 +265,7 @@ describe('StreamingController — successor', () => {
 
   it('defaults to VNC URL prefix when streaming_mode is not set', async () => {
     sessionRepo.findOne
-      .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1' }))
+      .mockResolvedValueOnce(makeSession({ id: 'sess-1', app_id: 'app-1', state: 'TERMINATED' }))
       .mockResolvedValueOnce(makeSession({ id: 'sess-2', app_id: 'app-1', state: 'HEALTHY' }));
     appRepo.findOne.mockResolvedValue(makeApp({ browser_policy: null }));
 
@@ -282,9 +282,8 @@ describe('StreamingController — successor', () => {
     await expect(controller.getSuccessor('sess-1', 'valid-token')).rejects.toThrow(NotFoundException);
   });
 
-  it('throws NotFoundException when only the same session is found (not yet replaced)', async () => {
+  it('throws NotFoundException when the session has not terminated yet', async () => {
     sessionRepo.findOne
-      .mockResolvedValueOnce(makeSession({ id: 'sess-1', state: 'HEALTHY' }))
       .mockResolvedValueOnce(makeSession({ id: 'sess-1', state: 'HEALTHY' }));
 
     await expect(controller.getSuccessor('sess-1', 'valid-token')).rejects.toThrow(NotFoundException);
