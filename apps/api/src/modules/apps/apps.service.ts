@@ -227,22 +227,30 @@ export class AppsService {
       const tables = [
         'login_queue',
         'auth_requests',
+        'artifact_consumptions',
         'artifact_bundles',
+        'session_batons',
         'interventions',
         'sessions',
         'service_profiles',
       ];
 
-      for (const table of tables) {
-        let result;
-        if (table === 'login_queue') {
-          result = await qr.query(
-            `DELETE FROM login_queue WHERE auth_request_id IN (SELECT id FROM auth_requests WHERE app_id = $1)`,
-            [id],
-          );
-        } else {
-          result = await qr.query(`DELETE FROM ${table} WHERE app_id = $1`, [id]);
-        }
+      const sessionSubquery = `(SELECT id FROM sessions WHERE app_id = $1)`;
+      const artifactSubquery = `(SELECT id FROM artifact_bundles WHERE app_id = $1)`;
+
+      const deleteSteps: Array<{ table: string; sql: string }> = [
+        { table: 'login_queue', sql: `DELETE FROM login_queue WHERE auth_request_id IN (SELECT id FROM auth_requests WHERE app_id = $1)` },
+        { table: 'auth_requests', sql: `DELETE FROM auth_requests WHERE app_id = $1` },
+        { table: 'artifact_consumptions', sql: `DELETE FROM artifact_consumptions WHERE artifact_id IN ${artifactSubquery}` },
+        { table: 'artifact_bundles', sql: `DELETE FROM artifact_bundles WHERE app_id = $1` },
+        { table: 'session_batons', sql: `DELETE FROM session_batons WHERE session_id IN ${sessionSubquery}` },
+        { table: 'interventions', sql: `DELETE FROM interventions WHERE session_id IN ${sessionSubquery}` },
+        { table: 'sessions', sql: `DELETE FROM sessions WHERE app_id = $1` },
+        { table: 'service_profiles', sql: `DELETE FROM service_profiles WHERE app_id = $1` },
+      ];
+
+      for (const { table, sql } of deleteSteps) {
+        const result = await qr.query(sql, [id]);
         const count = result[1] ?? result?.rowCount ?? 0;
         if (count > 0) {
           deleted[table] = count;
