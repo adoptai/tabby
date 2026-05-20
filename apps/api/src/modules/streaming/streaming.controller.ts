@@ -769,8 +769,9 @@ export class CdpStreamingController {
               if (data && data.url) {
                 var url = data.url;
                 if (fromMcp && url.indexOf('from=mcp') === -1) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'from=mcp';
-                el.innerHTML = '<div style="margin-bottom:12px">New session ready!</div>'
-                  + '<a href="' + url + '" style="display:inline-block;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open new session</a>';
+                el.innerHTML = '<div style="margin-bottom:8px;font-weight:600">New session ready!</div>'
+                  + '<a href="' + url + '" style="display:inline-block;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open new session</a>'
+                  + '<div style="margin-top:10px;font-size:11px;color:#64748b;line-height:1.5">If the browser does not appear right away, wait a few seconds and reload the page.</div>';
               } else { setTimeout(pollForSuccessor, 3000); }
             }).catch(function() { setTimeout(pollForSuccessor, 3000); });
         }
@@ -1453,8 +1454,9 @@ export class StreamingController {
               if (data && data.url) {
                 var url = data.url;
                 if (fromMcp && url.indexOf('from=mcp') === -1) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'from=mcp';
-                el.innerHTML = '<div style="margin-bottom:12px">New session ready!</div>'
-                  + '<a href="' + url + '" style="display:inline-block;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open new session</a>';
+                el.innerHTML = '<div style="margin-bottom:8px;font-weight:600">New session ready!</div>'
+                  + '<a href="' + url + '" style="display:inline-block;padding:10px 20px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open new session</a>'
+                  + '<div style="margin-top:10px;font-size:11px;color:#64748b;line-height:1.5">If the browser does not appear right away, wait a few seconds and reload the page.</div>';
               } else { setTimeout(pollForSuccessor, 3000); }
             }).catch(function() { setTimeout(pollForSuccessor, 3000); });
         }
