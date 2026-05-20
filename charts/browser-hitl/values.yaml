@@ -445,6 +445,10 @@ secrets:
   # 64-char hex string (32 bytes) for AES-256-GCM artifact encryption
   # Generate with: openssl rand -hex 32
   tenantEncryptionKey: ""
+  # IdP OAuth client credentials (required for browser OAuth login flow)
+  # Set these instead of storing client_id/client_secret in the DB
+  idpClientId: ""
+  idpClientSecret: ""
 
 # =============================================================================
 # Alerting (C8 remediation) — PrometheusRule CRDs for kube-prometheus-stack

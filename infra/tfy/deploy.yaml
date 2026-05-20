@@ -231,6 +231,8 @@ values:
     metricsAuthToken: "${METRICS_AUTH_TOKEN}"
     natsAuthToken: "${NATS_AUTH_TOKEN}"
     agentSecretHmacKey: "${AGENT_SECRET_HMAC_KEY}"
+    idpClientId: "${IDP_CLIENT_ID}"
+    idpClientSecret: "${IDP_CLIENT_SECRET}"
 
   virtualServices:
     api:

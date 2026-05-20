@@ -446,7 +446,7 @@ export class AuthController implements OnModuleDestroy {
     // Only return IdPs that have browser OAuth configured (have auth_url)
     const idps = await this.idpRepo.find({ where: { enabled: true } });
     return idps
-      .filter(idp => idp.auth_url && idp.client_id)
+      .filter(idp => idp.auth_url)
       .map(idp => ({
         id: idp.id,
         name: idp.name,
