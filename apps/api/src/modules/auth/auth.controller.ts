@@ -9,7 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import Redis from 'ioredis';
-import { requireEnv } from '@browser-hitl/shared';
+import { requireEnv, REDIS_KEYS, REDIS_TTL } from '@browser-hitl/shared';
 import { AuthService } from './auth.service';
 import { TokenBlacklistService } from './token-blacklist.service';
 import { TokenExchangeService } from './token-exchange.service';
@@ -480,7 +480,7 @@ export class AuthController implements OnModuleDestroy {
     // M-4: streamToken is stored in Redis state — NOT in the redirect URI — so it
     // never appears in IdP server logs, browser Referer headers, or browser history.
     const statePayload: OAuthStatePayload = { codeVerifier, idpId, postLoginRedirectUri, streamToken: streamToken || undefined };
-    await this.redis.set(`oauth:state:${state}`, JSON.stringify(statePayload), 'EX', 300);
+    await this.redis.set(REDIS_KEYS.oauthState(state), JSON.stringify(statePayload), 'EX', REDIS_TTL.OAUTH_STATE_SECONDS);
 
     // Always use the generic callback URL so one redirect URI covers all IdPs
     const callbackUrl = `${PUBLIC_BASE_URL}/auth/oauth/callback`;
@@ -545,7 +545,7 @@ export class AuthController implements OnModuleDestroy {
     // Retrieve and delete state atomically.
     // Note: getdel requires Redis 6.2+. For older deployments, replace with
     // a GET + DEL pipeline (non-atomic, but the PKCE verifier mitigates replay risk).
-    const key = `oauth:state:${state}`;
+    const key = REDIS_KEYS.oauthState(state);
     const raw = await this.redis.getdel(key);
     if (!raw) throw new UnauthorizedException('Invalid or expired OAuth state');
 

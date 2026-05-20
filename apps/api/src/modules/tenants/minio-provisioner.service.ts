@@ -64,15 +64,13 @@ export class MinioProvisionerService {
     );
 
     const lifecycleConfig = {
-      Rule: [
-        {
-          ID: 'auto-expire-artifacts',
-          Status: 'Enabled',
-          Expiration: {
-            Days: expiryDays,
-          },
-        },
-      ],
+      Rule: [{
+        ID: 'auto-expire-artifacts',
+        Status: 'Enabled',
+        Filter: { Prefix: '' },
+        Expiration: { Days: expiryDays },
+        AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+      }],
     };
 
     await this.client.setBucketLifecycle(bucket, lifecycleConfig);

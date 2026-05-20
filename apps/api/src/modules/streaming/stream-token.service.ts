@@ -148,12 +148,12 @@ export class StreamTokenService implements OnModuleDestroy {
 
   async createShortLink(url: string): Promise<string> {
     const shortId = Math.random().toString(36).slice(2, 10); // 8 random chars
-    await this.redis.set(`vnc:short:${shortId}`, url, 'EX', 600);
+    await this.redis.set(REDIS_KEYS.vncShortLink(shortId), url, 'EX', REDIS_TTL.VNC_SHORT_LINK_SECONDS);
     return shortId;
   }
 
   async resolveShortLink(shortId: string): Promise<string | null> {
-    return this.redis.get(`vnc:short:${shortId}`);
+    return this.redis.get(REDIS_KEYS.vncShortLink(shortId));
   }
 
   /**
