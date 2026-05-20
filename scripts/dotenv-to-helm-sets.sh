@@ -10,7 +10,7 @@ declare -A MAP=(
   [IDP_CLIENT_SECRET]="secrets.idpClientSecret"
 )
 
-while IFS='=' read -r key value; do
+while IFS='=' read -r key value || [[ -n "$key" ]]; do
   key=$(echo "$key" | xargs)
   [[ -z "$key" || "$key" == \#* ]] && continue
   value=$(echo "$value" | xargs | sed "s/^['\"]//;s/['\"]$//")
