@@ -310,8 +310,8 @@ export class CredentialsService {
       desired_session_count: 0, // Start with 0, scale up after profile is created
     }, tenantId, actorId);
 
-    // Set owner_user_id on app — controller will inherit this to sessions
-    await this.appRepo.update(app_id, { owner_user_id: ownerUserId });
+    // Set owner_user_id + template_id on app — controller will inherit owner_user_id to sessions
+    await this.appRepo.update(app_id, { owner_user_id: ownerUserId, template_id: template.id });
 
     // 2. Create Profile via ProfilesService (full validation + audit + promote to ACTIVE)
     const savedProfile = await this.profilesService.create({
