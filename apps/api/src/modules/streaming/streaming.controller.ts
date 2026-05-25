@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   HttpCode,
@@ -1098,6 +1099,22 @@ export class StreamingController {
     await this.sessionRepo.update(sessionId, { restart_requested: true });
 
     return { message: 'Restart requested', session_id: sessionId, app_id: session.app_id };
+  }
+
+  @Delete(':sessionId/stream-access')
+  @HttpCode(200)
+  async revokeStreamAccess(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ message: string; session_id: string }> {
+    if (!token) throw new UnauthorizedException('Missing stream token');
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) throw new UnauthorizedException(result.reason);
+    if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+
+    await this.streamTokenService.revokeStreamAccess(sessionId);
+
+    return { message: 'Stream access revoked', session_id: sessionId };
   }
 
   /**

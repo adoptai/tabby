@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { REDIS_TTL } from '@browser-hitl/shared';
 import { HttpAdapterHost } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IncomingMessage, Server } from 'http';
@@ -82,6 +83,11 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      if (await this.streamTokenService.isStreamRevoked(sessionId)) {
+        this.rejectUpgrade(clientSocket, 401, 'Stream access has been revoked');
+        return;
+      }
+
       const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
       if (!session) {
         this.rejectUpgrade(clientSocket, 404, 'Session not found');
@@ -142,6 +148,26 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
 
         clientSocket.pipe(backendSocket);
         backendSocket.pipe(clientSocket);
+
+        const ttlMs = REDIS_TTL.STREAM_TOKEN_SECONDS * 1000;
+        const expiryTimer = setTimeout(() => {
+          this.logger.log(`Stream token expired for session ${sessionId}, closing connection`);
+          clientSocket.destroy();
+          backendSocket.destroy();
+        }, ttlMs);
+        clientSocket.once('close', () => clearTimeout(expiryTimer));
+        backendSocket.once('close', () => clearTimeout(expiryTimer));
+
+        const revokeInterval = setInterval(async () => {
+          if (await this.streamTokenService.isStreamRevoked(sessionId)) {
+            this.logger.log(`Stream access revoked for session ${sessionId}, closing connection`);
+            clearInterval(revokeInterval);
+            clientSocket.destroy();
+            backendSocket.destroy();
+          }
+        }, 30_000);
+        clientSocket.once('close', () => clearInterval(revokeInterval));
+        backendSocket.once('close', () => clearInterval(revokeInterval));
       });
 
       backendSocket.setTimeout(10000);

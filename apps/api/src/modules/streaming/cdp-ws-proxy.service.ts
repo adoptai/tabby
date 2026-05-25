@@ -15,6 +15,7 @@ import {
   CDP_ALLOWED_EVENTS,
   CDP_LIMITS,
   CDP_PORTS,
+  REDIS_TTL,
   sanitizeScreencastParams,
 } from '@browser-hitl/shared';
 
@@ -106,6 +107,11 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
       }
       if (validation.payload.session_id !== sessionId) {
         this.rejectUpgrade(socket, 401, 'Token is not valid for this session');
+        return;
+      }
+
+      if (await this.streamTokenService.isStreamRevoked(sessionId)) {
+        this.rejectUpgrade(socket, 401, 'Stream access has been revoked');
         return;
       }
 
@@ -202,6 +208,22 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
     clientWs.on('close', () => {
       backendWs.close();
     });
+
+    const ttlMs = REDIS_TTL.STREAM_TOKEN_SECONDS * 1000;
+    const expiryTimer = setTimeout(() => {
+      this.logger.log(`Stream token expired for session ${session.id}, closing CDP connection`);
+      clientWs.close(1000, 'Stream token expired');
+    }, ttlMs);
+    clientWs.once('close', () => clearTimeout(expiryTimer));
+
+    const revokeInterval = setInterval(async () => {
+      if (await this.streamTokenService.isStreamRevoked(session.id)) {
+        this.logger.log(`Stream access revoked for session ${session.id}, closing CDP connection`);
+        clearInterval(revokeInterval);
+        clientWs.close(1000, 'Stream access revoked');
+      }
+    }, 30_000);
+    clientWs.once('close', () => clearInterval(revokeInterval));
 
     // Client -> Backend (inbound filter)
     clientWs.on('message', (data: Buffer | string) => {

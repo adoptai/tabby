@@ -62,6 +62,16 @@ export class StreamTokenService implements OnModuleDestroy {
   // Public API
   // ----------------------------------------------------------------
 
+  async revokeStreamAccess(sessionId: string): Promise<void> {
+    const key = REDIS_KEYS.streamRevoked(sessionId);
+    await this.redis.set(key, '1', 'EX', REDIS_TTL.STREAM_TOKEN_SECONDS);
+  }
+
+  async isStreamRevoked(sessionId: string): Promise<boolean> {
+    const key = REDIS_KEYS.streamRevoked(sessionId);
+    return (await this.redis.exists(key)) === 1;
+  }
+
   /**
    * Verify JWT signature/expiry without consuming the single-use token.
    * Used by viewer bootstrap endpoints; consumption happens at WebSocket connect time.
