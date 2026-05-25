@@ -84,6 +84,18 @@ spec:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: AGENT_SECRET_HMAC_KEY
                   optional: true
+            - name: IDP_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: IDP_CLIENT_ID
+                  optional: true
+            - name: IDP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: IDP_CLIENT_SECRET
+                  optional: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

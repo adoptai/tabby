@@ -1,14 +1,18 @@
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { AppTemplateEntity } from '../../entities';
+import { AppTemplateEntity, ApplicationEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class AppTemplatesService {
+  private readonly logger = new Logger(AppTemplatesService.name);
+
   constructor(
     @InjectRepository(AppTemplateEntity)
     private readonly templateRepo: Repository<AppTemplateEntity>,
+    @InjectRepository(ApplicationEntity)
+    private readonly appRepo: Repository<ApplicationEntity>,
     private readonly auditService: AuditService,
   ) {}
 
@@ -69,7 +73,47 @@ export class AppTemplatesService {
       payload: { template_id: id },
     });
 
+    const propagated = await this.propagateToLinkedApps(saved);
+    if (propagated > 0) {
+      this.logger.log(`Propagated template "${saved.name}" changes to ${propagated} linked app(s)`);
+    }
+
     return saved;
+  }
+
+  private static readonly PROPAGATED_FIELDS = [
+    'browser_policy', 'login_config', 'keepalive_config',
+    'export_policy', 'notification_config',
+  ] as const;
+
+  private async propagateToLinkedApps(template: AppTemplateEntity): Promise<number> {
+    const CHUNK_SIZE = 50;
+    let offset = 0;
+    let total = 0;
+
+    while (true) {
+      const apps = await this.appRepo.find({
+        where: { template_id: template.id },
+        select: ['id'],
+        take: CHUNK_SIZE,
+        skip: offset,
+      });
+      if (apps.length === 0) break;
+
+      const payload: Record<string, unknown> = {};
+      for (const field of AppTemplatesService.PROPAGATED_FIELDS) {
+        payload[field] = template[field];
+      }
+
+      for (const app of apps) {
+        await this.appRepo.update(app.id, payload);
+        total++;
+      }
+
+      offset += apps.length;
+      if (apps.length < CHUNK_SIZE) break;
+    }
+    return total;
   }
 
   async remove(tenantId: string, id: string, actorId: string) {

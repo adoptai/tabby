@@ -73,7 +73,7 @@ export class OAuthProviderService {
     const scopes = idp.scopes || 'openid email profile';
     const params = new URLSearchParams({
       response_type: 'code',
-      client_id: idp.client_id || '',
+      client_id: process.env.IDP_CLIENT_ID || '',
       redirect_uri: redirectUri,
       scope: scopes.replace(/,/g, ' '),
       state,
@@ -94,18 +94,18 @@ export class OAuthProviderService {
     codeVerifier: string,
     redirectUri: string,
   ): Promise<{ access_token: string; id_token?: string; expires_in?: number }> {
-    if (!idp.token_url || !idp.client_id || !idp.client_secret) {
-      throw new UnauthorizedException('IdP missing token_url, client_id, or client_secret');
+    const clientId = process.env.IDP_CLIENT_ID;
+    const clientSecret = process.env.IDP_CLIENT_SECRET;
+    if (!idp.token_url || !clientId || !clientSecret) {
+      throw new UnauthorizedException('Missing token_url or IDP_CLIENT_ID/IDP_CLIENT_SECRET env vars');
     }
-
-    const plainSecret = this.decryptSecret(idp.client_secret);
 
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri,
-      client_id: idp.client_id,
-      client_secret: plainSecret,
+      client_id: clientId,
+      client_secret: clientSecret,
       code_verifier: codeVerifier,
     });
 

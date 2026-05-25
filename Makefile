@@ -226,6 +226,12 @@ k8s-port-forward: ## Port-forward all services for local development
 # KIND (local Kubernetes)
 # ============================================================
 
+DOTENV_FILE ?= .env
+HELM_DOTENV_SETS :=
+ifneq (,$(wildcard $(DOTENV_FILE)))
+  HELM_DOTENV_SETS := $(shell ./scripts/dotenv-to-helm-sets.sh $(DOTENV_FILE))
+endif
+
 KIND_CLUSTER ?= tabby-dev
 
 .PHONY: kind-create
@@ -303,6 +309,7 @@ kind-reload-all: clean build docker-build ## Clean + build source + images, load
 	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
 		-f charts/browser-hitl/values-local.yaml \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
+		$(HELM_DOTENV_SETS) \
 		--wait --timeout 5m
 	@echo "Force-restarting deployments (image tag :dev never changes, so pods must be bounced)..."
 	kubectl rollout restart deployment \

@@ -4,7 +4,6 @@ import { Repository } from 'typeorm';
 import { IdentityProviderEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 import { ExternalJwksService } from '../auth/external-jwks.service';
-import { OAuthProviderService } from '../auth/oauth-provider.service';
 
 @Injectable()
 export class IdentityProvidersService {
@@ -13,10 +12,9 @@ export class IdentityProvidersService {
     private readonly idpRepo: Repository<IdentityProviderEntity>,
     private readonly auditService: AuditService,
     private readonly jwksService: ExternalJwksService,
-    private readonly oauthProvider: OAuthProviderService,
   ) {}
 
-  async create(tenantId: string, data: Partial<IdentityProviderEntity> & { client_secret_plaintext?: string }, actorId: string) {
+  async create(tenantId: string, data: Partial<IdentityProviderEntity>, actorId: string) {
     // Only one IdP allowed — global, not per-tenant
     const count = await this.idpRepo.count();
     if (count > 0) {
@@ -25,10 +23,6 @@ export class IdentityProvidersService {
 
     const toSave = { ...data };
     delete (toSave as any).tenant_id;
-    if (data.client_secret_plaintext) {
-      toSave.client_secret = this.oauthProvider.encryptSecret(data.client_secret_plaintext);
-    }
-    delete (toSave as any).client_secret_plaintext;
 
     const idp = this.idpRepo.create(toSave);
     const saved = await this.idpRepo.save(idp);
@@ -45,10 +39,9 @@ export class IdentityProvidersService {
   }
 
   async findAll(_tenantId?: string) {
-    const idps = await this.idpRepo.find({
+    return this.idpRepo.find({
       order: { created_at: 'DESC' },
     });
-    return idps.map(this.maskSecret);
   }
 
   async findOne(_tenantId: string, id: string) {
@@ -56,21 +49,12 @@ export class IdentityProvidersService {
       where: { id },
     });
     if (!idp) throw new NotFoundException('Identity provider not found');
-    return this.maskSecret(idp);
+    return idp;
   }
 
-  /** Replace stored encrypted secret with a safe placeholder in API responses. */
-  private maskSecret(idp: IdentityProviderEntity): IdentityProviderEntity {
-    return { ...idp, client_secret: idp.client_secret ? '***' : null } as IdentityProviderEntity;
-  }
-
-  async update(tenantId: string, id: string, data: Partial<IdentityProviderEntity> & { client_secret_plaintext?: string }, actorId: string) {
+  async update(tenantId: string, id: string, data: Partial<IdentityProviderEntity>, actorId: string) {
     const idp = await this.findOne(tenantId, id);
     const toApply: any = { ...data };
-    if (data.client_secret_plaintext) {
-      toApply.client_secret = this.oauthProvider.encryptSecret(data.client_secret_plaintext);
-    }
-    delete toApply.client_secret_plaintext;
     Object.assign(idp, toApply);
     const saved = await this.idpRepo.save(idp);
 
