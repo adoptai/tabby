@@ -6,8 +6,7 @@ import {
 import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
 import type { InputRequest } from '@browser-hitl/shared';
 
-/** 24 hours in nanoseconds (JetStream max_age unit). */
-const STREAM_MAX_AGE_NS = 24 * 60 * 60 * 1_000_000_000;
+const STREAM_MAX_AGE_NS = parseInt(process.env.NATS_STREAM_MAX_AGE_HOURS || '8', 10) * 60 * 60 * 1_000_000_000;
 
 /**
  * NATS Publisher Service

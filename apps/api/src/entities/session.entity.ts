@@ -81,4 +81,8 @@ export class SessionEntity {
   /** Timestamp of last credential request — used for idle shutdown. */
   @Column({ type: 'timestamptz', nullable: true })
   last_credential_request_at: Date | null;
+
+  /** Flag set by API to request pod restart; controller clears it after terminating the session. */
+  @Column({ type: 'boolean', default: false })
+  restart_requested: boolean;
 }

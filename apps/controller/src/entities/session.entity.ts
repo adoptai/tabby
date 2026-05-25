@@ -75,4 +75,7 @@ export class SessionEntity {
 
   @Column({ type: 'timestamptz', nullable: true })
   last_credential_request_at: Date | null;
+
+  @Column({ type: 'boolean', default: false })
+  restart_requested: boolean;
 }

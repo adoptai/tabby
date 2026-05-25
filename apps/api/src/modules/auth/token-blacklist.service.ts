@@ -1,9 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
-import { requireEnv } from '@browser-hitl/shared';
+import { requireEnv, REDIS_KEYS } from '@browser-hitl/shared';
 import { RedisHealthMonitor } from '../redis/redis-health-monitor';
-
-const BLACKLIST_PREFIX = 'token:revoked:';
 
 @Injectable()
 export class TokenBlacklistService implements OnModuleDestroy {
@@ -33,7 +31,7 @@ export class TokenBlacklistService implements OnModuleDestroy {
    */
   async revoke(jti: string, expiresAtEpoch: number): Promise<void> {
     const remainingSeconds = Math.max(1, Math.ceil(expiresAtEpoch - Date.now() / 1000));
-    await this.redis.set(`${BLACKLIST_PREFIX}${jti}`, '1', 'EX', remainingSeconds);
+    await this.redis.set(REDIS_KEYS.tokenRevoked(jti), '1', 'EX', remainingSeconds);
     this.logger.log(`Token ${jti.substring(0, 8)}... revoked (TTL: ${remainingSeconds}s)`);
   }
 
@@ -54,7 +52,7 @@ export class TokenBlacklistService implements OnModuleDestroy {
     }
 
     try {
-      const result = await this.redis.get(`${BLACKLIST_PREFIX}${jti}`);
+      const result = await this.redis.get(REDIS_KEYS.tokenRevoked(jti));
       return result !== null;
     } catch (err) {
       // ADR-011: SECURITY tier — fail-closed on any Redis error
