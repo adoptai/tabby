@@ -280,9 +280,13 @@ jobs:
       METRICS_AUTH_TOKEN: ${{ secrets.METRICS_AUTH_TOKEN }}
       NATS_AUTH_TOKEN: ${{ secrets.NATS_AUTH_TOKEN }}
       AGENT_SECRET_HMAC_KEY: ${{ secrets.AGENT_SECRET_HMAC_KEY }}
+      IDP_CLIENT_ID: ${{ secrets.IDP_CLIENT_ID }}
+      IDP_CLIENT_SECRET: ${{ secrets.IDP_CLIENT_SECRET }}
       # Session lifecycle (from environment secrets)
       IDLE_SHUTDOWN_SECONDS: ${{ secrets.IDLE_SHUTDOWN_SECONDS }}
       MAX_SESSION_AGE_HOURS: ${{ secrets.MAX_SESSION_AGE_HOURS }}
+      NATS_STREAM_MAX_AGE_HOURS: ${{ secrets.NATS_STREAM_MAX_AGE_HOURS }}
+      MINIO_ORPHAN_MAX_AGE_HOURS: ${{ secrets.MINIO_ORPHAN_MAX_AGE_HOURS }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
