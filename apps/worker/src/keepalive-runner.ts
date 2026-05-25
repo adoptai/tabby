@@ -157,10 +157,12 @@ export class KeepaliveRunner {
         await this.db.updateLastExportedAt(this.sessionId);
         console.log('[Keepalive] On-demand extraction complete');
 
-        // Signal any waiting API caller that fresh artifacts are ready
+        // Signal any waiting API caller that fresh artifacts are ready (atomic pipeline)
         const doneKey = REDIS_KEYS.extractDone(this.sessionId);
-        await this.redis!.lpush(doneKey, '1');
-        await this.redis!.expire(doneKey, REDIS_TTL.EXTRACT_DONE_SECONDS);
+        await this.redis!.pipeline()
+          .lpush(doneKey, '1')
+          .expire(doneKey, REDIS_TTL.EXTRACT_DONE_SECONDS)
+          .exec();
       } catch (error) {
         console.error(`[Keepalive] On-demand extraction failed: ${error}`);
       }

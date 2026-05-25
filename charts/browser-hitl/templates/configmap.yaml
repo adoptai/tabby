@@ -29,6 +29,8 @@ data:
   RECONCILE_INTERVAL_SECONDS: {{ .Values.config.reconcileIntervalSeconds | quote }}
   MAX_SESSION_AGE_HOURS: {{ .Values.config.maxSessionAgeHours | quote }}
   IDLE_SHUTDOWN_SECONDS: {{ .Values.config.idleShutdownSeconds | default "0" | quote }}
+  NATS_STREAM_MAX_AGE_HOURS: {{ .Values.config.natsStreamMaxAgeHours | default "8" | quote }}
+  MINIO_ORPHAN_MAX_AGE_HOURS: {{ .Values.config.minioOrphanMaxAgeHours | default "2" | quote }}
   PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
   STREAM_HOST: {{ .Values.config.streamHost | quote }}
   STREAM_PROTOCOL: {{ .Values.config.streamProtocol | quote }}

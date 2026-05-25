@@ -141,6 +141,8 @@ config:
   serviceAuthAllowedTenantIds: "*"
   serviceAuthAllowWildcardTenantScope: "true"
   idleShutdownSeconds: "3600"  # Auto-stop per-user sessions after 1h idle
+  natsStreamMaxAgeHours: "8"
+  minioOrphanMaxAgeHours: "2"
   sentryDsn: "REPLACE_WITH_SENTRY_DSN"
   sentryEnabled: "true"
 
