@@ -6,8 +6,10 @@ import { Socket } from 'net';
 import { URL } from 'url';
 import { Repository } from 'typeorm';
 import WebSocket, { WebSocketServer } from 'ws';
+import { JwtService } from '@nestjs/jwt';
 import { SessionEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
+import { parseCookie } from '../../common/utils/cookie';
 import {
   CDP_ALLOWED_COMMANDS,
   CDP_ALLOWED_EVENTS,
@@ -44,6 +46,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly httpAdapterHost: HttpAdapterHost,
     private readonly streamTokenService: StreamTokenService,
+    private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
   ) {}
@@ -96,13 +99,18 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const validation = await this.streamTokenService.validateToken(token);
+      const validation = this.streamTokenService.verifyToken(token);
       if (!validation.valid) {
         this.rejectUpgrade(socket, 401, validation.reason);
         return;
       }
       if (validation.payload.session_id !== sessionId) {
         this.rejectUpgrade(socket, 401, 'Token is not valid for this session');
+        return;
+      }
+
+      if (await this.streamTokenService.isStreamRevoked(sessionId)) {
+        this.rejectUpgrade(socket, 401, 'Stream access has been revoked');
         return;
       }
 
@@ -120,9 +128,29 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Verify tabby_vnc cookie for sessions that have owner_user_id (same gate as VNC WS proxy)
+      if (session.owner_user_id) {
+        const cookieHeader = (request.headers.cookie as string | undefined) || '';
+        const vncCookie = parseCookie(cookieHeader, 'tabby_vnc');
+        if (!vncCookie) {
+          this.rejectUpgrade(socket, 401, 'Access cookie required');
+          return;
+        }
+        try {
+          const payload = this.jwtService.verify<{ type: string; owner_user_id: string; tenant_id: string }>(vncCookie);
+          if (payload.type !== 'vnc_access' || payload.owner_user_id !== session.owner_user_id || payload.tenant_id !== session.tenant_id) {
+            this.rejectUpgrade(socket, 403, 'Cookie owner mismatch');
+            return;
+          }
+        } catch {
+          this.rejectUpgrade(socket, 401, 'Invalid access cookie');
+          return;
+        }
+      }
+
       // Complete the WebSocket upgrade
       this.wss!.handleUpgrade(request, socket, head, (clientWs) => {
-        this.handleConnection(clientWs, session);
+        this.handleConnection(clientWs, session, token!);
       });
     } catch (error) {
       this.logger.error(`Unhandled cdp-ws proxy error: ${(error as Error).message}`);
@@ -130,7 +158,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private handleConnection(clientWs: WebSocket, session: SessionEntity): void {
+  private handleConnection(clientWs: WebSocket, session: SessionEntity, token: string): void {
     this.trackSocket(clientWs);
 
     const serviceName = `${session.pod_name}-cdp`;
@@ -140,7 +168,25 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
     const backendWs = new WebSocket(backendUrl);
     this.trackSocket(backendWs);
 
+    // Tracks in-flight JSON-RPC request IDs so matching backend responses are forwarded.
+    // Capped to avoid unbounded growth on sessions with dropped responses (e.g. very long
+    // sessions with transient backend packet loss). When the cap is hit the oldest quarter
+    // is evicted — callers will not receive those responses but the connection stays alive.
     const pendingIds = new Set<number>();
+    const PENDING_IDS_MAX = 500;
+
+    function trackPendingId(id: number): void {
+      if (pendingIds.size >= PENDING_IDS_MAX) {
+        // Set iteration order is insertion order — evict the oldest quarter.
+        const evictCount = Math.floor(PENDING_IDS_MAX / 4);
+        let i = 0;
+        for (const stale of pendingIds) {
+          if (i++ >= evictCount) break;
+          pendingIds.delete(stale);
+        }
+      }
+      pendingIds.add(id);
+    }
 
     backendWs.on('error', (err) => {
       this.logger.warn(
@@ -161,6 +207,23 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
     clientWs.on('close', () => {
       backendWs.close();
     });
+
+    const decoded = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+    const remainingMs = Math.max(0, (decoded.exp * 1000) - Date.now());
+    const expiryTimer = setTimeout(() => {
+      this.logger.log(`Stream token expired for session ${session.id}, closing CDP connection`);
+      clientWs.close(1000, 'Stream token expired');
+    }, remainingMs);
+    clientWs.once('close', () => clearTimeout(expiryTimer));
+
+    const revokeInterval = setInterval(async () => {
+      if (await this.streamTokenService.isStreamRevoked(session.id)) {
+        this.logger.log(`Stream access revoked for session ${session.id}, closing CDP connection`);
+        clearInterval(revokeInterval);
+        clientWs.close(1000, 'Stream access revoked');
+      }
+    }, 30_000);
+    clientWs.once('close', () => clearInterval(revokeInterval));
 
     // Client -> Backend (inbound filter)
     clientWs.on('message', (data: Buffer | string) => {
@@ -199,7 +262,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
 
       // Track pending request IDs
       if (typeof msg.id === 'number') {
-        pendingIds.add(msg.id);
+        trackPendingId(msg.id);
       }
 
       if (backendWs.readyState === WebSocket.OPEN) {

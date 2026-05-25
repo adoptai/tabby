@@ -41,6 +41,7 @@ describe('CdpWsProxyService - Whitelist Filtering', () => {
       'Input.dispatchKeyEvent',
       'Input.dispatchMouseEvent',
       'Input.dispatchTouchEvent',
+      'Input.insertText',
     ];
 
     for (const cmd of allowedCommands) {

@@ -25,13 +25,6 @@ export class IdentityProviderEntity {
   audience: string | null;
 
   @Column({ type: 'varchar', nullable: true })
-  client_id: string | null;
-
-  /** Encrypted OAuth client secret (browser path only). Use IdentityProvidersService to set/read. */
-  @Column({ type: 'varchar', nullable: true })
-  client_secret: string | null;
-
-  @Column({ type: 'varchar', nullable: true })
   auth_url: string | null;
 
   @Column({ type: 'varchar', nullable: true })

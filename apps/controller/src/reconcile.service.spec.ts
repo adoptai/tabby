@@ -110,6 +110,81 @@ describe('ReconcileService circuit breaker', () => {
 });
 
 // ---------------------------------------------------------------------------
+// doReconcile — restart_requested flag
+// ---------------------------------------------------------------------------
+
+describe('ReconcileService restart_requested', () => {
+  function makeSessionForRestart(overrides: Record<string, any> = {}) {
+    return {
+      id: 'sess-restart-1',
+      tenant_id: 'tenant-1',
+      app_id: 'app-1',
+      pod_name: 'pod-r1',
+      state: 'HEALTHY',
+      state_version: 1,
+      retry_count: 0,
+      restart_requested: true,
+      owner_user_id: null,
+      last_credential_request_at: null,
+      started_at: new Date(),
+      ...overrides,
+    };
+  }
+
+  function buildForRestart() {
+    const sessionRepo = {
+      find: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    const appRepo = { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
+    const stateMachine = {
+      evaluateSession: jest.fn().mockResolvedValue(undefined),
+      transition: jest.fn().mockResolvedValue(undefined),
+    };
+    const podManager = {
+      deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+      deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+      deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      listWorkerPods: jest.fn().mockResolvedValue([]),
+      podExists: jest.fn().mockResolvedValue(true),
+    };
+    const service = buildService({
+      sessionRepo, appRepo, stateMachine, podManager,
+      batonRepo: {},
+    });
+    return { service, sessionRepo, appRepo, stateMachine, podManager };
+  }
+
+  it('terminates the session and clears the flag when restart_requested is true', async () => {
+    const { service, sessionRepo, stateMachine } = buildForRestart();
+    const session = makeSessionForRestart({ restart_requested: true });
+
+    // All find() calls return our session so doReconcile sees it in the active-session loop
+    sessionRepo.find.mockResolvedValue([session]);
+
+    await (service as any).doReconcile();
+
+    expect(sessionRepo.update).toHaveBeenCalledWith('sess-restart-1', { restart_requested: false });
+    expect(stateMachine.evaluateSession).not.toHaveBeenCalledWith(session, expect.anything());
+  });
+
+  it('does not terminate sessions where restart_requested is false', async () => {
+    const { service, sessionRepo, stateMachine } = buildForRestart();
+    const session = makeSessionForRestart({ restart_requested: false });
+
+    sessionRepo.find.mockResolvedValue([session]);
+
+    await (service as any).doReconcile();
+
+    expect(sessionRepo.update).not.toHaveBeenCalledWith('sess-restart-1', { restart_requested: false });
+    expect(stateMachine.evaluateSession).toHaveBeenCalledWith(session);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkRecycling — idle shutdown + FAILED session cleanup
 // ---------------------------------------------------------------------------
 

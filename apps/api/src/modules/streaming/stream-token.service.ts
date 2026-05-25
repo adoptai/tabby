@@ -62,6 +62,16 @@ export class StreamTokenService implements OnModuleDestroy {
   // Public API
   // ----------------------------------------------------------------
 
+  async revokeStreamAccess(sessionId: string): Promise<void> {
+    const key = REDIS_KEYS.streamRevoked(sessionId);
+    await this.redis.set(key, '1', 'EX', REDIS_TTL.STREAM_TOKEN_SECONDS);
+  }
+
+  async isStreamRevoked(sessionId: string): Promise<boolean> {
+    const key = REDIS_KEYS.streamRevoked(sessionId);
+    return (await this.redis.exists(key)) === 1;
+  }
+
   /**
    * Verify JWT signature/expiry without consuming the single-use token.
    * Used by viewer bootstrap endpoints; consumption happens at WebSocket connect time.
@@ -148,12 +158,12 @@ export class StreamTokenService implements OnModuleDestroy {
 
   async createShortLink(url: string): Promise<string> {
     const shortId = Math.random().toString(36).slice(2, 10); // 8 random chars
-    await this.redis.set(`vnc:short:${shortId}`, url, 'EX', 600);
+    await this.redis.set(REDIS_KEYS.vncShortLink(shortId), url, 'EX', REDIS_TTL.VNC_SHORT_LINK_SECONDS);
     return shortId;
   }
 
   async resolveShortLink(shortId: string): Promise<string | null> {
-    return this.redis.get(`vnc:short:${shortId}`);
+    return this.redis.get(REDIS_KEYS.vncShortLink(shortId));
   }
 
   /**
