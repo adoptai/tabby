@@ -1056,6 +1056,7 @@ export class StreamingController {
     const result = this.streamTokenService.verifyToken(token);
     if (!result.valid) throw new UnauthorizedException(result.reason);
     if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+    if (await this.streamTokenService.isStreamRevoked(sessionId)) throw new UnauthorizedException('Stream access has been revoked');
 
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Session not found');
@@ -1097,6 +1098,7 @@ export class StreamingController {
     const result = this.streamTokenService.verifyToken(token);
     if (!result.valid) throw new UnauthorizedException(result.reason);
     if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+    if (await this.streamTokenService.isStreamRevoked(sessionId)) throw new UnauthorizedException('Stream access has been revoked');
 
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Session not found');
@@ -1141,6 +1143,7 @@ export class StreamingController {
     const result = this.streamTokenService.verifyToken(token);
     if (!result.valid) throw new UnauthorizedException(result.reason);
     if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+    if (await this.streamTokenService.isStreamRevoked(sessionId)) throw new UnauthorizedException('Stream access has been revoked');
 
     const originalSession = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!originalSession) throw new NotFoundException('Session not found');

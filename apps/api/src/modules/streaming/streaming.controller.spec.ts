@@ -46,6 +46,7 @@ function buildModule(overrides: {
   const streamTokenService = overrides.streamTokenService ?? {
     verifyToken: jest.fn().mockReturnValue({ valid: true, payload: { session_id: 'sess-1', user_id: 'user-1' } }),
     generateToken: jest.fn().mockResolvedValue('new-token'),
+    isStreamRevoked: jest.fn().mockResolvedValue(false),
   };
   const jwtService = overrides.jwtService ?? { verify: jest.fn(), sign: jest.fn() };
 
@@ -86,6 +87,7 @@ describe('StreamingController — panel-state', () => {
         payload: { session_id: 'sess-1', user_id: 'user-1' },
       }),
       generateToken: jest.fn().mockResolvedValue('new-token'),
+      isStreamRevoked: jest.fn().mockResolvedValue(false),
     };
 
     const module: TestingModule = await buildModule({ sessionRepo, interventionRepo, streamTokenService });
@@ -173,6 +175,7 @@ describe('StreamingController — restart', () => {
         payload: { session_id: 'sess-1', user_id: 'user-1' },
       }),
       generateToken: jest.fn().mockResolvedValue('new-token'),
+      isStreamRevoked: jest.fn().mockResolvedValue(false),
     };
 
     const module: TestingModule = await buildModule({ sessionRepo, streamTokenService });
@@ -232,6 +235,7 @@ describe('StreamingController — successor', () => {
         payload: { session_id: 'sess-1', user_id: 'user-1' },
       }),
       generateToken: jest.fn().mockResolvedValue('new-token'),
+      isStreamRevoked: jest.fn().mockResolvedValue(false),
     };
 
     const module: TestingModule = await buildModule({ sessionRepo, appRepo, streamTokenService });
