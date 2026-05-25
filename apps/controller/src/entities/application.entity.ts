@@ -52,6 +52,10 @@ export class ApplicationEntity {
   @Column({ type: 'varchar', nullable: true })
   owner_user_id: string | null;
 
+  /** Template this app was auto-provisioned from (null for manually-created apps) */
+  @Column({ type: 'uuid', nullable: true })
+  template_id: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

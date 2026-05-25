@@ -29,14 +29,7 @@ class CreateIdpDto {
   audience?: string;
 
   // ── Browser OAuth fields (admin-UI Generic OAuth) ──────────────────
-  @ApiProperty({ required: false, description: 'OAuth client_id registered for Tabby at the IdP.' })
-  @IsOptional() @IsString()
-  client_id?: string;
-
-  @ApiProperty({ required: false, description: 'OAuth client_secret (plaintext). Stored encrypted. Send only when setting/rotating.' })
-  @IsOptional() @IsString()
-  client_secret?: string;
-
+  // Note: client_id and client_secret are now read from IDP_CLIENT_ID / IDP_CLIENT_SECRET env vars.
   @ApiProperty({ required: false, example: 'https://auth.adopt.ai/oauth/authorize' })
   @IsOptional() @IsString()
   auth_url?: string;
@@ -112,8 +105,7 @@ export class IdentityProvidersController {
   @HttpCode(201)
   @ApiOperation({ summary: 'Register an identity provider', description: 'Register an OIDC or SAML identity provider. Supports both API-path (JWKS validation) and browser-path (Generic OAuth) fields.' })
   async create(@Body() dto: CreateIdpDto, @Req() req: any) {
-    const { client_secret, ...rest } = dto;
-    return this.idpService.create(req.user.tenant_id, { ...rest, client_secret_plaintext: client_secret } as any, req.user.user_id);
+    return this.idpService.create(req.user.tenant_id, dto as any, req.user.user_id);
   }
 
   @Get()
@@ -134,8 +126,7 @@ export class IdentityProvidersController {
   @Roles('Admin')
   @ApiOperation({ summary: 'Update identity provider' })
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateIdpDto, @Req() req: any) {
-    const { client_secret, ...rest } = dto;
-    return this.idpService.update(req.user.tenant_id, id, { ...rest, client_secret_plaintext: client_secret } as any, req.user.user_id);
+    return this.idpService.update(req.user.tenant_id, id, dto as any, req.user.user_id);
   }
 
   @Delete(':id')

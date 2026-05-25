@@ -9,7 +9,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { SessionState, requireEnv } from '@browser-hitl/shared';
+import { SessionState, requireEnv, REDIS_KEYS } from '@browser-hitl/shared';
 import { Repository } from 'typeorm';
 import Redis from 'ioredis';
 import { createHash } from 'crypto';
@@ -320,7 +320,7 @@ export class AgentService implements OnModuleDestroy {
   }
 
   private getIdempotencyRedisKey(tenantId: string, key: string): string {
-    return `idempotency:agent:run-url:${tenantId}:${key}`;
+    return REDIS_KEYS.agentIdempotency(tenantId, key);
   }
 
   private getIdempotencyTtlSeconds(): number {

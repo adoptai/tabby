@@ -103,7 +103,7 @@ function buildService(overrides: {
   (service as any).consumptionRepo = consumptionRepo;
   (service as any).healthMonitor = healthMonitor;
   (service as any).minioProvisioner = minioProvisioner;
-  (service as any).appRepo = { create: jest.fn(), save: jest.fn() };
+  (service as any).appRepo = { create: jest.fn(), save: jest.fn(), update: jest.fn().mockResolvedValue(undefined) };
   (service as any).templateRepo = { findOne: jest.fn().mockResolvedValue(null) };
   (service as any).redis = mockRedis;
   (service as any).credentialCache = new Map();
