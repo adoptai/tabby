@@ -1,4 +1,5 @@
 import express, { Express } from 'express';
+import helmet from 'helmet';
 import { Server } from 'http';
 import { testSentry } from '@browser-hitl/shared';
 import type { Page } from 'playwright';
@@ -43,6 +44,7 @@ export class HealthServer {
 
   start(port: number): void {
     const app = express();
+    app.use(helmet());
     app.use(express.json({ limit: '10mb' }));
     this.app = app;
 

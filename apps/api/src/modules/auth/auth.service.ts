@@ -47,6 +47,9 @@ export class AuthService {
       );
     }
 
+    if (!user.password_hash) {
+      throw new UnauthorizedException('This account uses SSO login — password login is not available');
+    }
     const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
       // Increment failed count and potentially lock
