@@ -383,6 +383,8 @@ config:
   reconcileIntervalSeconds: "15"
   maxSessionAgeHours: "24"
   idleShutdownSeconds: "0"  # 0 = disabled. Set >DEFAULT_KEEPALIVE_SECONDS (300) to enable idle pod reclaim.
+  natsStreamMaxAgeHours: "8"
+  minioOrphanMaxAgeHours: "2"
   publicBaseUrl: ""
   streamHost: ""
   streamProtocol: ""

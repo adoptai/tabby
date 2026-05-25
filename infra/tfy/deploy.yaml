@@ -71,6 +71,8 @@ values:
     minioEndpoint: "${MINIO_ENDPOINT}"
     maxSessionAgeHours: "${MAX_SESSION_AGE_HOURS}"
     idleShutdownSeconds: "${IDLE_SHUTDOWN_SECONDS}"
+    natsStreamMaxAgeHours: "${NATS_STREAM_MAX_AGE_HOURS}"
+    minioOrphanMaxAgeHours: "${MINIO_ORPHAN_MAX_AGE_HOURS}"
     apiDocsEnabled: "${API_DOCS_ENABLED}"
 
   postgres:

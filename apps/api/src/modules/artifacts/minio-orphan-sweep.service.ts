@@ -24,7 +24,8 @@ export class MinioOrphanSweepService {
   @Cron('0 * * * *') // every hour
   async sweepOrphans(): Promise<void> {
     this.logger.log('Running MinIO orphan sweep...');
-    const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2 hours ago
+    const maxAgeHours = parseInt(process.env.MINIO_ORPHAN_MAX_AGE_HOURS || '2', 10);
+    const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
     const tenants = await this.tenantRepo.find({ select: ['id'] });
     let totalRemoved = 0;
 
