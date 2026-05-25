@@ -25,11 +25,13 @@ export class ExecuteService {
   private readonly logger = new Logger(ExecuteService.name);
   private readonly redis: Redis;
   private readonly workerNamespace: string;
+  private readonly localWorkerUrl: string | undefined;
 
   constructor(
     private readonly credentialsService: CredentialsService,
   ) {
     this.workerNamespace = process.env.WORKER_NAMESPACE || 'browser-hitl';
+    this.localWorkerUrl = process.env.LOCAL_WORKER_URL;
     this.redis = new Redis(requireEnv('REDIS_URL', {
       testDefault: 'redis://localhost:6379',
     }), {
@@ -75,8 +77,7 @@ export class ExecuteService {
     // Validate request
     this.validateRequest(request);
 
-    // Build internal worker URL
-    const workerUrl = `http://${session.pod_name}-worker.${this.workerNamespace}.svc.cluster.local:${PORTS.WORKER_HEALTH}/execute/fetch`;
+    const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/fetch');
 
     // Forward to worker
     const timeoutMs = Math.min(
@@ -171,7 +172,7 @@ export class ExecuteService {
       );
     }
 
-    const workerUrl = `http://${session.pod_name}-worker.${this.workerNamespace}.svc.cluster.local:${PORTS.WORKER_HEALTH}/execute/browser`;
+    const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/browser');
     const timeoutMs = Math.min(
       request.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS,
       EXECUTE_LIMITS.MAX_TIMEOUT_MS,
@@ -205,6 +206,13 @@ export class ExecuteService {
       clearTimeout(timer);
       await this.releaseSessionLock(lockKey);
     }
+  }
+
+  private buildWorkerUrl(podName: string, path: string): string {
+    if (this.localWorkerUrl) {
+      return `${this.localWorkerUrl.replace(/\/+$/, '')}${path}`;
+    }
+    return `http://${podName}-worker.${this.workerNamespace}.svc.cluster.local:${PORTS.WORKER_HEALTH}${path}`;
   }
 
   private async acquireSessionLock(lockKey: string): Promise<boolean> {
