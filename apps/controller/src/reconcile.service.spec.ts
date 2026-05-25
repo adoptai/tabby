@@ -146,6 +146,7 @@ describe('ReconcileService restart_requested', () => {
       deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
       deleteNoVncService: jest.fn().mockResolvedValue(undefined),
       deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
       syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
       listWorkerPods: jest.fn().mockResolvedValue([]),
