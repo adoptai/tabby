@@ -15,7 +15,6 @@ import {
   CDP_ALLOWED_EVENTS,
   CDP_LIMITS,
   CDP_PORTS,
-  REDIS_TTL,
   sanitizeScreencastParams,
 } from '@browser-hitl/shared';
 
@@ -151,7 +150,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
 
       // Complete the WebSocket upgrade
       this.wss!.handleUpgrade(request, socket, head, (clientWs) => {
-        this.handleConnection(clientWs, session);
+        this.handleConnection(clientWs, session, token!);
       });
     } catch (error) {
       this.logger.error(`Unhandled cdp-ws proxy error: ${(error as Error).message}`);
@@ -159,7 +158,7 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private handleConnection(clientWs: WebSocket, session: SessionEntity): void {
+  private handleConnection(clientWs: WebSocket, session: SessionEntity, token: string): void {
     this.trackSocket(clientWs);
 
     const serviceName = `${session.pod_name}-cdp`;
@@ -209,11 +208,12 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
       backendWs.close();
     });
 
-    const ttlMs = REDIS_TTL.STREAM_TOKEN_SECONDS * 1000;
+    const decoded = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+    const remainingMs = Math.max(0, (decoded.exp * 1000) - Date.now());
     const expiryTimer = setTimeout(() => {
       this.logger.log(`Stream token expired for session ${session.id}, closing CDP connection`);
       clientWs.close(1000, 'Stream token expired');
-    }, ttlMs);
+    }, remainingMs);
     clientWs.once('close', () => clearTimeout(expiryTimer));
 
     const revokeInterval = setInterval(async () => {

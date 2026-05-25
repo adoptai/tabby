@@ -689,11 +689,15 @@ export class CdpStreamingController {
         var restartBtn = document.getElementById('restart-btn');
         var restartConfirm = document.getElementById('restart-confirm');
         var restartYes = document.getElementById('restart-yes');
+        var tokenExpired = false;
 
         function poll() {
-          if (sessionTerminated || !TOKEN) return;
+          if (sessionTerminated || tokenExpired || !TOKEN) return;
           fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
-            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(r) {
+              if (r.status === 401) { tokenExpired = true; return null; }
+              return r.ok ? r.json() : null;
+            })
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
@@ -1389,12 +1393,16 @@ export class StreamingController {
         var restartBtn = document.getElementById('restart-btn');
         var restartConfirm = document.getElementById('restart-confirm');
         var restartYes = document.getElementById('restart-yes');
+        var tokenExpired = false;
 
         // ── Poll panel-state ──────────────────────────────────────────────────
         function poll() {
-          if (sessionTerminated || !TOKEN) return;
+          if (sessionTerminated || tokenExpired || !TOKEN) return;
           fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
-            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(r) {
+              if (r.status === 401) { tokenExpired = true; return null; }
+              return r.ok ? r.json() : null;
+            })
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';

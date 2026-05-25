@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { REDIS_TTL } from '@browser-hitl/shared';
+
 import { HttpAdapterHost } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IncomingMessage, Server } from 'http';
@@ -149,12 +149,13 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
         clientSocket.pipe(backendSocket);
         backendSocket.pipe(clientSocket);
 
-        const ttlMs = REDIS_TTL.STREAM_TOKEN_SECONDS * 1000;
+        const decoded = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+        const remainingMs = Math.max(0, (decoded.exp * 1000) - Date.now());
         const expiryTimer = setTimeout(() => {
           this.logger.log(`Stream token expired for session ${sessionId}, closing connection`);
           clientSocket.destroy();
           backendSocket.destroy();
-        }, ttlMs);
+        }, remainingMs);
         clientSocket.once('close', () => clearTimeout(expiryTimer));
         backendSocket.once('close', () => clearTimeout(expiryTimer));
 
