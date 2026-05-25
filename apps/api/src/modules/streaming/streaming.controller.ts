@@ -17,7 +17,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
@@ -1108,6 +1108,7 @@ export class StreamingController {
   }
 
   @Delete(':sessionId/stream-access')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @HttpCode(200)
   async revokeStreamAccess(
