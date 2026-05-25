@@ -15,6 +15,7 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -27,6 +28,7 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID, randomBytes } from 'crypto';
 import { Not, IsNull, MoreThan } from 'typeorm';
 import { Throttle } from '@nestjs/throttler';
+import { JwtAuthGuard } from '../../common/guards/roles.guard';
 import { parseCookie } from '../../common/utils/cookie';
 
 /** Module-level constant — avoids repeating the env-read inline everywhere. */
@@ -1102,15 +1104,18 @@ export class StreamingController {
   }
 
   @Delete(':sessionId/stream-access')
+  @UseGuards(JwtAuthGuard)
   @HttpCode(200)
   async revokeStreamAccess(
     @Param('sessionId') sessionId: string,
-    @Query('token') token?: string,
+    @Req() req: any,
   ): Promise<{ message: string; session_id: string }> {
-    if (!token) throw new UnauthorizedException('Missing stream token');
-    const result = this.streamTokenService.verifyToken(token);
-    if (!result.valid) throw new UnauthorizedException(result.reason);
-    if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) throw new NotFoundException('Session not found');
+
+    if (req.user.role !== 'Admin' && session.owner_user_id && req.user.owner_user_id !== session.owner_user_id) {
+      throw new ForbiddenException('You can only revoke stream access for your own sessions');
+    }
 
     await this.streamTokenService.revokeStreamAccess(sessionId);
 
