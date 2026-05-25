@@ -69,15 +69,23 @@ export const REDIS_KEYS = {
   extractLock: (tenantId: string, profileId: string, credSetId: string) => `extract_lock:${tenantId}:${profileId}:${credSetId}`,
   extractRequest: (sessionId: string) => `extract_request:${sessionId}`,
   extractDone: (sessionId: string) => `extract_done:${sessionId}`,
+  otp: (sessionId: string) => `otp:${sessionId}`,
+  oauthState: (state: string) => `oauth:state:${state}`,
+  vncShortLink: (shortId: string) => `vnc:short:${shortId}`,
+  tokenRevoked: (jti: string) => `token:revoked:${jti}`,
+  agentIdempotency: (tenantId: string, key: string) => `idempotency:agent:run-url:${tenantId}:${key}`,
+  streamRevoked: (sessionId: string) => `stream_revoked:${sessionId}`,
 } as const;
 
 export const REDIS_TTL = {
   HUMAN_INPUT_SECONDS: 300,
   STREAM_TOKEN_SECONDS: 600,
   ARTIFACT_TOKEN_SECONDS: 600,
-  EXTRACT_LOCK_SECONDS: 30,
   EXTRACT_REQUEST_SECONDS: 60,
   EXTRACT_DONE_SECONDS: 10,
+  OTP_SECONDS: 300,
+  OAUTH_STATE_SECONDS: 300,
+  VNC_SHORT_LINK_SECONDS: 600,
 } as const;
 
 // ============================================================

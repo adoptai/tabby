@@ -1,4 +1,5 @@
 import { TokenBlacklistService } from './token-blacklist.service';
+import { REDIS_KEYS } from '@browser-hitl/shared';
 
 /**
  * Adversarial tests for token revocation (C1 remediation + ADR-011 SECURITY tier).
@@ -56,7 +57,7 @@ describe('TokenBlacklistService', () => {
     await service.revoke(jti, expiresAtEpoch);
 
     expect(mockRedis.set).toHaveBeenCalledWith(
-      'token:revoked:test-jti-123',
+      REDIS_KEYS.tokenRevoked('test-jti-123'),
       '1',
       'EX',
       expect.any(Number),
@@ -74,7 +75,7 @@ describe('TokenBlacklistService', () => {
     const result = await service.isRevoked('revoked-jti');
 
     expect(result).toBe(true);
-    expect(mockRedis.get).toHaveBeenCalledWith('token:revoked:revoked-jti');
+    expect(mockRedis.get).toHaveBeenCalledWith(REDIS_KEYS.tokenRevoked('revoked-jti'));
   });
 
   it('isRevoked() returns false for non-revoked tokens', async () => {
@@ -123,7 +124,7 @@ describe('TokenBlacklistService', () => {
 
     // SECURITY tier: still attempt Redis when degraded
     expect(result).toBe(false);
-    expect(mockRedis.get).toHaveBeenCalledWith('token:revoked:test-jti');
+    expect(mockRedis.get).toHaveBeenCalledWith(REDIS_KEYS.tokenRevoked('test-jti'));
   });
 
   it('revoke() computes minimum TTL of 1 second for nearly-expired tokens', async () => {

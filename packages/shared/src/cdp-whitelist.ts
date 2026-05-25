@@ -15,6 +15,7 @@ export const CDP_ALLOWED_COMMANDS = new Set([
   'Input.dispatchKeyEvent',
   'Input.dispatchMouseEvent',
   'Input.dispatchTouchEvent',
+  'Input.insertText',
 ]);
 
 /**
