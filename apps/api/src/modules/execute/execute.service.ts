@@ -251,10 +251,7 @@ export class ExecuteService {
   private async enforceBrowserRateLimit(profileId: string): Promise<void> {
     const key = `execute_browser_rate:${profileId}`;
     try {
-      const count = await this.redis.incr(key);
-      if (count === 1) {
-        await this.redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
-      }
+      const count = await this.atomicIncr(key, RATE_LIMIT_WINDOW_SECONDS);
       if (count > EXECUTE_LIMITS.BROWSER_RATE_LIMIT_PER_MIN) {
         throw new HttpException(
           `Rate limit exceeded for profile "${profileId}" (${EXECUTE_LIMITS.BROWSER_RATE_LIMIT_PER_MIN}/min)`,
@@ -301,10 +298,7 @@ export class ExecuteService {
   private async enforceRateLimit(profileId: string): Promise<void> {
     const key = `execute_rate:${profileId}`;
     try {
-      const count = await this.redis.incr(key);
-      if (count === 1) {
-        await this.redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
-      }
+      const count = await this.atomicIncr(key, RATE_LIMIT_WINDOW_SECONDS);
       if (count > RATE_LIMIT_PER_MINUTE) {
         throw new HttpException(
           `Rate limit exceeded for profile "${profileId}" (${RATE_LIMIT_PER_MINUTE}/min)`,
@@ -315,5 +309,17 @@ export class ExecuteService {
       if (err instanceof HttpException && err.getStatus() === HttpStatus.TOO_MANY_REQUESTS) throw err;
       this.logger.warn(`Rate limit check failed (allowing request): ${err}`);
     }
+  }
+
+  private async atomicIncr(key: string, ttlSeconds: number): Promise<number> {
+    const result = await this.redis.eval(
+      `local c = redis.call('INCR', KEYS[1])
+       if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+       return c`,
+      1,
+      key,
+      ttlSeconds,
+    ) as number;
+    return result;
   }
 }
