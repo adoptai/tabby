@@ -20,7 +20,6 @@ export const EXECUTE_LIMITS = {
   ALLOWED_SCHEMES: ['https:', 'http:'] as readonly string[],
   MAX_RESPONSE_BODY_BYTES: 5_242_880, // 5MB
   BROWSER_RATE_LIMIT_PER_MIN: 120,
-  HAR_BODY_LIMIT_BYTES: 10_485_760, // 10MB
 } as const;
 
 export const BROWSER_COMMANDS = [
