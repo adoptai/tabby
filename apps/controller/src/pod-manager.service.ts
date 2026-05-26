@@ -3,7 +3,7 @@ import { SessionEntity } from './entities/session.entity';
 import { ApplicationEntity } from './entities/application.entity';
 import * as k8s from '@kubernetes/client-node';
 import { createHmac } from 'node:crypto';
-import { CDP_PORTS, StreamingMode } from '@browser-hitl/shared';
+import { CDP_PORTS, PORTS, StreamingMode } from '@browser-hitl/shared';
 
 /**
  * Pod Manager Service
@@ -125,6 +125,38 @@ export class PodManagerService {
   }
 
   /**
+   * Create a per-session ClusterIP service for the worker health/execute endpoint.
+   * Enables API-side execute proxy to reach the worker via K8s DNS.
+   */
+  async createWorkerService(sessionId: string, podName: string): Promise<string> {
+    const serviceName = this.buildWorkerServiceName(podName);
+    try {
+      const serviceSpec = this.buildWorkerServiceSpec(serviceName, sessionId);
+      this.logger.log(`Creating worker service ${serviceName} for session ${sessionId}`);
+      await this.createService(serviceSpec);
+      this.logger.log(`Worker service ${serviceName} created`);
+      return serviceName;
+    } catch (error) {
+      this.logger.error(`Failed to create worker service ${serviceName}: ${error}`);
+      throw error;
+    }
+  }
+
+  async deleteWorkerService(sessionId: string, podName?: string): Promise<void> {
+    const serviceName = podName
+      ? this.buildWorkerServiceName(podName)
+      : this.buildWorkerServiceName(this.buildPodName(sessionId));
+
+    try {
+      this.logger.log(`Deleting worker service ${serviceName}`);
+      await this.deleteService(serviceName);
+      this.logger.log(`Worker service ${serviceName} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete worker service ${serviceName}: ${error}`);
+    }
+  }
+
+  /**
    * Resolve the streaming mode for an app from its browser_policy.
    */
   resolveStreamingMode(app: ApplicationEntity): StreamingMode {
@@ -155,11 +187,12 @@ export class PodManagerService {
     podName: string,
     targetUrls: string[],
     streamingMode: StreamingMode = StreamingMode.VNC,
+    executeEnabled: boolean = false,
   ): Promise<void> {
     const policyName = this.buildNetworkPolicyName(sessionId);
 
     try {
-      const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode);
+      const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode, executeEnabled);
       this.logger.log(`Creating NetworkPolicy ${policyName} for pod ${podName}`);
       await this.createPolicy(policy);
       await this.syncEgressAllowlist(sessionId, targetUrls);
@@ -329,6 +362,8 @@ export class PodManagerService {
       { name: 'TENANT_ENCRYPTION_KEY', value: process.env.TENANT_ENCRYPTION_KEY || '' },
       { name: 'TENANT_KEY_VERSION', value: process.env.TENANT_KEY_VERSION || 'v1' },
       { name: 'STREAMING_MODE', value: streamingMode },
+      { name: 'EXECUTE_ENABLED', value: String(app.execute_enabled ?? false) },
+      ...(app.execute_enabled ? [{ name: 'JWT_SIGNING_KEY', value: process.env.JWT_SIGNING_KEY || '' }] : []),
       { name: 'SENTRY_DSN', value: process.env.SENTRY_DSN || '' },
       { name: 'SENTRY_ENABLED', value: process.env.SENTRY_ENABLED || 'false' },
       { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
@@ -497,7 +532,7 @@ export class PodManagerService {
    * Deny-all egress except DNS, internal services, egress proxy.
    * Supports both VNC (port 6080) and CDP (port 9223) ingress from API.
    */
-  private buildNetworkPolicy(policyName: string, sessionId: string, streamingMode: StreamingMode = StreamingMode.VNC) {
+  private buildNetworkPolicy(policyName: string, sessionId: string, streamingMode: StreamingMode = StreamingMode.VNC, executeEnabled: boolean = false) {
     const streamPort = streamingMode === StreamingMode.CDP ? CDP_PORTS.CDP_RELAY : 6080;
     return {
       apiVersion: 'networking.k8s.io/v1',
@@ -564,12 +599,14 @@ export class PodManagerService {
           },
         ],
         ingress: [
-          // Allow API service to proxy WebSocket traffic (noVNC:6080 or CDP:9223).
           {
             from: [{
               podSelector: { matchLabels: { 'app.kubernetes.io/component': 'api' } },
             }],
-            ports: [{ port: streamPort, protocol: 'TCP' }],
+            ports: [
+              { port: streamPort, protocol: 'TCP' },
+              ...(executeEnabled ? [{ port: PORTS.WORKER_HEALTH, protocol: 'TCP' }] : []),
+            ],
           },
           // Allow NGINX ingress to stream port
           {
@@ -600,6 +637,10 @@ export class PodManagerService {
     return `${podName}-cdp`;
   }
 
+  private buildWorkerServiceName(podName: string): string {
+    return `${podName}-worker`;
+  }
+
   private buildCdpServiceSpec(serviceName: string, sessionId: string) {
     return {
       apiVersion: 'v1',
@@ -622,6 +663,35 @@ export class PodManagerService {
             name: 'cdp-relay',
             port: CDP_PORTS.CDP_RELAY,
             targetPort: 'cdp-relay',
+            protocol: 'TCP',
+          },
+        ],
+      },
+    };
+  }
+
+  private buildWorkerServiceSpec(serviceName: string, sessionId: string) {
+    return {
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          app: 'browser-worker-execute',
+          'session-id': sessionId,
+        },
+      },
+      spec: {
+        type: 'ClusterIP',
+        selector: {
+          'session-id': sessionId,
+        },
+        ports: [
+          {
+            name: 'worker-health',
+            port: PORTS.WORKER_HEALTH,
+            targetPort: PORTS.WORKER_HEALTH,
             protocol: 'TCP',
           },
         ],
