@@ -193,10 +193,20 @@ export class ExecuteService {
         signal: abortController.signal,
       });
 
+      if (!workerResponse.ok) {
+        const errorBody = await workerResponse.text().catch(() => 'unknown error');
+        if (workerResponse.status === 502) {
+          throw new BadGatewayException(`Worker browser command failed: ${errorBody}`);
+        }
+        throw new BadGatewayException(
+          `Worker returned ${workerResponse.status}: ${errorBody}`,
+        );
+      }
+
       const result = await workerResponse.json() as ExecuteBrowserResponse;
       return result;
     } catch (err: unknown) {
-      if (err instanceof ConflictException) throw err;
+      if (err instanceof ConflictException || err instanceof BadGatewayException) throw err;
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('abort')) {
         throw new GatewayTimeoutException('Worker browser command timed out');
