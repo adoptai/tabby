@@ -79,7 +79,8 @@ export interface ExportPolicy {
   encryption: EncryptionConfig;
   ttl_seconds: number;                    // Must be >= 300
   refresh_interval_seconds?: number;      // Default: 3600
-  header_allowlist?: string[];
+  header_allowlist?: string[];            // Response headers (captured via page.on('response'))
+  request_header_allowlist?: string[];    // Outbound request headers (captured via page.on('request'))
 }
 
 // ============================================================
