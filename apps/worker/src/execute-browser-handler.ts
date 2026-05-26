@@ -27,17 +27,21 @@ interface HarEntry {
 
 interface HarCapture {
   entries: HarEntry[];
+  requestIdMap: WeakMap<any, string>;
+  pendingRequests: Map<string, { startTime: number; entry: Partial<HarEntry> }>;
+  nextId: number;
   onRequest: (request: any) => void;
   onResponse: (response: any) => void;
 }
 
-let activeHar: HarCapture | null = null;
+const activeHarByPage = new WeakMap<Page, HarCapture>();
 
 function detachHarListeners(page: Page): void {
-  if (activeHar) {
-    page.removeListener('request', activeHar.onRequest);
-    page.removeListener('response', activeHar.onResponse);
-    activeHar = null;
+  const capture = activeHarByPage.get(page);
+  if (capture) {
+    page.removeListener('request', capture.onRequest);
+    page.removeListener('response', capture.onResponse);
+    activeHarByPage.delete(page);
   }
 }
 
@@ -187,11 +191,12 @@ async function dispatchCommand(
     }
 
     case 'har_start': {
-      // Idempotent: detach previous listeners if active
       detachHarListeners(page);
 
       const entries: HarEntry[] = [];
-      const requestMap = new Map<string, { startTime: number; entry: Partial<HarEntry> }>();
+      const requestIdMap = new WeakMap<any, string>();
+      const pendingRequests = new Map<string, { startTime: number; entry: Partial<HarEntry> }>();
+      let nextId = 0;
 
       const onRequest = (request: any) => {
         const url: string = request.url();
@@ -218,18 +223,19 @@ async function dispatchCommand(
           startedDateTime: new Date(startTime).toISOString(),
           request: { method: request.method(), url, headers, queryString, postData },
         };
-        requestMap.set(`${request.method()}:${url}:${startTime}`, { startTime, entry: partial });
+        const id = String(nextId++);
+        requestIdMap.set(request, id);
+        pendingRequests.set(id, { startTime, entry: partial });
       };
 
       const onResponse = async (response: any) => {
         const request = response.request();
-        const url: string = request.url();
-        const key = [...requestMap.keys()].reverse().find(k => k.startsWith(`${request.method()}:${url}:`));
-        if (!key) return;
+        const id = requestIdMap.get(request);
+        if (id === undefined) return;
 
-        const match = requestMap.get(key);
+        const match = pendingRequests.get(id);
         if (!match) return;
-        requestMap.delete(key);
+        pendingRequests.delete(id);
 
         const respHeaders: Array<{ name: string; value: string }> = [];
         const rawHeaders = response.headers();
@@ -261,16 +267,17 @@ async function dispatchCommand(
 
       page.on('request', onRequest);
       page.on('response', onResponse);
-      activeHar = { entries, onRequest, onResponse };
+      activeHarByPage.set(page, { entries, requestIdMap, pendingRequests, nextId, onRequest, onResponse });
 
       return { status: 'started', entry_count: 0 };
     }
 
     case 'har_stop': {
-      if (!activeHar) {
+      const capture = activeHarByPage.get(page);
+      if (!capture) {
         return { status: 'not_active', har: null };
       }
-      const entries = activeHar.entries;
+      const entries = capture.entries;
       detachHarListeners(page);
 
       const har = {
@@ -284,10 +291,11 @@ async function dispatchCommand(
     }
 
     case 'har_status': {
-      if (!activeHar) {
+      const capture = activeHarByPage.get(page);
+      if (!capture) {
         return { active: false, entry_count: 0 };
       }
-      return { active: true, entry_count: activeHar.entries.length };
+      return { active: true, entry_count: capture.entries.length };
     }
 
     default:
