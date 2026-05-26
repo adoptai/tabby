@@ -14,6 +14,7 @@ import type {
   ExecuteBrowserRequest, ExecuteBrowserResponse,
 } from '@browser-hitl/shared';
 import { CredentialsService } from '../credentials/credentials.service';
+import { JwtService } from '@nestjs/jwt';
 import Redis from 'ioredis';
 import { requireEnv } from '@browser-hitl/shared';
 
@@ -29,6 +30,7 @@ export class ExecuteService {
 
   constructor(
     private readonly credentialsService: CredentialsService,
+    private readonly jwtService: JwtService,
   ) {
     this.workerNamespace = process.env.WORKER_NAMESPACE || 'browser-hitl';
     this.localWorkerUrl = process.env.LOCAL_WORKER_URL;
@@ -90,7 +92,10 @@ export class ExecuteService {
     try {
       const workerResponse = await fetch(workerUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.signWorkerToken(tenantId, profileId)}`,
+        },
         body: JSON.stringify({
           url: request.url,
           method: request.method,
@@ -183,7 +188,10 @@ export class ExecuteService {
     try {
       const workerResponse = await fetch(workerUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.signWorkerToken(tenantId, profileId)}`,
+        },
         body: JSON.stringify({
           command: request.command,
           params: request.params || {},
@@ -321,5 +329,12 @@ export class ExecuteService {
       ttlSeconds,
     ) as number;
     return result;
+  }
+
+  private signWorkerToken(tenantId: string, profileId: string): string {
+    return this.jwtService.sign(
+      { sub: 'execute-proxy', tenant_id: tenantId, profile_id: profileId, token_type: 'service' },
+      { expiresIn: '2m' },
+    );
   }
 }

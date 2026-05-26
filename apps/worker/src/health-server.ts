@@ -5,6 +5,7 @@ import { testSentry } from '@browser-hitl/shared';
 import type { Page } from 'playwright';
 import { registerExecuteHandler } from './execute-handler';
 import { registerBrowserHandler, cleanupHarListeners } from './execute-browser-handler';
+import { executeAuthMiddleware } from './execute-auth';
 
 /**
  * Worker Health HTTP Server per spec section 15.5.
@@ -30,6 +31,7 @@ export class HealthServer {
   setPage(page: Page): void {
     this.page = page;
     if (this.app && process.env.EXECUTE_ENABLED === 'true') {
+      this.app.use('/execute', executeAuthMiddleware);
       registerExecuteHandler(this.app, page);
       registerBrowserHandler(this.app, page);
       console.log('Execute handlers registered on /execute/fetch and /execute/browser');

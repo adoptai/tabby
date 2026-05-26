@@ -363,6 +363,7 @@ export class PodManagerService {
       { name: 'TENANT_KEY_VERSION', value: process.env.TENANT_KEY_VERSION || 'v1' },
       { name: 'STREAMING_MODE', value: streamingMode },
       { name: 'EXECUTE_ENABLED', value: String(app.execute_enabled ?? false) },
+      ...(app.execute_enabled ? [{ name: 'JWT_SIGNING_KEY', value: process.env.JWT_SIGNING_KEY || '' }] : []),
       { name: 'SENTRY_DSN', value: process.env.SENTRY_DSN || '' },
       { name: 'SENTRY_ENABLED', value: process.env.SENTRY_ENABLED || 'false' },
       { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
