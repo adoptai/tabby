@@ -59,7 +59,9 @@ export class ExecuteService {
       throw new BadRequestException(`Agent not authorized for profile "${profileId}"`);
     }
 
-    // Rate limit per profile
+    // Validate before rate limiting so invalid requests don't burn quota
+    this.validateRequest(request);
+
     await this.enforceRateLimit(profileId);
 
     // Resolve profile → session → pod
@@ -73,9 +75,6 @@ export class ExecuteService {
     if (!session.pod_name) {
       throw new ConflictException('Session has no assigned worker pod');
     }
-
-    // Validate request
-    this.validateRequest(request);
 
     const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/fetch');
 
