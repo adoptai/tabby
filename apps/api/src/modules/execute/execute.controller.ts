@@ -71,7 +71,7 @@ export class ExecuteController {
   @Roles('Admin', 'Operator', 'Agent')
   @ApiOperation({
     summary: 'Execute fetch inside browser',
-    description: 'Runs fetch() inside the authenticated Tabby browser session via page.evaluate(). Inherits the browser TLS fingerprint, cookies, and session state.',
+    description: 'Runs fetch() inside the authenticated Tabby browser session via page.evaluate(). Inherits the browser TLS fingerprint, cookies, and session state. Caller-supplied headers are forwarded as-is (including Cookie/Authorization overrides) — this is intentional since callers can only target sessions they own via profile authorization.',
   })
   @ApiResponse({ status: 200, description: 'Fetch response from the browser' })
   @ApiResponse({ status: 400, description: 'Invalid request (bad URL, scheme, body too large)' })

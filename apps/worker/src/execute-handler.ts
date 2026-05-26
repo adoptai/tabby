@@ -64,6 +64,7 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           url: string; method: string; headers: Record<string, string>;
           body: string | null; maxBytes: number;
         }) => {
+          // Headers forwarded as-is — callers may override Cookie/Authorization intentionally (API-layer ownership check scopes access to caller's own session)
           const init: RequestInit = {
             method: m,
             credentials: 'include',
