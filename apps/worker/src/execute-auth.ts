@@ -17,7 +17,11 @@ export function executeAuthMiddleware(req: Request, res: Response, next: NextFun
 
   const token = authHeader.slice(7);
   try {
-    jwt.verify(token, signingKey, { algorithms: ['HS256'] });
+    const payload = jwt.verify(token, signingKey, { algorithms: ['HS256'] }) as any;
+    if (payload.tenant_id && payload.tenant_id !== process.env.TENANT_ID) {
+      res.status(403).json({ error: 'Token tenant mismatch' });
+      return;
+    }
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
