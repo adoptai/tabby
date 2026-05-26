@@ -377,6 +377,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       if (!workerPod.sessionId) {
         this.logger.warn(`Deleting unlabeled orphan worker pod ${workerPod.podName}`);
         await this.podManager.deleteWorkerPod(workerPod.podName);
+        await this.podManager.deleteWorkerService('', workerPod.podName);
         continue;
       }
 
