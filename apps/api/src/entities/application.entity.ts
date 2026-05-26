@@ -56,6 +56,9 @@ export class ApplicationEntity {
   @Column({ type: 'uuid', nullable: true })
   template_id: string | null;
 
+  @Column({ type: 'boolean', default: false })
+  execute_enabled: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

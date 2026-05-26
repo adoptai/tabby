@@ -221,11 +221,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createNoVncService(savedSession.id, podName);
       }
 
-      // Create worker service for execute endpoint access
-      await this.podManager.createWorkerService(savedSession.id, podName);
+      if (app.execute_enabled) {
+        await this.podManager.createWorkerService(savedSession.id, podName);
+      }
 
       // Generate NetworkPolicy
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode);
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled);
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {

@@ -187,11 +187,12 @@ export class PodManagerService {
     podName: string,
     targetUrls: string[],
     streamingMode: StreamingMode = StreamingMode.VNC,
+    executeEnabled: boolean = false,
   ): Promise<void> {
     const policyName = this.buildNetworkPolicyName(sessionId);
 
     try {
-      const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode);
+      const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode, executeEnabled);
       this.logger.log(`Creating NetworkPolicy ${policyName} for pod ${podName}`);
       await this.createPolicy(policy);
       await this.syncEgressAllowlist(sessionId, targetUrls);
@@ -361,6 +362,7 @@ export class PodManagerService {
       { name: 'TENANT_ENCRYPTION_KEY', value: process.env.TENANT_ENCRYPTION_KEY || '' },
       { name: 'TENANT_KEY_VERSION', value: process.env.TENANT_KEY_VERSION || 'v1' },
       { name: 'STREAMING_MODE', value: streamingMode },
+      { name: 'EXECUTE_ENABLED', value: String(app.execute_enabled ?? false) },
       { name: 'SENTRY_DSN', value: process.env.SENTRY_DSN || '' },
       { name: 'SENTRY_ENABLED', value: process.env.SENTRY_ENABLED || 'false' },
       { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
@@ -529,7 +531,7 @@ export class PodManagerService {
    * Deny-all egress except DNS, internal services, egress proxy.
    * Supports both VNC (port 6080) and CDP (port 9223) ingress from API.
    */
-  private buildNetworkPolicy(policyName: string, sessionId: string, streamingMode: StreamingMode = StreamingMode.VNC) {
+  private buildNetworkPolicy(policyName: string, sessionId: string, streamingMode: StreamingMode = StreamingMode.VNC, executeEnabled: boolean = false) {
     const streamPort = streamingMode === StreamingMode.CDP ? CDP_PORTS.CDP_RELAY : 6080;
     return {
       apiVersion: 'networking.k8s.io/v1',
@@ -596,15 +598,13 @@ export class PodManagerService {
           },
         ],
         ingress: [
-          // Allow API service to proxy WebSocket traffic (noVNC:6080 or CDP:9223)
-          // and execute endpoint traffic (8091).
           {
             from: [{
               podSelector: { matchLabels: { 'app.kubernetes.io/component': 'api' } },
             }],
             ports: [
               { port: streamPort, protocol: 'TCP' },
-              { port: PORTS.WORKER_HEALTH, protocol: 'TCP' },
+              ...(executeEnabled ? [{ port: PORTS.WORKER_HEALTH, protocol: 'TCP' }] : []),
             ],
           },
           // Allow NGINX ingress to stream port

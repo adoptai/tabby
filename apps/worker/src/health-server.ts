@@ -29,7 +29,7 @@ export class HealthServer {
    */
   setPage(page: Page): void {
     this.page = page;
-    if (this.app) {
+    if (this.app && process.env.EXECUTE_ENABLED === 'true') {
       registerExecuteHandler(this.app, page);
       registerBrowserHandler(this.app, page);
       console.log('Execute handlers registered on /execute/fetch and /execute/browser');
