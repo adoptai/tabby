@@ -72,3 +72,4 @@ data:
   # Version info (injected by CI)
   CHART_VERSION: {{ .Chart.Version | quote }}
   COMMIT_SHA: {{ .Values.config.commitSha | default "unknown" | quote }}
+  RECONCILE_BATCH_SIZE: {{ .Values.config.reconcileBatchSize | default "50" | quote }}

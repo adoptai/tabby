@@ -37,11 +37,44 @@ values:
       pullPolicy: Always
 
   api:
-    replicas: 1
+    replicas: ${API_REPLICAS}
     port: 8000
+    resources:
+      requests:
+        cpu: "${API_CPU_REQUEST}"
+        memory: "${API_MEM_REQUEST}"
+      limits:
+        cpu: "${API_CPU_LIMIT}"
+        memory: "${API_MEM_LIMIT}"
 
   controller:
-    replicas: 1
+    replicas: ${CONTROLLER_REPLICAS}
+    resources:
+      requests:
+        cpu: "${CONTROLLER_CPU_REQUEST}"
+        memory: "${CONTROLLER_MEM_REQUEST}"
+      limits:
+        cpu: "${CONTROLLER_CPU_LIMIT}"
+        memory: "${CONTROLLER_MEM_LIMIT}"
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: karpenter.sh/capacity-type
+                  values:
+                    - on-demand
+                  operator: In
+
+  worker:
+    resources:
+      requests:
+        cpu: "${WORKER_CPU_REQUEST}"
+        memory: "${WORKER_MEM_REQUEST}"
+      limits:
+        cpu: "${WORKER_CPU_LIMIT}"
+        memory: "${WORKER_MEM_LIMIT}"
 
   slackBot:
     enabled: true
@@ -74,31 +107,99 @@ values:
     natsStreamMaxAgeHours: "${NATS_STREAM_MAX_AGE_HOURS}"
     minioOrphanMaxAgeHours: "${MINIO_ORPHAN_MAX_AGE_HOURS}"
     apiDocsEnabled: "${API_DOCS_ENABLED}"
+    reconcileBatchSize: "${RECONCILE_BATCH_SIZE}"
 
   postgres:
     enabled: ${POSTGRES_ENABLED}
     persistence:
       size: 20Gi
+    resources:
+      requests:
+        cpu: "${POSTGRES_CPU_REQUEST}"
+        memory: "${POSTGRES_MEM_REQUEST}"
+      limits:
+        cpu: "${POSTGRES_CPU_LIMIT}"
+        memory: "${POSTGRES_MEM_LIMIT}"
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: karpenter.sh/capacity-type
+                  values:
+                    - on-demand
+                  operator: In
 
   redis:
     enabled: ${REDIS_ENABLED}
     persistence:
       size: 5Gi
+    resources:
+      requests:
+        cpu: "${REDIS_CPU_REQUEST}"
+        memory: "${REDIS_MEM_REQUEST}"
+      limits:
+        cpu: "${REDIS_CPU_LIMIT}"
+        memory: "${REDIS_MEM_LIMIT}"
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: karpenter.sh/capacity-type
+                  values:
+                    - on-demand
+                  operator: In
 
   nats:
     enabled: ${NATS_ENABLED}
     persistence:
       size: 10Gi
+    resources:
+      requests:
+        cpu: "${NATS_CPU_REQUEST}"
+        memory: "${NATS_MEM_REQUEST}"
+      limits:
+        cpu: "${NATS_CPU_LIMIT}"
+        memory: "${NATS_MEM_LIMIT}"
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: karpenter.sh/capacity-type
+                  values:
+                    - on-demand
+                  operator: In
+    jetstream:
+      maxMemory: "${NATS_JS_MAX_MEMORY}"
 
   minio:
     enabled: ${MINIO_ENABLED}
     persistence:
       size: 50Gi
+    resources:
+      requests:
+        cpu: "${MINIO_CPU_REQUEST}"
+        memory: "${MINIO_MEM_REQUEST}"
+      limits:
+        cpu: "${MINIO_CPU_LIMIT}"
+        memory: "${MINIO_MEM_LIMIT}"
 
   egressProxy:
     enabled: true
     allowInsecureAdmin: true
     allowInsecureSessionAllowlist: true
+    resources:
+      requests:
+        cpu: "${EGRESS_CPU_REQUEST}"
+        memory: "${EGRESS_MEM_REQUEST}"
+      limits:
+        cpu: "${EGRESS_CPU_LIMIT}"
+        memory: "${EGRESS_MEM_LIMIT}"
     defaultAllowlist:
       - ".apollo.io"
       - ".transcend-cdn.com"

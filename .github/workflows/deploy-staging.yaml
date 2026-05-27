@@ -265,6 +265,43 @@ jobs:
       MAX_SESSION_AGE_HOURS: ${{ secrets.MAX_SESSION_AGE_HOURS }}
       NATS_STREAM_MAX_AGE_HOURS: ${{ secrets.NATS_STREAM_MAX_AGE_HOURS }}
       MINIO_ORPHAN_MAX_AGE_HOURS: ${{ secrets.MINIO_ORPHAN_MAX_AGE_HOURS }}
+      # Resource configuration
+      API_REPLICAS: ${{ secrets.API_REPLICAS }}
+      API_CPU_REQUEST: ${{ secrets.API_CPU_REQUEST }}
+      API_CPU_LIMIT: ${{ secrets.API_CPU_LIMIT }}
+      API_MEM_REQUEST: ${{ secrets.API_MEM_REQUEST }}
+      API_MEM_LIMIT: ${{ secrets.API_MEM_LIMIT }}
+      CONTROLLER_REPLICAS: ${{ secrets.CONTROLLER_REPLICAS }}
+      CONTROLLER_CPU_REQUEST: ${{ secrets.CONTROLLER_CPU_REQUEST }}
+      CONTROLLER_CPU_LIMIT: ${{ secrets.CONTROLLER_CPU_LIMIT }}
+      CONTROLLER_MEM_REQUEST: ${{ secrets.CONTROLLER_MEM_REQUEST }}
+      CONTROLLER_MEM_LIMIT: ${{ secrets.CONTROLLER_MEM_LIMIT }}
+      WORKER_CPU_REQUEST: ${{ secrets.WORKER_CPU_REQUEST }}
+      WORKER_CPU_LIMIT: ${{ secrets.WORKER_CPU_LIMIT }}
+      WORKER_MEM_REQUEST: ${{ secrets.WORKER_MEM_REQUEST }}
+      WORKER_MEM_LIMIT: ${{ secrets.WORKER_MEM_LIMIT }}
+      POSTGRES_CPU_REQUEST: ${{ secrets.POSTGRES_CPU_REQUEST }}
+      POSTGRES_CPU_LIMIT: ${{ secrets.POSTGRES_CPU_LIMIT }}
+      POSTGRES_MEM_REQUEST: ${{ secrets.POSTGRES_MEM_REQUEST }}
+      POSTGRES_MEM_LIMIT: ${{ secrets.POSTGRES_MEM_LIMIT }}
+      REDIS_CPU_REQUEST: ${{ secrets.REDIS_CPU_REQUEST }}
+      REDIS_CPU_LIMIT: ${{ secrets.REDIS_CPU_LIMIT }}
+      REDIS_MEM_REQUEST: ${{ secrets.REDIS_MEM_REQUEST }}
+      REDIS_MEM_LIMIT: ${{ secrets.REDIS_MEM_LIMIT }}
+      NATS_CPU_REQUEST: ${{ secrets.NATS_CPU_REQUEST }}
+      NATS_CPU_LIMIT: ${{ secrets.NATS_CPU_LIMIT }}
+      NATS_MEM_REQUEST: ${{ secrets.NATS_MEM_REQUEST }}
+      NATS_MEM_LIMIT: ${{ secrets.NATS_MEM_LIMIT }}
+      NATS_JS_MAX_MEMORY: ${{ secrets.NATS_JS_MAX_MEMORY }}
+      MINIO_CPU_REQUEST: ${{ secrets.MINIO_CPU_REQUEST }}
+      MINIO_CPU_LIMIT: ${{ secrets.MINIO_CPU_LIMIT }}
+      MINIO_MEM_REQUEST: ${{ secrets.MINIO_MEM_REQUEST }}
+      MINIO_MEM_LIMIT: ${{ secrets.MINIO_MEM_LIMIT }}
+      EGRESS_CPU_REQUEST: ${{ secrets.EGRESS_CPU_REQUEST }}
+      EGRESS_CPU_LIMIT: ${{ secrets.EGRESS_CPU_LIMIT }}
+      EGRESS_MEM_REQUEST: ${{ secrets.EGRESS_MEM_REQUEST }}
+      EGRESS_MEM_LIMIT: ${{ secrets.EGRESS_MEM_LIMIT }}
+      RECONCILE_BATCH_SIZE: ${{ secrets.RECONCILE_BATCH_SIZE }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

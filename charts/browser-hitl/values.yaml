@@ -420,6 +420,7 @@ config:
   lifecycleSessionRetentionDays: "14"
   lifecycleAppRetentionDays: "30"
   workerAllowEnvCredentialFallback: "false"
+  reconcileBatchSize: "50"
 
 # =============================================================================
 # Secrets (sensitive values - override in production)

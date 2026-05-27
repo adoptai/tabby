@@ -145,6 +145,7 @@ config:
   minioOrphanMaxAgeHours: "2"
   sentryDsn: "REPLACE_WITH_SENTRY_DSN"
   sentryEnabled: "true"
+  reconcileBatchSize: "50"
 
 # Development secrets (NEVER use in production)
 secrets:
