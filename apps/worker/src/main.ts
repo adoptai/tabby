@@ -1,8 +1,9 @@
 // New Relic Node agent — must be required before anything else.
 // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+let __nr_agent: any = null;
 if (process.env.NEWRELIC_ENABLED === 'true' && process.env.NEW_RELIC_LICENSE_KEY) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-  require('newrelic');
+  __nr_agent = require('newrelic');
 }
 
 import { initSentry } from '@browser-hitl/shared';
@@ -358,7 +359,36 @@ function classifyWorkerError(error: unknown): 'AUTH_FAIL' | 'TRANSIENT_FAIL' {
   return 'TRANSIENT_FAIL';
 }
 
-main().catch(async (error) => {
+// Do NOT wrap main() in a long-running BackgroundTransaction.
+//
+// Previously the worker started a single `tabby-worker/session` BackgroundTask
+// that ran for the worker's entire lifetime and accepted the spawn-time
+// TRACEPARENT env var. That broke distributed tracing for every subsequent
+// inbound request on the worker: NR's HTTP auto-instrumentation tries to open
+// a per-request transaction, finds the outer one still active, logs
+// "Active transaction when creating non-nested transaction" and drops the new
+// transaction. The worker then shows up as "Uninstrumented HTTP service" in
+// the service map for every caller (api, controller), even though the agent
+// is loaded and reporting.
+//
+// We now let the NR agent handle inbound transactions per-request naturally
+// (health-server, NestJS-routed RPC, etc.). The spawn-time TRACEPARENT env
+// is still logged for debugging but is no longer auto-applied — each inbound
+// request carries its own `traceparent` header from the caller, which the NR
+// http hook accepts automatically. Callers that need to attribute worker
+// spans to the upstream trace just need to propagate `traceparent` outbound
+// (NR + W3C-DT does this by default).
+function runMain(): Promise<void> {
+  if (__nr_agent) {
+    const tp = process.env.TRACEPARENT;
+    if (tp) {
+      console.log(`[NR] spawn-time TRACEPARENT=${tp} (no longer wrapped in BackgroundTask; inbound HTTP transactions accept their own traceparent header)`);
+    }
+  }
+  return main();
+}
+
+runMain().catch(async (error) => {
   console.error(`Fatal error: ${error}`);
   Sentry.captureException(error);
   await Sentry.flush(2000);
