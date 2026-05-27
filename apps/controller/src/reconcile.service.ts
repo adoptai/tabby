@@ -114,9 +114,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
    * different set of rows and processes them in parallel.
    */
   private async reconcileAppsWithSkipLocked(): Promise<void> {
-    // Raw query: SELECT ... FOR UPDATE SKIP LOCKED LIMIT N
-    // ORDER BY last_reconciled_at ASC NULLS FIRST — prioritise stale apps
-    const apps: ApplicationEntity[] = await this.dataSource.transaction(async (manager) => {
+    // Phase 1: SHORT transaction — claim apps + stamp last_reconciled_at.
+    // FOR UPDATE SKIP LOCKED ensures no two replicas grab the same app.
+    // The transaction commits FAST so locks are released immediately.
+    const claimedApps: ApplicationEntity[] = await this.dataSource.transaction(async (manager) => {
       const rows = await manager.query(
         `SELECT * FROM applications
          WHERE desired_session_count > 0
@@ -129,20 +130,28 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
 
       if (rows.length === 0) return [];
 
-      for (const app of rows) {
-        await this.reconcileApp(manager, app as ApplicationEntity);
-        // Update last_reconciled_at inside the same transaction
-        await manager.query(
-          `UPDATE applications SET last_reconciled_at = NOW() WHERE id = $1`,
-          [app.id],
-        );
-      }
+      const ids = rows.map((r: any) => r.id);
+      await manager.query(
+        `UPDATE applications SET last_reconciled_at = NOW() WHERE id = ANY($1)`,
+        [ids],
+      );
 
       return rows as ApplicationEntity[];
     });
 
-    if (apps.length > 0) {
-      this.logger.debug(`Reconciled ${apps.length} apps`);
+    // Phase 2: Process OUTSIDE the transaction — K8s API calls (pod create,
+    // service create) can take seconds each. No DB locks held during this.
+    for (const app of claimedApps) {
+      try {
+        await this.reconcileApp(app);
+      } catch (error) {
+        this.logger.error(`Failed to reconcile app ${app.id}: ${error}`);
+        Sentry.captureException(error);
+      }
+    }
+
+    if (claimedApps.length > 0) {
+      this.logger.debug(`Reconciled ${claimedApps.length} apps`);
     }
   }
 
@@ -150,8 +159,9 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
    * Grab a batch of active sessions with FOR UPDATE SKIP LOCKED and evaluate state.
    */
   private async evaluateSessionsWithSkipLocked(): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      const sessions: SessionEntity[] = await manager.query(
+    // Phase 1: SHORT transaction — claim sessions + stamp last_evaluated_at
+    const claimedSessions: SessionEntity[] = await this.dataSource.transaction(async (manager) => {
+      const rows = await manager.query(
         `SELECT * FROM sessions
          WHERE state NOT IN ('TERMINATED')
            AND (last_evaluated_at IS NULL OR last_evaluated_at < NOW() - INTERVAL '${Math.floor(this.intervalMs / 1000)} seconds')
@@ -161,29 +171,35 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         [this.batchSize],
       );
 
-      for (const session of sessions) {
-        // Handle restart flag before state evaluation
+      if (rows.length === 0) return [];
+
+      const ids = rows.map((r: any) => r.id);
+      await manager.query(
+        `UPDATE sessions SET last_evaluated_at = NOW() WHERE id = ANY($1)`,
+        [ids],
+      );
+
+      return rows as SessionEntity[];
+    });
+
+    // Phase 2: Process OUTSIDE the transaction — state eval + K8s calls
+    for (const session of claimedSessions) {
+      try {
         if (session.restart_requested) {
           this.logger.log(`Restart requested for session ${session.id} — terminating`);
           await this.terminateSession(session);
-          await manager.query(
-            `UPDATE sessions SET restart_requested = false, last_evaluated_at = NOW() WHERE id = $1`,
-            [session.id],
-          );
+          await this.sessionRepo.update(session.id, { restart_requested: false });
           continue;
         }
-
         await this.stateMachine.evaluateSession(session);
-
-        await manager.query(
-          `UPDATE sessions SET last_evaluated_at = NOW() WHERE id = $1`,
-          [session.id],
-        );
+      } catch (error) {
+        this.logger.error(`Failed to evaluate session ${session.id}: ${error}`);
+        Sentry.captureException(error);
       }
-    });
+    }
   }
 
-  private async reconcileApp(manager: any, app: ApplicationEntity): Promise<void> {
+  private async reconcileApp(app: ApplicationEntity): Promise<void> {
     // List current non-terminated sessions for this app
     const currentSessions = await this.sessionRepo.find({
       where: { app_id: app.id },
