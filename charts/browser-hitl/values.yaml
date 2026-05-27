@@ -8,6 +8,7 @@ global:
   imageRegistry: ""
   imagePullSecrets: []
   storageClass: ""  # Default: use cluster default (local-path for k3s, standard otherwise)
+  grafanaLabels: false  # Enable in production for truefoundry.com/application log routing labels
 
 # -- Extra Kubernetes objects (VirtualServices, etc.)
 extraObjects: []

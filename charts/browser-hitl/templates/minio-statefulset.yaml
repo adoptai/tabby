@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "browser-hitl.labels" . | nindent 4 }}
     app.kubernetes.io/component: minio
+    {{- if .Values.global.grafanaLabels }}
+    truefoundry.com/application: {{ include "browser-hitl.fullname" . }}-minio
+    {{- end }}
 spec:
   serviceName: {{ include "browser-hitl.fullname" . }}-minio
   replicas: {{ .Values.minio.replicas }}
