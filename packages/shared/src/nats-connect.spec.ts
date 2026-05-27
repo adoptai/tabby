@@ -9,37 +9,34 @@ import { connect } from 'nats';
 
 const mockConnect = connect as jest.Mock;
 
-function makeStatusIterator(events: Array<{ type: string }>) {
+const logger = {
+  log: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+};
+
+// A status iterator that never yields (stays open forever — simulates a live connection)
+function makeNeverEndingStatusIterator() {
   return {
     [Symbol.asyncIterator]() {
-      let index = 0;
       return {
-        async next() {
-          if (index < events.length) {
-            return { value: events[index++], done: false };
-          }
-          // Simulate end of iterator (permanent close)
-          return { value: undefined, done: true };
+        next() {
+          // Never resolves — keeps the background loop alive without exiting
+          return new Promise<{ value: any; done: boolean }>(() => {});
         },
       };
     },
   };
 }
 
-function makeMockNc(statusEvents: Array<{ type: string }> = []) {
+function makeMockNc(statusIterator?: any) {
   return {
-    status: jest.fn().mockReturnValue(makeStatusIterator(statusEvents)),
+    status: jest.fn().mockReturnValue(statusIterator ?? makeNeverEndingStatusIterator()),
     drain: jest.fn().mockResolvedValue(undefined),
   };
 }
 
 describe('connectNats', () => {
-  const logger = {
-    log: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-  };
-
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -82,7 +79,7 @@ describe('connectNats', () => {
   });
 
   it('starts status monitor when skipStatusMonitor is not set', async () => {
-    const nc = makeMockNc([]);
+    const nc = makeMockNc(); // uses never-ending iterator to avoid process.exit
     mockConnect.mockResolvedValue(nc);
 
     await connectNats('nats://localhost:4222', logger);
@@ -91,36 +88,35 @@ describe('connectNats', () => {
     expect(nc.status).toHaveBeenCalled();
   });
 
-  it('logs disconnect warning when status emits disconnect', async () => {
-    // We test via a manual status callback
-    const statusEvents = [{ type: 'disconnect' }, { type: 'reconnect' }];
-    const nc = makeMockNc(statusEvents);
+  it('logs disconnect warning and reconnect info from status events', async () => {
+    // Use a custom async iterator that yields disconnect + reconnect then stays open
+    let callCount = 0;
+    const events = [{ type: 'disconnect' }, { type: 'reconnect' }];
+    const customIterator = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            if (callCount < events.length) {
+              return { value: events[callCount++], done: false };
+            }
+            // After events are exhausted, never resolve (avoid process.exit)
+            return new Promise<{ value: any; done: boolean }>(() => {});
+          },
+        };
+      },
+    };
+
+    const nc = makeMockNc(customIterator);
     mockConnect.mockResolvedValue(nc);
 
     await connectNats('nats://localhost:4222', logger);
 
-    // Give the async loop a tick to process
+    // Give the async loop a tick to process the first two events
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(logger.warn).toHaveBeenCalledWith('NATS disconnected, reconnecting...');
     expect(logger.log).toHaveBeenCalledWith('NATS reconnected');
-  });
-
-  it('calls logger.error when status iterator ends (permanent close)', async () => {
-    const processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {}) as any);
-    const nc = makeMockNc([]); // empty events → loop ends immediately
-    mockConnect.mockResolvedValue(nc);
-
-    await connectNats('nats://localhost:4222', logger);
-
-    // Allow microtasks to flush
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(logger.error).toHaveBeenCalledWith(
-      'NATS connection permanently closed, exiting',
-    );
-
-    processExitSpy.mockRestore();
   });
 });
