@@ -119,10 +119,11 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     // The transaction commits FAST so locks are released immediately.
     const claimedApps: ApplicationEntity[] = await this.dataSource.transaction(async (manager) => {
       const rows = await manager.query(
-        `SELECT * FROM applications
-         WHERE desired_session_count > 0
-           AND (last_reconciled_at IS NULL OR last_reconciled_at < NOW() - INTERVAL '${Math.floor(this.intervalMs / 1000)} seconds')
-         ORDER BY last_reconciled_at ASC NULLS FIRST
+        `SELECT a.* FROM applications a
+         WHERE (a.desired_session_count > 0
+                OR EXISTS (SELECT 1 FROM sessions s WHERE s.app_id = a.id AND s.state != 'TERMINATED'))
+           AND (a.last_reconciled_at IS NULL OR a.last_reconciled_at < NOW() - INTERVAL '${Math.floor(this.intervalMs / 1000)} seconds')
+         ORDER BY a.last_reconciled_at ASC NULLS FIRST
          FOR UPDATE SKIP LOCKED
          LIMIT $1`,
         [this.batchSize],
