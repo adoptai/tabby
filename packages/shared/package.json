@@ -17,6 +17,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@sentry/node": "^10.51.0"
+    "@sentry/node": "^10.51.0",
+    "nats": "^2.29.3"
   }
 }
