@@ -360,10 +360,11 @@ export class StateMachineService {
   private async transitionToHealthy(session: SessionEntity): Promise<boolean> {
     const success = await this.transition(session, SessionState.HEALTHY);
     if (success) {
-      // Reset HITL counters on successful HEALTHY transition
+      // Reset HITL counters and clear any pending input request on successful HEALTHY transition
       await this.sessionRepo.update(session.id, {
         hitl_attempt_count: 0,
         hitl_pause_until: null,
+        pending_input_request: null,
       });
     }
     return success;
