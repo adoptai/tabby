@@ -61,11 +61,11 @@ controller:
 worker:
   resources:
     requests:
-      cpu: "500m"
-      memory: "2Gi"
+      cpu: "100m"
+      memory: "512Mi"
     limits:
-      cpu: "4000m"
-      memory: "8Gi"
+      cpu: "2000m"
+      memory: "4Gi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
 teamsBot:
@@ -146,6 +146,7 @@ config:
   sentryDsn: "REPLACE_WITH_SENTRY_DSN"
   sentryEnabled: "true"
   reconcileBatchSize: "50"
+  workerStartupDelayMs: "120000"  # 2 min delay to simulate prod cold start
 
 # Development secrets (NEVER use in production)
 secrets:
