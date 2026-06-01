@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, IsNull } from 'typeorm';
+import { Repository, DataSource, IsNull, FindOneOptions } from 'typeorm';
 import {
   SessionState, HealthResultType, InterventionType,
   isValidSessionTransition, SESSION_TIMEOUTS, RETRY_MATRIX, BACKOFF_DEFAULTS,
@@ -37,12 +37,15 @@ export class StateMachineService {
 
   /**
    * Transition a session's state with optimistic locking (CAS on state_version).
-   * Returns true if transition succeeded, false if version conflict.
+   * On version conflict, reloads the session from DB and retries up to 3 times.
+   * Returns true if transition succeeded, false if conflict persists or transition is invalid.
    */
   async transition(
     session: SessionEntity,
     newState: SessionState,
+    _retryCount = 0,
   ): Promise<boolean> {
+    const MAX_RETRIES = 3;
     const oldState = session.state as SessionState;
 
     if (!isValidSessionTransition(oldState, newState)) {
@@ -61,7 +64,22 @@ export class StateMachineService {
     );
 
     if (result[1] === 0) {
-      this.logger.warn(`Version conflict for session ${session.id}, reloading`);
+      if (_retryCount < MAX_RETRIES) {
+        // Reload session and retry — another replica may have updated state_version
+        const fresh = await this.sessionRepo.findOne({ where: { id: session.id } } as FindOneOptions<SessionEntity>);
+        if (!fresh) {
+          this.logger.warn(`Session ${session.id} no longer exists, aborting transition`);
+          return false;
+        }
+        if (fresh.state === newState) {
+          // Another replica already performed this transition
+          this.logger.debug(`Session ${session.id} already in state ${newState} (concurrent transition)`);
+          return true;
+        }
+        this.logger.debug(`Version conflict for session ${session.id}, retrying (attempt ${_retryCount + 1})`);
+        return this.transition(fresh, newState, _retryCount + 1);
+      }
+      this.logger.warn(`Version conflict for session ${session.id} after ${MAX_RETRIES} retries, giving up`);
       return false;
     }
 
@@ -360,10 +378,11 @@ export class StateMachineService {
   private async transitionToHealthy(session: SessionEntity): Promise<boolean> {
     const success = await this.transition(session, SessionState.HEALTHY);
     if (success) {
-      // Reset HITL counters on successful HEALTHY transition
+      // Reset HITL counters and clear any pending input request on successful HEALTHY transition
       await this.sessionRepo.update(session.id, {
         hitl_attempt_count: 0,
         hitl_pause_until: null,
+        pending_input_request: null,
       });
     }
     return success;
