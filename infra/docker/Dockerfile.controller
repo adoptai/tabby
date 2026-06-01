@@ -20,4 +20,4 @@ EXPOSE 8090
 
 USER node
 
-CMD ["node", "apps/controller/dist/main.js"]
+CMD ["node", "--max-old-space-size=700", "apps/controller/dist/main.js"]

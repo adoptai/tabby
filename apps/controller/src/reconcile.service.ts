@@ -1,11 +1,12 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { MoreThan, Repository, DataSource } from 'typeorm';
 import { SessionState, StreamingMode } from '@browser-hitl/shared';
 import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
+import { CircuitBreakerStateEntity } from './entities/circuit-breaker-state.entity';
 import { StateMachineService } from './state-machine.service';
 import { PodManagerService } from './pod-manager.service';
 
@@ -20,19 +21,22 @@ import { PodManagerService } from './pod-manager.service';
  * 7. Generate NetworkPolicies for new pods
  * 8. Trigger HITL if any session enters LOGIN_NEEDED
  * 9. Persist state transitions and emit audit events
+ *
+ * Multi-replica scaling: uses FOR UPDATE SKIP LOCKED so multiple controller
+ * replicas can run concurrently without processing the same apps/sessions.
+ * See docs/controller-scaling-strategy.md for the full design.
  */
 @Injectable()
 export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ReconcileService.name);
   private reconciling = false;
   private readonly intervalMs: number;
+  private readonly batchSize: number;
   private reconcileTimer: NodeJS.Timeout | null = null;
-  private readonly appCircuitPauseUntil = new Map<string, number>();
-  private readonly tenantCircuitPauseUntil = new Map<string, number>();
-  private readonly appCircuitFailureThreshold: number;
-  private readonly tenantCircuitFailureThreshold: number;
   private readonly circuitWindowMs: number;
   private readonly circuitCooldownMs: number;
+  private readonly appCircuitFailureThreshold: number;
+  private readonly tenantCircuitFailureThreshold: number;
 
   constructor(
     @InjectRepository(ApplicationEntity)
@@ -41,10 +45,14 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     private readonly sessionRepo: Repository<SessionEntity>,
     @InjectRepository(SessionBatonEntity)
     private readonly batonRepo: Repository<SessionBatonEntity>,
+    @InjectRepository(CircuitBreakerStateEntity)
+    private readonly circuitRepo: Repository<CircuitBreakerStateEntity>,
+    private readonly dataSource: DataSource,
     private readonly stateMachine: StateMachineService,
     private readonly podManager: PodManagerService,
   ) {
     this.intervalMs = (parseInt(process.env.RECONCILE_INTERVAL_SECONDS || '15', 10)) * 1000;
+    this.batchSize = this.readPositiveInt('RECONCILE_BATCH_SIZE', 50);
     this.appCircuitFailureThreshold = this.readPositiveInt('CIRCUIT_BREAKER_APP_FAILURE_THRESHOLD', 5);
     this.tenantCircuitFailureThreshold = this.readPositiveInt('CIRCUIT_BREAKER_TENANT_FAILURE_THRESHOLD', 15);
     this.circuitWindowMs = this.readPositiveInt('CIRCUIT_BREAKER_WINDOW_SECONDS', 900) * 1000;
@@ -52,7 +60,9 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    this.logger.log(`Reconcile loop starting with interval ${this.intervalMs}ms`);
+    this.logger.log(
+      `Reconcile loop starting with interval ${this.intervalMs}ms, batch_size=${this.batchSize}`,
+    );
     // Run immediately on startup, then on interval
     await this.reconcile();
     this.reconcileTimer = setInterval(() => {
@@ -85,47 +95,113 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async doReconcile(): Promise<void> {
-    // Step 1: Load all apps with their desired session counts
-    const apps = await this.appRepo.find();
+    // Step 1-4: Reconcile app session counts using FOR UPDATE SKIP LOCKED
+    await this.reconcileAppsWithSkipLocked();
 
-    for (const app of apps) {
-      await this.reconcileApp(app);
-    }
-
-    // Runtime drift self-healing: reconcile session records with pod reality.
+    // Runtime drift self-healing (singleton-style: scans all pods)
     await this.reconcileRuntimeDrift();
 
-    // Step 5-6: Evaluate state for all active sessions
-    const activeSessions = await this.sessionRepo.find({
-      where: [
-        { state: SessionState.STARTING as any },
-        { state: SessionState.HEALTHY as any },
-        { state: SessionState.UNHEALTHY as any },
-        { state: SessionState.LOGIN_NEEDED as any },
-        { state: SessionState.LOGIN_IN_PROGRESS as any },
-        { state: SessionState.FAILED as any },
-      ],
-    });
-
-    for (const session of activeSessions) {
-      // Handle restart flag before state evaluation.
-      // desired_session_count is unchanged so the next reconcile cycle
-      // creates a fresh replacement session automatically.
-      if (session.restart_requested) {
-        this.logger.log(`Restart requested for session ${session.id} — terminating`);
-        await this.terminateSession(session);
-        await this.sessionRepo.update(session.id, { restart_requested: false });
-        continue;
-      }
-      await this.stateMachine.evaluateSession(session);
-    }
+    // Step 5-6: Evaluate active session states using FOR UPDATE SKIP LOCKED
+    await this.evaluateSessionsWithSkipLocked();
 
     // Step 8: Check session recycling
     await this.checkRecycling();
   }
 
+  /**
+   * Grab a batch of apps with FOR UPDATE SKIP LOCKED.
+   * Multiple controller replicas can run concurrently: each grabs a
+   * different set of rows and processes them in parallel.
+   */
+  private async reconcileAppsWithSkipLocked(): Promise<void> {
+    // Phase 1: SHORT transaction — claim apps + stamp last_reconciled_at.
+    // FOR UPDATE SKIP LOCKED ensures no two replicas grab the same app.
+    // The transaction commits FAST so locks are released immediately.
+    const claimedApps: ApplicationEntity[] = await this.dataSource.transaction(async (manager) => {
+      const rows = await manager.query(
+        `SELECT a.* FROM applications a
+         WHERE (a.desired_session_count > 0
+                OR EXISTS (SELECT 1 FROM sessions s WHERE s.app_id = a.id AND s.state != 'TERMINATED'))
+           AND (a.last_reconciled_at IS NULL OR a.last_reconciled_at < NOW() - INTERVAL '${Math.floor(this.intervalMs / 1000)} seconds')
+         ORDER BY a.last_reconciled_at ASC NULLS FIRST
+         FOR UPDATE SKIP LOCKED
+         LIMIT $1`,
+        [this.batchSize],
+      );
+
+      if (rows.length === 0) return [];
+
+      const ids = rows.map((r: any) => r.id);
+      await manager.query(
+        `UPDATE applications SET last_reconciled_at = NOW() WHERE id = ANY($1)`,
+        [ids],
+      );
+
+      return rows as ApplicationEntity[];
+    });
+
+    // Phase 2: Process OUTSIDE the transaction — K8s API calls (pod create,
+    // service create) can take seconds each. No DB locks held during this.
+    for (const app of claimedApps) {
+      try {
+        await this.reconcileApp(app);
+      } catch (error) {
+        this.logger.error(`Failed to reconcile app ${app.id}: ${error}`);
+        Sentry.captureException(error);
+      }
+    }
+
+    if (claimedApps.length > 0) {
+      this.logger.debug(`Reconciled ${claimedApps.length} apps`);
+    }
+  }
+
+  /**
+   * Grab a batch of active sessions with FOR UPDATE SKIP LOCKED and evaluate state.
+   */
+  private async evaluateSessionsWithSkipLocked(): Promise<void> {
+    // Phase 1: SHORT transaction — claim sessions + stamp last_evaluated_at
+    const claimedSessions: SessionEntity[] = await this.dataSource.transaction(async (manager) => {
+      const rows = await manager.query(
+        `SELECT * FROM sessions
+         WHERE state NOT IN ('TERMINATED')
+           AND (last_evaluated_at IS NULL OR last_evaluated_at < NOW() - INTERVAL '${Math.floor(this.intervalMs / 1000)} seconds')
+         ORDER BY last_evaluated_at ASC NULLS FIRST
+         FOR UPDATE SKIP LOCKED
+         LIMIT $1`,
+        [this.batchSize],
+      );
+
+      if (rows.length === 0) return [];
+
+      const ids = rows.map((r: any) => r.id);
+      await manager.query(
+        `UPDATE sessions SET last_evaluated_at = NOW() WHERE id = ANY($1)`,
+        [ids],
+      );
+
+      return rows as SessionEntity[];
+    });
+
+    // Phase 2: Process OUTSIDE the transaction — state eval + K8s calls
+    for (const session of claimedSessions) {
+      try {
+        if (session.restart_requested) {
+          this.logger.log(`Restart requested for session ${session.id} — terminating`);
+          await this.terminateSession(session);
+          await this.sessionRepo.update(session.id, { restart_requested: false });
+          continue;
+        }
+        await this.stateMachine.evaluateSession(session);
+      } catch (error) {
+        this.logger.error(`Failed to evaluate session ${session.id}: ${error}`);
+        Sentry.captureException(error);
+      }
+    }
+  }
+
   private async reconcileApp(app: ApplicationEntity): Promise<void> {
-    // Step 2: List current non-terminated sessions for this app
+    // List current non-terminated sessions for this app
     const currentSessions = await this.sessionRepo.find({
       where: { app_id: app.id },
     });
@@ -210,7 +286,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     const streamingMode = this.podManager.resolveStreamingMode(app);
     let podName: string | null = null;
     try {
-      // Create browser worker pod
+      // Create browser worker pod (idempotent: checks for existing pod first)
       podName = await this.podManager.createWorkerPod(savedSession, app);
       await this.sessionRepo.update(savedSession.id, { pod_name: podName });
 
@@ -221,8 +297,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createNoVncService(savedSession.id, podName);
       }
 
+      if (app.execute_enabled) {
+        await this.podManager.createWorkerService(savedSession.id, podName);
+      }
+
       // Generate NetworkPolicy
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode);
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled);
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {
@@ -239,12 +319,14 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
           } else {
             await this.podManager.deleteNoVncService(savedSession.id, podName);
           }
+          await this.podManager.deleteWorkerService(savedSession.id, podName);
         } else {
           if (streamingMode === StreamingMode.CDP) {
             await this.podManager.deleteCdpService(savedSession.id);
           } else {
             await this.podManager.deleteNoVncService(savedSession.id);
           }
+          await this.podManager.deleteWorkerService(savedSession.id);
         }
         await this.podManager.deleteNetworkPolicy(savedSession.id);
       } catch (cleanupError) {
@@ -268,9 +350,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     if (session.pod_name) {
       await this.podManager.deleteWorkerPod(session.pod_name);
     }
-    // Clean up both service types (only one will exist, the other is a no-op)
+    // Clean up all service types (only one streaming service will exist, the other is a no-op)
     await this.podManager.deleteNoVncService(session.id, session.pod_name || undefined);
     await this.podManager.deleteCdpService(session.id, session.pod_name || undefined);
+    await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
     await this.podManager.deleteNetworkPolicy(session.id);
 
     this.logger.log(`Terminated session ${session.id}`);
@@ -358,9 +441,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       }
       await this.sessionRepo.update(session.id, { pod_name: null });
 
-      // Best-effort cleanup of residual per-session resources (both service types).
+      // Best-effort cleanup of residual per-session resources (all service types).
       await this.podManager.deleteNoVncService(session.id, session.pod_name);
       await this.podManager.deleteCdpService(session.id, session.pod_name);
+      await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
       await this.podManager.deleteNetworkPolicy(session.id);
     }
 
@@ -370,6 +454,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       if (!workerPod.sessionId) {
         this.logger.warn(`Deleting unlabeled orphan worker pod ${workerPod.podName}`);
         await this.podManager.deleteWorkerPod(workerPod.podName);
+        await this.podManager.deleteWorkerService('', workerPod.podName);
         continue;
       }
 
@@ -381,30 +466,37 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.deleteWorkerPod(workerPod.podName);
         await this.podManager.deleteNoVncService(workerPod.sessionId, workerPod.podName);
         await this.podManager.deleteCdpService(workerPod.sessionId, workerPod.podName);
+        await this.podManager.deleteWorkerService(workerPod.sessionId, workerPod.podName);
         await this.podManager.deleteNetworkPolicy(workerPod.sessionId);
       }
     }
   }
 
+  /**
+   * Circuit breaker check — uses DB table so all replicas share state.
+   * Returns true if provisioning should be paused for this app.
+   */
   private async isProvisioningCircuitOpen(app: ApplicationEntity): Promise<boolean> {
-    const now = Date.now();
-    const appPauseUntil = this.appCircuitPauseUntil.get(app.id);
-    if (typeof appPauseUntil === 'number' && appPauseUntil > now) {
+    const now = new Date();
+
+    // Check app-level circuit
+    const appCb = await this.circuitRepo.findOne({
+      where: { entity_type: 'app', entity_id: app.id },
+    });
+    if (appCb && appCb.pause_until > now) {
       return true;
     }
-    if (typeof appPauseUntil === 'number' && appPauseUntil <= now) {
-      this.appCircuitPauseUntil.delete(app.id);
-    }
 
-    const tenantPauseUntil = this.tenantCircuitPauseUntil.get(app.tenant_id);
-    if (typeof tenantPauseUntil === 'number' && tenantPauseUntil > now) {
+    // Check tenant-level circuit
+    const tenantCb = await this.circuitRepo.findOne({
+      where: { entity_type: 'tenant', entity_id: app.tenant_id },
+    });
+    if (tenantCb && tenantCb.pause_until > now) {
       return true;
     }
-    if (typeof tenantPauseUntil === 'number' && tenantPauseUntil <= now) {
-      this.tenantCircuitPauseUntil.delete(app.tenant_id);
-    }
 
-    const windowStart = new Date(now - this.circuitWindowMs);
+    const windowStart = new Date(Date.now() - this.circuitWindowMs);
+
     const [appFailures, tenantFailures] = await Promise.all([
       this.sessionRepo.count({
         where: {
@@ -423,8 +515,8 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     if (appFailures >= this.appCircuitFailureThreshold) {
-      const pauseUntil = now + this.circuitCooldownMs;
-      this.appCircuitPauseUntil.set(app.id, pauseUntil);
+      const pauseUntil = new Date(Date.now() + this.circuitCooldownMs);
+      await this.upsertCircuitBreaker('app', app.id, pauseUntil, appFailures);
       this.logger.warn(
         `Circuit breaker tripped for app ${app.id}: ${appFailures} failures within ${Math.round(this.circuitWindowMs / 1000)}s`,
       );
@@ -432,8 +524,8 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (tenantFailures >= this.tenantCircuitFailureThreshold) {
-      const pauseUntil = now + this.circuitCooldownMs;
-      this.tenantCircuitPauseUntil.set(app.tenant_id, pauseUntil);
+      const pauseUntil = new Date(Date.now() + this.circuitCooldownMs);
+      await this.upsertCircuitBreaker('tenant', app.tenant_id, pauseUntil, tenantFailures);
       this.logger.warn(
         `Circuit breaker tripped for tenant ${app.tenant_id}: ${tenantFailures} failures within ${Math.round(this.circuitWindowMs / 1000)}s`,
       );
@@ -441,6 +533,27 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     }
 
     return false;
+  }
+
+  /**
+   * Upsert circuit breaker state (INSERT ... ON CONFLICT UPDATE) so all replicas
+   * agree on the pause_until timestamp.
+   */
+  private async upsertCircuitBreaker(
+    entityType: string,
+    entityId: string,
+    pauseUntil: Date,
+    failureCount: number,
+  ): Promise<void> {
+    await this.dataSource.query(
+      `INSERT INTO circuit_breaker_state (entity_type, entity_id, pause_until, failure_count, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (entity_type, entity_id)
+       DO UPDATE SET pause_until = EXCLUDED.pause_until,
+                     failure_count = EXCLUDED.failure_count,
+                     updated_at = NOW()`,
+      [entityType, entityId, pauseUntil, failureCount],
+    );
   }
 
   private readPositiveInt(name: string, fallback: number): number {

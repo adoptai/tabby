@@ -843,6 +843,10 @@ export class StreamingController {
     const asset = cached ?? await this.loadNoVncAsset('core', assetPath);
 
     if (!cached) {
+      if (StreamingController.noVncAssetCache.size >= 50) {
+        const firstKey = StreamingController.noVncAssetCache.keys().next().value;
+        if (firstKey !== undefined) StreamingController.noVncAssetCache.delete(firstKey);
+      }
       StreamingController.noVncAssetCache.set(cacheKey, asset);
     }
 
@@ -861,6 +865,10 @@ export class StreamingController {
     const asset = cached ?? await this.loadNoVncAsset('vendor', assetPath);
 
     if (!cached) {
+      if (StreamingController.noVncAssetCache.size >= 50) {
+        const firstKey = StreamingController.noVncAssetCache.keys().next().value;
+        if (firstKey !== undefined) StreamingController.noVncAssetCache.delete(firstKey);
+      }
       StreamingController.noVncAssetCache.set(cacheKey, asset);
     }
 

@@ -1,5 +1,5 @@
 import {
-  connect, NatsConnection, StringCodec, Subscription,
+  NatsConnection, StringCodec, Subscription,
   JetStreamSubscription,
   consumerOpts, AckPolicy, DeliverPolicy,
   RetentionPolicy, StorageType,
@@ -10,7 +10,7 @@ import {
   BotFrameworkAdapter,
   MessageFactory,
 } from 'botbuilder';
-import { HitlStartedEvent } from '@browser-hitl/shared';
+import { HitlStartedEvent, connectNats } from '@browser-hitl/shared';
 import { HitlActionHandler } from './handlers/hitl-actions';
 
 type AnySubscription = Subscription | JetStreamSubscription;
@@ -41,13 +41,13 @@ export class NatsListener {
   async start(): Promise<void> {
     const natsUrl = process.env.NATS_URL || 'nats://localhost:4222';
 
-    try {
-      this.nc = await connect({ servers: natsUrl });
-      console.log(`[NatsListener] Connected to NATS at ${natsUrl}`);
-    } catch (error) {
-      console.error(`[NatsListener] Failed to connect to NATS: ${error}`);
-      throw error;
-    }
+    const teamsLogger = {
+      log: (msg: string) => console.log(msg),
+      warn: (msg: string) => console.warn(msg),
+      error: (msg: string) => console.error(msg),
+    };
+    this.nc = await connectNats(natsUrl, teamsLogger);
+    console.log(`[NatsListener] Connected to NATS at ${natsUrl}`);
 
     let mode: string;
     try {

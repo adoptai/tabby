@@ -56,6 +56,13 @@ export class ApplicationEntity {
   @Column({ type: 'uuid', nullable: true })
   template_id: string | null;
 
+  @Column({ type: 'boolean', default: false })
+  execute_enabled: boolean;
+
+  /** Timestamp of last reconcile pass by any controller replica (FOR UPDATE SKIP LOCKED) */
+  @Column({ type: 'timestamptz', nullable: true })
+  last_reconciled_at: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

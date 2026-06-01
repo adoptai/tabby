@@ -6,8 +6,8 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { IncomingMessage } from 'http';
-import { connect, NatsConnection, StringCodec, Subscription } from 'nats';
-import { requireEnv } from '@browser-hitl/shared';
+import { NatsConnection, StringCodec, Subscription } from 'nats';
+import { requireEnv, connectNats } from '@browser-hitl/shared';
 import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
 import { ObservabilityService } from '../observability/observability.service';
@@ -45,7 +45,7 @@ export class EventsGateway
       testDefault: 'nats://localhost:4222',
     });
     try {
-      this.natsConnection = await connect({ servers: natsUrl });
+      this.natsConnection = await connectNats(natsUrl, this.logger);
       this.logger.log(`Connected to NATS for WS relay at ${natsUrl}`);
       this.subscribeRelaySubjects();
     } catch (error) {

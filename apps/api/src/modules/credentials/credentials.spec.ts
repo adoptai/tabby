@@ -5,6 +5,7 @@ import {
   ProfileVersionState,
   RedisFailureTier,
 } from '@browser-hitl/shared';
+import { requireEnv } from '@browser-hitl/shared';
 
 // ---------------------------------------------------------------------------
 // Mock ioredis
@@ -25,6 +26,11 @@ import { CredentialsService } from './credentials.service';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+function testEncryptionKey(): Buffer {
+  const hex = requireEnv('TENANT_ENCRYPTION_KEY', { testDefault: '0'.repeat(64) });
+  return Buffer.from(hex, 'hex');
+}
+
 
 function createMockSessionRepo() {
   return {
@@ -426,7 +432,7 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
 
       // Create a known encrypted payload using Node.js crypto
       const crypto = require('crypto');
-      const key = Buffer.alloc(32, 0); // 32 zero bytes = '00'.repeat(32) hex
+      const key = testEncryptionKey();
       const nonce = crypto.randomBytes(12);
       const plaintext = JSON.stringify({ cookies: [], headers: {}, csrf_token: 'test' });
 
@@ -494,7 +500,7 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
 
       // Setup: create a real encrypted bundle (worker blob format: nonce + ciphertext + tag)
       const crypto = require('crypto');
-      const key = Buffer.alloc(32, 0);
+      const key = testEncryptionKey();
       const nonce = crypto.randomBytes(12);
       const plaintext = JSON.stringify({ cookies: [], headers: {}, csrf_token: '' });
       const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
@@ -568,7 +574,7 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
 
       // Setup: create a real encrypted bundle (worker blob format: nonce + ciphertext + tag)
       const crypto = require('crypto');
-      const key = Buffer.alloc(32, 0);
+      const key = testEncryptionKey();
       const nonce = crypto.randomBytes(12);
       const plaintext = JSON.stringify({ cookies: [{ name: 'sid', value: 'cached-val' }], headers: {}, csrf_token: '' });
       const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
@@ -614,7 +620,7 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
       const { service, artifactRepo, minioProvisioner } = buildService();
 
       const crypto = require('crypto');
-      const key = Buffer.alloc(32, 0);
+      const key = testEncryptionKey();
       const nonce = crypto.randomBytes(12);
       const plaintext = JSON.stringify({ cookies: [], headers: {}, csrf_token: '' });
       const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
