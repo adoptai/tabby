@@ -146,7 +146,7 @@ config:
   sentryDsn: "REPLACE_WITH_SENTRY_DSN"
   sentryEnabled: "true"
   reconcileBatchSize: "50"
-  workerStartupDelayMs: "120000"  # 2 min delay to simulate prod cold start
+
 
 # Development secrets (NEVER use in production)
 secrets:

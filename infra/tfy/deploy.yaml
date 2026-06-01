@@ -46,6 +46,12 @@ values:
       limits:
         cpu: "${API_CPU_LIMIT}"
         memory: "${API_MEM_LIMIT}"
+    autoscaling:
+      enabled: ${API_HPA_ENABLED}
+      minReplicas: ${API_HPA_MIN_REPLICAS}
+      maxReplicas: ${API_HPA_MAX_REPLICAS}
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
 
   controller:
     replicas: ${CONTROLLER_REPLICAS}
@@ -56,6 +62,12 @@ values:
       limits:
         cpu: "${CONTROLLER_CPU_LIMIT}"
         memory: "${CONTROLLER_MEM_LIMIT}"
+    autoscaling:
+      enabled: ${CONTROLLER_HPA_ENABLED}
+      minReplicas: ${CONTROLLER_HPA_MIN_REPLICAS}
+      maxReplicas: ${CONTROLLER_HPA_MAX_REPLICAS}
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
     affinity:
       nodeAffinity:
         preferredDuringSchedulingIgnoredDuringExecution:

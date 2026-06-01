@@ -29,6 +29,7 @@ const dbUrl = requireEnv('DATABASE_URL', {
       entities: [SessionEntity, SessionBatonEntity, ApplicationEntity, TenantEntity, InterventionEntity, AuditEventEntity, CircuitBreakerStateEntity],
       synchronize: false,
       logging: ['error'],
+      extra: { max: Number(process.env.DB_POOL_SIZE) || 20 },
     }),
     TypeOrmModule.forFeature([SessionEntity, SessionBatonEntity, ApplicationEntity, TenantEntity, InterventionEntity, AuditEventEntity, CircuitBreakerStateEntity]),
     ScheduleModule.forRoot(),

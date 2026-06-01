@@ -31,7 +31,6 @@ data:
   IDLE_SHUTDOWN_SECONDS: {{ .Values.config.idleShutdownSeconds | default "0" | quote }}
   NATS_STREAM_MAX_AGE_HOURS: {{ .Values.config.natsStreamMaxAgeHours | default "8" | quote }}
   MINIO_ORPHAN_MAX_AGE_HOURS: {{ .Values.config.minioOrphanMaxAgeHours | default "2" | quote }}
-  WORKER_STARTUP_DELAY_MS: {{ .Values.config.workerStartupDelayMs | default "0" | quote }}
   PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
   STREAM_HOST: {{ .Values.config.streamHost | quote }}
   STREAM_PROTOCOL: {{ .Values.config.streamProtocol | quote }}
@@ -74,3 +73,4 @@ data:
   CHART_VERSION: {{ .Chart.Version | quote }}
   COMMIT_SHA: {{ .Values.config.commitSha | default "unknown" | quote }}
   RECONCILE_BATCH_SIZE: {{ .Values.config.reconcileBatchSize | default "50" | quote }}
+  DB_POOL_SIZE: {{ .Values.config.dbPoolSize | default "20" | quote }}

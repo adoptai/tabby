@@ -225,13 +225,6 @@ async function main() {
     artifactExtractor.registerHeaderCapture();
     artifactExtractor.registerRequestHeaderCapture();
 
-    // Optional startup delay for testing (simulates slow pod startup in prod)
-    const startupDelayMs = parseInt(process.env.WORKER_STARTUP_DELAY_MS || '0', 10);
-    if (startupDelayMs > 0) {
-      console.log(`Startup delay: waiting ${startupDelayMs}ms before DSL execution`);
-      await new Promise(resolve => setTimeout(resolve, startupDelayMs));
-    }
-
     // Execute login DSL
     console.log('Starting login DSL execution');
     await db.updateLastLoginAt(sessionId);

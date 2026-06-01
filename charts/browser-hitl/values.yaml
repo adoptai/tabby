@@ -66,6 +66,12 @@ api:
     limits:
       cpu: "1000m"
       memory: "1Gi"
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -84,6 +90,12 @@ controller:
     limits:
       cpu: "1000m"
       memory: "1Gi"
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -413,7 +425,7 @@ config:
   egressProxyAllowlistUrl: ""
   egressPolicyFailClosed: "true"
   circuitBreakerAppFailureThreshold: "5"
-  circuitBreakerTenantFailureThreshold: "15"
+  circuitBreakerTenantFailureThreshold: "50"
   circuitBreakerWindowSeconds: "900"
   circuitBreakerCooldownSeconds: "300"
   lifecycleArtifactRetentionDays: "7"
