@@ -1,7 +1,7 @@
 import { Page, BrowserContext, Request, Response } from 'playwright';
 import { createCipheriv, randomBytes } from 'crypto';
-import { connect, StringCodec } from 'nats';
-import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
+import { StringCodec } from 'nats';
+import { NATS_SUBJECTS, requireEnv, connectNats } from '@browser-hitl/shared';
 import { SessionDb } from './session-db';
 
 /**
@@ -482,7 +482,12 @@ export class ArtifactExtractor {
       const natsUrl = requireEnv('NATS_URL', {
         testDefault: 'nats://localhost:4222',
       });
-      const nc = await connect({ servers: natsUrl });
+      const workerLogger = {
+        log: (msg: string) => console.log(msg),
+        warn: (msg: string) => console.warn(msg),
+        error: (msg: string) => console.error(msg),
+      };
+      const nc = await connectNats(natsUrl, workerLogger, { skipStatusMonitor: true });
       const sc = StringCodec();
 
       const subject = NATS_SUBJECTS.authBundleExported(this.tenantId, this.appId);

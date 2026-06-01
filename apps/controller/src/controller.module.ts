@@ -15,6 +15,7 @@ import { ApplicationEntity } from './entities/application.entity';
 import { TenantEntity } from './entities/tenant.entity';
 import { InterventionEntity } from './entities/intervention.entity';
 import { AuditEventEntity } from './entities/audit-event.entity';
+import { CircuitBreakerStateEntity } from './entities/circuit-breaker-state.entity';
 
 const dbUrl = requireEnv('DATABASE_URL', {
   testDefault: 'postgresql://postgres:postgres@localhost:5432/browser_hitl',
@@ -25,11 +26,12 @@ const dbUrl = requireEnv('DATABASE_URL', {
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: dbUrl,
-      entities: [SessionEntity, SessionBatonEntity, ApplicationEntity, TenantEntity, InterventionEntity, AuditEventEntity],
+      entities: [SessionEntity, SessionBatonEntity, ApplicationEntity, TenantEntity, InterventionEntity, AuditEventEntity, CircuitBreakerStateEntity],
       synchronize: false,
       logging: ['error'],
+      extra: { max: Number(process.env.DB_POOL_SIZE) || 20 },
     }),
-    TypeOrmModule.forFeature([SessionEntity, SessionBatonEntity, ApplicationEntity, TenantEntity, InterventionEntity, AuditEventEntity]),
+    TypeOrmModule.forFeature([SessionEntity, SessionBatonEntity, ApplicationEntity, TenantEntity, InterventionEntity, AuditEventEntity, CircuitBreakerStateEntity]),
     ScheduleModule.forRoot(),
   ],
   controllers: [HealthController],

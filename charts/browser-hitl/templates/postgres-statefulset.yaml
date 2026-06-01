@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "browser-hitl.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
+    {{- if .Values.global.grafanaLabels }}
+    truefoundry.com/application: {{ include "browser-hitl.fullname" . }}-postgres
+    {{- end }}
 spec:
   serviceName: {{ include "browser-hitl.fullname" . }}-postgres
   replicas: {{ .Values.postgres.replicas }}

@@ -107,26 +107,32 @@ export class VncWsProxyService implements OnModuleInit, OnModuleDestroy {
       // or browser history. The cookie is HttpOnly and set only after OAuth/email-gate.
       // Sessions without owner_user_id are unaffected by this block.
       if (session.owner_user_id) {
+        const origin = request.headers.origin;
         const cookieHeader = Array.isArray(request.headers.cookie)
           ? request.headers.cookie.join('; ')
           : request.headers.cookie || '';
         const vncCookie = parseCookie(cookieHeader, 'tabby_vnc');
-        if (!vncCookie) {
+
+        if (!vncCookie && !origin) {
+          // Server-to-server (platform WS proxy): no Origin, no cookie.
+          // Stream token validation above is sufficient.
+        } else if (!vncCookie) {
           this.rejectUpgrade(clientSocket, 401, 'VNC access cookie required');
           return;
-        }
-        try {
-          const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string }>(vncCookie);
-          if (
-            vncPayload.type !== 'vnc_access'
-            || vncPayload.owner_user_id !== session.owner_user_id
-          ) {
-            this.rejectUpgrade(clientSocket, 403, 'VNC cookie owner mismatch');
+        } else {
+          try {
+            const vncPayload = this.jwtService.verify<{ owner_user_id: string; type: string }>(vncCookie);
+            if (
+              vncPayload.type !== 'vnc_access'
+              || vncPayload.owner_user_id !== session.owner_user_id
+            ) {
+              this.rejectUpgrade(clientSocket, 403, 'VNC cookie owner mismatch');
+              return;
+            }
+          } catch {
+            this.rejectUpgrade(clientSocket, 401, 'Invalid VNC access cookie');
             return;
           }
-        } catch {
-          this.rejectUpgrade(clientSocket, 401, 'Invalid VNC access cookie');
-          return;
         }
       }
 
