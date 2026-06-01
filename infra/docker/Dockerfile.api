@@ -23,4 +23,4 @@ EXPOSE 8000
 
 USER node
 
-CMD ["node", "--max-old-space-size=1024", "apps/api/dist/main.js"]
+CMD ["node", "--max-old-space-size=700", "apps/api/dist/main.js"]

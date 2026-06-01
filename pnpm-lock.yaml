@@ -340,6 +340,9 @@ importers:
       ioredis:
         specifier: ^5.4.2
         version: 5.9.3
+      jsonwebtoken:
+        specifier: ^9.0.3
+        version: 9.0.3
       minio:
         specifier: ^8.0.4
         version: 8.0.6
@@ -362,6 +365,9 @@ importers:
       '@types/jest':
         specifier: ^29.5.14
         version: 29.5.14
+      '@types/jsonwebtoken':
+        specifier: ^9.0.10
+        version: 9.0.10
       '@types/node':
         specifier: ^22.13.0
         version: 22.19.11
@@ -386,6 +392,9 @@ importers:
       '@sentry/node':
         specifier: ^10.51.0
         version: 10.51.0
+      nats:
+        specifier: ^2.29.3
+        version: 2.29.3
     devDependencies:
       '@types/jest':
         specifier: ^29.5.14

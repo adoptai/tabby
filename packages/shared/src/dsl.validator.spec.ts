@@ -183,6 +183,97 @@ describe('validateExportPolicy', () => {
   it('rejects invalid artifact types', () => {
     expect(validateExportPolicy({ ...validConfig, artifact_types: ['invalid'] as any }).valid).toBe(false);
   });
+
+  describe('header_allowlist', () => {
+    it('accepts a well-formed header allowlist', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, header_allowlist: ['Set-Cookie', 'X-CSRF'] }).valid,
+      ).toBe(true);
+    });
+
+    it('rejects non-array values', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, header_allowlist: 'Authorization' as any }).valid,
+      ).toBe(false);
+    });
+
+    it('rejects empty arrays (opt-out by omitting the field)', () => {
+      expect(validateExportPolicy({ ...validConfig, header_allowlist: [] }).valid).toBe(false);
+    });
+
+    it('rejects when headers is not in artifact_types', () => {
+      const result = validateExportPolicy({
+        ...validConfig,
+        artifact_types: ['cookies'],
+        header_allowlist: ['Set-Cookie'],
+      });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.message.includes("'headers' in artifact_types"))).toBe(true);
+    });
+
+    it('rejects malformed header names', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, header_allowlist: ['X Invalid Name'] }).valid,
+      ).toBe(false);
+    });
+
+    it('rejects wildcard entries', () => {
+      expect(validateExportPolicy({ ...validConfig, header_allowlist: ['*'] }).valid).toBe(false);
+    });
+  });
+
+  describe('request_header_allowlist', () => {
+    it('accepts a well-formed request header allowlist', () => {
+      const result = validateExportPolicy({
+        ...validConfig,
+        request_header_allowlist: ['Authorization', 'user_key'],
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('rejects non-array values', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, request_header_allowlist: 'Authorization' as any }).valid,
+      ).toBe(false);
+    });
+
+    it('rejects empty arrays', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, request_header_allowlist: [] }).valid,
+      ).toBe(false);
+    });
+
+    it('rejects when headers is not in artifact_types', () => {
+      const result = validateExportPolicy({
+        ...validConfig,
+        artifact_types: ['cookies'],
+        request_header_allowlist: ['Authorization'],
+      });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.message.includes("'headers' in artifact_types"))).toBe(true);
+    });
+
+    it('rejects Cookie (case-insensitive) to avoid duplicating cookie extraction', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, request_header_allowlist: ['Cookie'] }).valid,
+      ).toBe(false);
+      expect(
+        validateExportPolicy({ ...validConfig, request_header_allowlist: ['cookie'] }).valid,
+      ).toBe(false);
+    });
+
+    it('rejects malformed header names', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, request_header_allowlist: ['Bad Header Name'] }).valid,
+      ).toBe(false);
+    });
+
+    it('rejects wildcards', () => {
+      expect(
+        validateExportPolicy({ ...validConfig, request_header_allowlist: ['*'] }).valid,
+      ).toBe(false);
+    });
+  });
 });
 
 describe('validateNotificationConfig', () => {

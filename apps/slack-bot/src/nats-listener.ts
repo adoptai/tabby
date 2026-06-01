@@ -1,6 +1,6 @@
 import {
-  connect, NatsConnection, StringCodec, Subscription,
-  JetStreamClient, JetStreamSubscription,
+  NatsConnection, StringCodec, Subscription,
+  JetStreamSubscription,
   consumerOpts, AckPolicy, DeliverPolicy,
   RetentionPolicy, StorageType,
 } from 'nats';
@@ -8,6 +8,7 @@ import { App } from '@slack/bolt';
 import {
   HitlStartedEvent,
   SessionStateChangedEvent,
+  connectNats,
 } from '@browser-hitl/shared';
 
 type AnySubscription = Subscription | JetStreamSubscription;
@@ -37,13 +38,13 @@ export class NatsListener {
   async start(): Promise<void> {
     const natsUrl = process.env.NATS_URL || 'nats://localhost:4222';
 
-    try {
-      this.nc = await connect({ servers: natsUrl });
-      console.log(`[NatsListener] Connected to NATS at ${natsUrl}`);
-    } catch (error) {
-      console.error(`[NatsListener] Failed to connect to NATS: ${error}`);
-      throw error;
-    }
+    const slackLogger = {
+      log: (msg: string) => console.log(msg),
+      warn: (msg: string) => console.warn(msg),
+      error: (msg: string) => console.error(msg),
+    };
+    this.nc = await connectNats(natsUrl, slackLogger);
+    console.log(`[NatsListener] Connected to NATS at ${natsUrl}`);
 
     let mode: string;
     try {

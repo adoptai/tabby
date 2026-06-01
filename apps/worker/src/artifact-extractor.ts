@@ -1,7 +1,7 @@
-import { Page, BrowserContext, Response } from 'playwright';
+import { Page, BrowserContext, Request, Response } from 'playwright';
 import { createCipheriv, randomBytes } from 'crypto';
-import { connect, StringCodec } from 'nats';
-import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
+import { StringCodec } from 'nats';
+import { NATS_SUBJECTS, requireEnv, connectNats } from '@browser-hitl/shared';
 import { SessionDb } from './session-db';
 
 /**
@@ -25,8 +25,15 @@ interface CustomExtraction {
  * Uploads encrypted blob to MinIO.
  * Publishes export metadata to NATS.
  */
+/**
+ * Max number of distinct URLs tracked per capture direction.
+ * Prevents unbounded growth on SPA-heavy sessions that fire thousands of XHRs.
+ */
+const HEADER_CAPTURE_URL_CAP = 500;
+
 export class ArtifactExtractor {
-  private capturedHeaders: Map<string, Record<string, string>> = new Map();
+  private capturedResponseHeaders: Map<string, Record<string, string>> = new Map();
+  private capturedRequestHeaders: Map<string, Record<string, string>> = new Map();
   private dslVariables: Map<string, string> = new Map();
 
   constructor(
@@ -49,13 +56,18 @@ export class ArtifactExtractor {
    */
   registerHeaderCapture(): void {
     const allowlist: string[] = this.appConfig.export_policy?.header_allowlist || [];
+    if (allowlist.length === 0) return;
+
+    const urlMatches = this.buildUrlMatcher();
 
     this.page.on('response', async (response: Response) => {
       try {
-        const headers = await response.allHeaders();
         const url = response.url();
+        if (!urlMatches(url)) return;
 
-        // Filter captured headers against allowlist
+        const headers = await response.allHeaders();
+
+        // Filter captured headers against allowlist (preserve configured casing)
         const filtered: Record<string, string> = {};
         for (const key of allowlist) {
           const lowerKey = key.toLowerCase();
@@ -65,12 +77,83 @@ export class ArtifactExtractor {
         }
 
         if (Object.keys(filtered).length > 0) {
-          this.capturedHeaders.set(url, filtered);
+          this.storeCapturedHeaders(this.capturedResponseHeaders, url, filtered);
         }
       } catch {
         // Ignore errors during header capture
       }
     });
+  }
+
+  /**
+   * Register outbound request header capture BEFORE login actions.
+   * Mirrors registerHeaderCapture but listens on 'request' for JS-minted auth material
+   * (bearer JWTs, tenant keys) that never appears in a response.
+   *
+   * The allowlist is the gate — no wildcard, no 'Cookie'. Validator enforces this upstream.
+   */
+  registerRequestHeaderCapture(): void {
+    const allowlist: string[] = this.appConfig.export_policy?.request_header_allowlist || [];
+    if (allowlist.length === 0) return;
+
+    const urlMatches = this.buildUrlMatcher();
+
+    this.page.on('request', async (request: Request) => {
+      try {
+        const url = request.url();
+        if (!urlMatches(url)) return;
+
+        const headers = await request.allHeaders();
+
+        const filtered: Record<string, string> = {};
+        for (const key of allowlist) {
+          const lowerKey = key.toLowerCase();
+          if (headers[lowerKey]) {
+            filtered[key] = headers[lowerKey];
+          }
+        }
+
+        if (Object.keys(filtered).length > 0) {
+          this.storeCapturedHeaders(this.capturedRequestHeaders, url, filtered);
+        }
+      } catch {
+        // Request may have been redirected or aborted — ignore
+      }
+    });
+  }
+
+  /**
+   * Build a URL matcher from appConfig.target_urls (glob patterns).
+   * Empty or missing target_urls means match everything (consistent with cookie extraction).
+   */
+  private buildUrlMatcher(): (url: string) => boolean {
+    const targetUrls: string[] = this.appConfig.target_urls || [];
+    if (targetUrls.length === 0) return () => true;
+
+    const regexes = targetUrls.map((glob) => {
+      // Escape regex special chars except '*' which becomes '.*'
+      const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      return new RegExp(`^${escaped}$`);
+    });
+    return (url: string) => regexes.some((r) => r.test(url));
+  }
+
+  /**
+   * Insert/update a per-URL header map with LRU-style cap.
+   * When the cap is reached, evict the oldest entry (Map preserves insertion order).
+   */
+  private storeCapturedHeaders(
+    store: Map<string, Record<string, string>>,
+    url: string,
+    headers: Record<string, string>,
+  ): void {
+    if (store.has(url)) {
+      store.delete(url); // re-insert to move to end (most recent)
+    } else if (store.size >= HEADER_CAPTURE_URL_CAP) {
+      const oldest = store.keys().next().value;
+      if (oldest !== undefined) store.delete(oldest);
+    }
+    store.set(url, headers);
   }
 
   /**
@@ -168,12 +251,18 @@ export class ArtifactExtractor {
   }
 
   /**
-   * Extract captured response headers from passive listener.
+   * Extract captured headers (union of response + request directions) from passive listeners.
+   * On per-URL conflict, request-header values win — they are the auth material we care about,
+   * while same-named response headers are typically Set-Cookie / Server noise.
+   * Disk shape is unchanged: { url: { headerName: value } }.
    */
   private extractHeaders(): Record<string, Record<string, string>> {
     const result: Record<string, Record<string, string>> = {};
-    for (const [url, headers] of this.capturedHeaders) {
-      result[url] = headers;
+    for (const [url, headers] of this.capturedResponseHeaders) {
+      result[url] = { ...headers };
+    }
+    for (const [url, headers] of this.capturedRequestHeaders) {
+      result[url] = { ...(result[url] || {}), ...headers };
     }
     return result;
   }
@@ -393,7 +482,12 @@ export class ArtifactExtractor {
       const natsUrl = requireEnv('NATS_URL', {
         testDefault: 'nats://localhost:4222',
       });
-      const nc = await connect({ servers: natsUrl });
+      const workerLogger = {
+        log: (msg: string) => console.log(msg),
+        warn: (msg: string) => console.warn(msg),
+        error: (msg: string) => console.error(msg),
+      };
+      const nc = await connectNats(natsUrl, workerLogger, { skipStatusMonitor: true });
       const sc = StringCodec();
 
       const subject = NATS_SUBJECTS.authBundleExported(this.tenantId, this.appId);

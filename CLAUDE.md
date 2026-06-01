@@ -142,6 +142,15 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 - `extract_urls` — map of glob patterns to URLs. Worker navigates to these URLs before running filtered extractions. Supports `{{variable}}` placeholders from `store_as` values. Example: `{"*/apex/sb*": "https://example.com/apex/sb?id={{quote_id}}"}`
 - `store_as` — on `evaluate` DSL steps, stores the result in a variable for use in `extract_urls` templates
 
+### Header Capture (export_policy)
+Two complementary allowlists, both require `'headers'` in `artifact_types`:
+- `header_allowlist` — response headers captured via `page.on('response')`. For headers servers send back.
+- `request_header_allowlist` — outbound request headers captured via `page.on('request')`. For JS-minted auth material (bearer JWTs, tenant keys) attached by fetch/axios interceptors that never appears in a response. `Cookie` is rejected here (cookies have their own extraction path).
+
+Both are filtered through `target_urls` globs — only requests/responses whose URL matches at least one `target_url` are captured. If `target_urls` is empty, capture runs on all URLs (mirrors cookie extraction). The on-disk bundle shape is `{ url: { headerName: value } }` for both; at union time, request-header values win on per-URL conflict. Configured casing is preserved so the consumer gets the header name it asked for.
+
+JWT-minting SPAs typically rotate bearers faster than the default 3600s `refresh_interval_seconds` (see gotcha #17) — apps that adopt `request_header_allowlist` should set `refresh_interval_seconds` to 120–300.
+
 ### Profile credential_types.custom
 `credential_types.custom` array in profiles maps custom extraction keys to consumers. The `key` must exactly match a `key` from `custom_extractions`. Volatility levels: `STABLE`, `SEMI_STABLE`, `VOLATILE`.
 

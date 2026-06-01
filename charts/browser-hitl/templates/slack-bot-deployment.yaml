@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "browser-hitl.labels" . | nindent 4 }}
     app.kubernetes.io/component: slack-bot
+    {{- if .Values.global.grafanaLabels }}
+    truefoundry.com/application: {{ include "browser-hitl.fullname" . }}-slack-bot
+    {{- end }}
 spec:
   replicas: {{ .Values.slackBot.replicas }}
   selector:

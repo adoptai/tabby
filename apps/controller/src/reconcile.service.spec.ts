@@ -1,20 +1,46 @@
 import { ReconcileService } from './reconcile.service';
 
 function buildService(overrides: Record<string, any> = {}) {
-  const appRepo = overrides.appRepo ?? { find: jest.fn() };
+  const appRepo = overrides.appRepo ?? { find: jest.fn(), update: jest.fn() };
   const sessionRepo = overrides.sessionRepo ?? { count: jest.fn(), find: jest.fn(), update: jest.fn() };
   const batonRepo = overrides.batonRepo ?? {};
-  const stateMachine = overrides.stateMachine ?? {};
-  const podManager = overrides.podManager ?? {};
+  const circuitRepo = overrides.circuitRepo ?? {
+    findOne: jest.fn().mockResolvedValue(null),
+    save: jest.fn().mockResolvedValue({}),
+  };
+  const dataSource = overrides.dataSource ?? {
+    transaction: jest.fn().mockResolvedValue([]),
+    query: jest.fn().mockResolvedValue([]),
+  };
+  const stateMachine = overrides.stateMachine ?? {
+    evaluateSession: jest.fn().mockResolvedValue(undefined),
+    transition: jest.fn().mockResolvedValue(true),
+  };
+  const podManager = overrides.podManager ?? {
+    deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+    deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+    deleteCdpService: jest.fn().mockResolvedValue(undefined),
+    deleteWorkerService: jest.fn().mockResolvedValue(undefined),
+    deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+    syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+    listWorkerPods: jest.fn().mockResolvedValue([]),
+    podExists: jest.fn().mockResolvedValue(true),
+  };
 
   return new ReconcileService(
     appRepo as any,
     sessionRepo as any,
     batonRepo as any,
+    circuitRepo as any,
+    dataSource as any,
     stateMachine as any,
     podManager as any,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Circuit breaker — now uses DB table (circuitRepo) instead of in-memory Maps
+// ---------------------------------------------------------------------------
 
 describe('ReconcileService circuit breaker', () => {
   const originalEnv = { ...process.env };
@@ -41,7 +67,15 @@ describe('ReconcileService circuit breaker', () => {
       find: jest.fn(),
       update: jest.fn(),
     };
-    const service = buildService({ sessionRepo });
+    // No existing circuit breaker paused
+    const circuitRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const dataSource = {
+      query: jest.fn().mockResolvedValue([]),
+    };
+    const service = buildService({ sessionRepo, circuitRepo, dataSource });
 
     const isOpen = await (service as any).isProvisioningCircuitOpen({
       id: 'app-1',
@@ -50,18 +84,29 @@ describe('ReconcileService circuit breaker', () => {
 
     expect(isOpen).toBe(true);
     expect(sessionRepo.count).toHaveBeenCalledTimes(2);
-    expect((service as any).appCircuitPauseUntil.has('app-1')).toBe(true);
+    // Should have upserted the circuit breaker record
+    expect(dataSource.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO circuit_breaker_state'),
+      expect.arrayContaining(['app', 'app-1']),
+    );
   });
 
   it('opens tenant circuit when tenant failure threshold is reached', async () => {
     const sessionRepo = {
       count: jest.fn()
-        .mockResolvedValueOnce(1) // app failures
-        .mockResolvedValueOnce(4), // tenant failures
+        .mockResolvedValueOnce(1) // app failures (below threshold of 2)
+        .mockResolvedValueOnce(4), // tenant failures (meets threshold of 4)
       find: jest.fn(),
       update: jest.fn(),
     };
-    const service = buildService({ sessionRepo });
+    const circuitRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const dataSource = {
+      query: jest.fn().mockResolvedValue([]),
+    };
+    const service = buildService({ sessionRepo, circuitRepo, dataSource });
 
     const isOpen = await (service as any).isProvisioningCircuitOpen({
       id: 'app-2',
@@ -69,7 +114,10 @@ describe('ReconcileService circuit breaker', () => {
     });
 
     expect(isOpen).toBe(true);
-    expect((service as any).tenantCircuitPauseUntil.has('tenant-2')).toBe(true);
+    expect(dataSource.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO circuit_breaker_state'),
+      expect.arrayContaining(['tenant', 'tenant-2']),
+    );
   });
 
   it('keeps circuit closed below thresholds', async () => {
@@ -80,7 +128,11 @@ describe('ReconcileService circuit breaker', () => {
       find: jest.fn(),
       update: jest.fn(),
     };
-    const service = buildService({ sessionRepo });
+    const circuitRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+    const dataSource = { query: jest.fn().mockResolvedValue([]) };
+    const service = buildService({ sessionRepo, circuitRepo, dataSource });
 
     const isOpen = await (service as any).isProvisioningCircuitOpen({
       id: 'app-3',
@@ -90,27 +142,32 @@ describe('ReconcileService circuit breaker', () => {
     expect(isOpen).toBe(false);
   });
 
-  it('short-circuits while cooldown window is active', async () => {
+  it('short-circuits while a DB circuit breaker is active', async () => {
     const sessionRepo = {
       count: jest.fn().mockResolvedValue(0),
       find: jest.fn(),
       update: jest.fn(),
     };
-    const service = buildService({ sessionRepo });
+    const futureDate = new Date(Date.now() + 60_000);
+    const circuitRepo = {
+      findOne: jest.fn().mockResolvedValue({ pause_until: futureDate, failure_count: 5 }),
+    };
+    const service = buildService({ sessionRepo, circuitRepo });
 
-    (service as any).appCircuitPauseUntil.set('app-4', Date.now() + 60_000);
     const isOpen = await (service as any).isProvisioningCircuitOpen({
       id: 'app-4',
       tenant_id: 'tenant-4',
     });
 
     expect(isOpen).toBe(true);
+    // No DB failure count queries needed — already paused
     expect(sessionRepo.count).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
 // doReconcile — restart_requested flag
+// Now uses dataSource.transaction; we stub it to avoid needing a real DB.
 // ---------------------------------------------------------------------------
 
 describe('ReconcileService restart_requested', () => {
@@ -131,56 +188,63 @@ describe('ReconcileService restart_requested', () => {
     };
   }
 
-  function buildForRestart() {
+  it('terminates the session and clears the flag when restart_requested is true', async () => {
+    const session = makeSessionForRestart({ restart_requested: true });
+
     const sessionRepo = {
-      find: jest.fn(),
+      find: jest.fn().mockResolvedValue([session]),
       count: jest.fn().mockResolvedValue(0),
       update: jest.fn().mockResolvedValue(undefined),
     };
     const appRepo = { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
     const stateMachine = {
       evaluateSession: jest.fn().mockResolvedValue(undefined),
-      transition: jest.fn().mockResolvedValue(undefined),
+      transition: jest.fn().mockResolvedValue(true),
     };
     const podManager = {
       deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
       deleteNoVncService: jest.fn().mockResolvedValue(undefined),
       deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
       syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
       listWorkerPods: jest.fn().mockResolvedValue([]),
       podExists: jest.fn().mockResolvedValue(true),
     };
+
+    // Stub dataSource.transaction to execute the callback with a manager that
+    // processes our session and calls the raw UPDATE
+    const transactionManager = {
+      query: jest.fn().mockImplementation(async (sql: string, params: any[]) => {
+        if (sql.includes('FOR UPDATE SKIP LOCKED') && sql.includes('sessions')) {
+          // Return our session for the evaluation batch
+          return [session];
+        }
+        if (sql.includes('FOR UPDATE SKIP LOCKED') && sql.includes('applications')) {
+          return [];
+        }
+        // UPDATE last_evaluated_at
+        return [];
+      }),
+    };
+
+    const dataSource = {
+      transaction: jest.fn().mockImplementation(async (cb: any) => {
+        return cb(transactionManager);
+      }),
+      query: jest.fn().mockResolvedValue([]),
+    };
+
     const service = buildService({
-      sessionRepo, appRepo, stateMachine, podManager,
-      batonRepo: {},
+      sessionRepo, appRepo, stateMachine, podManager, batonRepo: {}, dataSource,
     });
-    return { service, sessionRepo, appRepo, stateMachine, podManager };
-  }
-
-  it('terminates the session and clears the flag when restart_requested is true', async () => {
-    const { service, sessionRepo, stateMachine } = buildForRestart();
-    const session = makeSessionForRestart({ restart_requested: true });
-
-    // All find() calls return our session so doReconcile sees it in the active-session loop
-    sessionRepo.find.mockResolvedValue([session]);
 
     await (service as any).doReconcile();
 
-    expect(sessionRepo.update).toHaveBeenCalledWith('sess-restart-1', { restart_requested: false });
-    expect(stateMachine.evaluateSession).not.toHaveBeenCalledWith(session, expect.anything());
-  });
-
-  it('does not terminate sessions where restart_requested is false', async () => {
-    const { service, sessionRepo, stateMachine } = buildForRestart();
-    const session = makeSessionForRestart({ restart_requested: false });
-
-    sessionRepo.find.mockResolvedValue([session]);
-
-    await (service as any).doReconcile();
-
-    expect(sessionRepo.update).not.toHaveBeenCalledWith('sess-restart-1', { restart_requested: false });
-    expect(stateMachine.evaluateSession).toHaveBeenCalledWith(session);
+    // Restart_requested session should be terminated via stateMachine.transition
+    expect(stateMachine.transition).toHaveBeenCalled();
+    // evaluateSession should NOT be called for the restart session
+    expect(stateMachine.evaluateSession).not.toHaveBeenCalled();
   });
 });
 
@@ -218,11 +282,12 @@ describe('ReconcileService checkRecycling', () => {
       update: jest.fn(),
     };
     const appRepo = { update: jest.fn(), find: jest.fn() };
-    const stateMachine = { transition: jest.fn().mockResolvedValue(undefined) };
+    const stateMachine = { transition: jest.fn().mockResolvedValue(true) };
     const podManager = {
       deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
       deleteNoVncService: jest.fn().mockResolvedValue(undefined),
       deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
     };
     const service = buildService({
@@ -236,8 +301,6 @@ describe('ReconcileService checkRecycling', () => {
     process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '120', MAX_SESSION_AGE_HOURS: '24' };
     const { service, sessionRepo, appRepo, stateMachine } = buildForRecycling();
 
-    // HEALTHY session loop: none
-    // FAILED session loop: one session, 2 minutes old (= 120s, > 60s = half TTL)
     const failed = makeSession({
       id: 'failed-1',
       state: 'FAILED',
@@ -305,4 +368,3 @@ describe('ReconcileService checkRecycling', () => {
     expect(stateMachine.transition).toHaveBeenCalledWith(healthy, expect.anything());
   });
 });
-

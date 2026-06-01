@@ -28,6 +28,7 @@ import { ProfilesModule } from './modules/profiles/profiles.module';
 import { CredentialsModule } from './modules/credentials/credentials.module';
 import { IdentityProvidersModule } from './modules/identity-providers/identity-providers.module';
 import { AppTemplatesModule } from './modules/app-templates/app-templates.module';
+import { ExecuteModule } from './modules/execute/execute.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { AppTemplatesModule } from './modules/app-templates/app-templates.module
     CredentialsModule,
     IdentityProvidersModule,
     AppTemplatesModule,
+    ExecuteModule,
     HealthModule,
   ],
   providers: [
