@@ -10,6 +10,13 @@ export interface ExecuteFetchResponse {
   status: number;
   headers: Record<string, string>;
   body: string;
+  // How `body` is encoded. 'utf-8' (default) for textual responses; 'base64'
+  // when the response is binary (e.g. application/pdf) and reading it as text
+  // would corrupt the bytes. Optional for backward compatibility.
+  encoding?: 'utf-8' | 'base64';
+  // True when the response exceeded MAX_RESPONSE_BODY_BYTES and was cut off.
+  // For binary bodies a truncated payload is unusable, so consumers should error.
+  truncated?: boolean;
 }
 
 export const EXECUTE_LIMITS = {

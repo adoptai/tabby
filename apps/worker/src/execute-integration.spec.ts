@@ -206,6 +206,23 @@ describe('execute handlers (integration)', () => {
       expect(res.status).toBe(502);
       expect(res.body.error).toMatch(/Browser fetch failed/);
     });
+
+    it('passes through base64 encoding + truncated flags for binary responses', async () => {
+      page.evaluate.mockResolvedValueOnce({
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+        body: 'JVBERi0xLjM=', // base64("%PDF-1.3")
+        encoding: 'base64',
+        truncated: false,
+      });
+      const res = await request(server, 'POST', '/execute/fetch', {
+        url: 'https://api.example.com/statement.pdf',
+      }, auth());
+      expect(res.status).toBe(200);
+      expect(res.body.encoding).toBe('base64');
+      expect(res.body.truncated).toBe(false);
+      expect(res.body.body).toBe('JVBERi0xLjM=');
+    });
   });
 
   // ─── Execute browser handler ─────────────────────────────────────
