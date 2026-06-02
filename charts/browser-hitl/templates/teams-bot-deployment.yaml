@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "browser-hitl.labels" . | nindent 4 }}
     app.kubernetes.io/component: teams-bot
+    {{- if .Values.global.grafanaLabels }}
+    truefoundry.com/application: {{ include "browser-hitl.fullname" . }}-teams-bot
+    {{- end }}
 spec:
   replicas: {{ .Values.teamsBot.replicas }}
   selector:

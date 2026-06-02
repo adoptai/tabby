@@ -17,6 +17,7 @@ function makeTemplate(overrides: Partial<AppTemplateEntity> = {}): AppTemplateEn
     browser_policy: { downloads: false, clipboard: false, file_chooser: false },
     notification_config: {},
     credential_ref_default: 'manual:',
+    execute_enabled: false,
     idle_shutdown_seconds: null,
     created_at: new Date(),
     updated_at: new Date(),
@@ -92,10 +93,33 @@ describe('AppTemplatesService — propagation', () => {
         keepalive_config: template.keepalive_config,
         export_policy: template.export_policy,
         notification_config: template.notification_config,
+        execute_enabled: template.execute_enabled,
       };
 
       expect(appRepo.update).toHaveBeenCalledWith('app-1', expectedPayload);
       expect(appRepo.update).toHaveBeenCalledWith('app-2', expectedPayload);
+    });
+
+    it('propagates execute_enabled toggles to linked apps', async () => {
+      const template = makeTemplate({ execute_enabled: true });
+
+      const { service, appRepo } = buildService({
+        templateRepo: {
+          findOne: jest.fn().mockResolvedValue(template),
+          save: jest.fn().mockResolvedValue(template),
+        },
+        appRepo: {
+          find: jest.fn().mockResolvedValue([{ id: 'app-1' }]),
+          update: jest.fn().mockResolvedValue(undefined),
+        },
+      });
+
+      await service.update('tenant-1', 'tpl-uuid-1', { execute_enabled: true }, 'actor-1');
+
+      expect(appRepo.update).toHaveBeenCalledWith(
+        'app-1',
+        expect.objectContaining({ execute_enabled: true }),
+      );
     });
 
     it('apps without template_id are not affected (find by template_id filters them out)', async () => {

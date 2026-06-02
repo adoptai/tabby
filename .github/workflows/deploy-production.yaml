@@ -287,6 +287,49 @@ jobs:
       MAX_SESSION_AGE_HOURS: ${{ secrets.MAX_SESSION_AGE_HOURS }}
       NATS_STREAM_MAX_AGE_HOURS: ${{ secrets.NATS_STREAM_MAX_AGE_HOURS }}
       MINIO_ORPHAN_MAX_AGE_HOURS: ${{ secrets.MINIO_ORPHAN_MAX_AGE_HOURS }}
+      # Resource configuration
+      API_REPLICAS: ${{ secrets.API_REPLICAS || '2' }}
+      API_CPU_REQUEST: ${{ secrets.API_CPU_REQUEST || '500m' }}
+      API_CPU_LIMIT: ${{ secrets.API_CPU_LIMIT || '2000m' }}
+      API_MEM_REQUEST: ${{ secrets.API_MEM_REQUEST || '512Mi' }}
+      API_MEM_LIMIT: ${{ secrets.API_MEM_LIMIT || '2Gi' }}
+      API_HPA_ENABLED: ${{ secrets.API_HPA_ENABLED || 'false' }}
+      API_HPA_MIN_REPLICAS: ${{ secrets.API_HPA_MIN_REPLICAS || '1' }}
+      API_HPA_MAX_REPLICAS: ${{ secrets.API_HPA_MAX_REPLICAS || '4' }}
+      CONTROLLER_REPLICAS: ${{ secrets.CONTROLLER_REPLICAS || '2' }}
+      CONTROLLER_CPU_REQUEST: ${{ secrets.CONTROLLER_CPU_REQUEST || '500m' }}
+      CONTROLLER_CPU_LIMIT: ${{ secrets.CONTROLLER_CPU_LIMIT || '1000m' }}
+      CONTROLLER_MEM_REQUEST: ${{ secrets.CONTROLLER_MEM_REQUEST || '512Mi' }}
+      CONTROLLER_MEM_LIMIT: ${{ secrets.CONTROLLER_MEM_LIMIT || '1Gi' }}
+      CONTROLLER_HPA_ENABLED: ${{ secrets.CONTROLLER_HPA_ENABLED || 'false' }}
+      CONTROLLER_HPA_MIN_REPLICAS: ${{ secrets.CONTROLLER_HPA_MIN_REPLICAS || '1' }}
+      CONTROLLER_HPA_MAX_REPLICAS: ${{ secrets.CONTROLLER_HPA_MAX_REPLICAS || '3' }}
+      WORKER_CPU_REQUEST: ${{ secrets.WORKER_CPU_REQUEST || '1000m' }}
+      WORKER_CPU_LIMIT: ${{ secrets.WORKER_CPU_LIMIT || '2000m' }}
+      WORKER_MEM_REQUEST: ${{ secrets.WORKER_MEM_REQUEST || '2Gi' }}
+      WORKER_MEM_LIMIT: ${{ secrets.WORKER_MEM_LIMIT || '3Gi' }}
+      POSTGRES_CPU_REQUEST: ${{ secrets.POSTGRES_CPU_REQUEST || '500m' }}
+      POSTGRES_CPU_LIMIT: ${{ secrets.POSTGRES_CPU_LIMIT || '2000m' }}
+      POSTGRES_MEM_REQUEST: ${{ secrets.POSTGRES_MEM_REQUEST || '1Gi' }}
+      POSTGRES_MEM_LIMIT: ${{ secrets.POSTGRES_MEM_LIMIT || '2Gi' }}
+      REDIS_CPU_REQUEST: ${{ secrets.REDIS_CPU_REQUEST || '250m' }}
+      REDIS_CPU_LIMIT: ${{ secrets.REDIS_CPU_LIMIT || '500m' }}
+      REDIS_MEM_REQUEST: ${{ secrets.REDIS_MEM_REQUEST || '256Mi' }}
+      REDIS_MEM_LIMIT: ${{ secrets.REDIS_MEM_LIMIT || '512Mi' }}
+      NATS_CPU_REQUEST: ${{ secrets.NATS_CPU_REQUEST || '250m' }}
+      NATS_CPU_LIMIT: ${{ secrets.NATS_CPU_LIMIT || '500m' }}
+      NATS_MEM_REQUEST: ${{ secrets.NATS_MEM_REQUEST || '256Mi' }}
+      NATS_MEM_LIMIT: ${{ secrets.NATS_MEM_LIMIT || '512Mi' }}
+      NATS_JS_MAX_MEMORY: ${{ secrets.NATS_JS_MAX_MEMORY || '256Mi' }}
+      MINIO_CPU_REQUEST: ${{ secrets.MINIO_CPU_REQUEST || '250m' }}
+      MINIO_CPU_LIMIT: ${{ secrets.MINIO_CPU_LIMIT || '500m' }}
+      MINIO_MEM_REQUEST: ${{ secrets.MINIO_MEM_REQUEST || '512Mi' }}
+      MINIO_MEM_LIMIT: ${{ secrets.MINIO_MEM_LIMIT || '1Gi' }}
+      EGRESS_CPU_REQUEST: ${{ secrets.EGRESS_CPU_REQUEST || '100m' }}
+      EGRESS_CPU_LIMIT: ${{ secrets.EGRESS_CPU_LIMIT || '500m' }}
+      EGRESS_MEM_REQUEST: ${{ secrets.EGRESS_MEM_REQUEST || '128Mi' }}
+      EGRESS_MEM_LIMIT: ${{ secrets.EGRESS_MEM_LIMIT || '512Mi' }}
+      RECONCILE_BATCH_SIZE: ${{ secrets.RECONCILE_BATCH_SIZE || '50' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

@@ -1,9 +1,9 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import {
-  connect, NatsConnection, StringCodec, JetStreamClient,
+  NatsConnection, StringCodec, JetStreamClient,
   RetentionPolicy, StorageType,
 } from 'nats';
-import { NATS_SUBJECTS, requireEnv } from '@browser-hitl/shared';
+import { NATS_SUBJECTS, requireEnv, connectNats } from '@browser-hitl/shared';
 import type { InputRequest } from '@browser-hitl/shared';
 
 const STREAM_MAX_AGE_NS = parseInt(process.env.NATS_STREAM_MAX_AGE_HOURS || '8', 10) * 60 * 60 * 1_000_000_000;
@@ -25,7 +25,7 @@ export class NatsPublisherService implements OnModuleInit, OnModuleDestroy {
       testDefault: 'nats://localhost:4222',
     });
     try {
-      this.nc = await connect({ servers: natsUrl });
+      this.nc = await connectNats(natsUrl, this.logger);
       this.logger.log(`Connected to NATS at ${natsUrl}`);
       await this.ensureStreams();
       this.js = this.nc.jetstream();
@@ -62,15 +62,9 @@ export class NatsPublisherService implements OnModuleInit, OnModuleDestroy {
         });
         this.logger.log(`JetStream stream "${name}" ensured`);
       } catch (err: any) {
-        // Stream exists with different config - try update
+        // Stream already exists — log and skip (do not attempt to update config)
         if (err?.api_error?.err_code === 10058 || String(err).includes('already in use')) {
-          try {
-            const info = await jsm.streams.info(name);
-            await jsm.streams.update(name, { ...info.config, subjects });
-            this.logger.log(`JetStream stream "${name}" updated`);
-          } catch {
-            this.logger.warn(`JetStream stream "${name}" exists, skipping update`);
-          }
+          this.logger.log(`JetStream stream "${name}" already exists, skipping`);
         } else {
           this.logger.error(`Failed to ensure JetStream stream "${name}": ${err}`);
         }

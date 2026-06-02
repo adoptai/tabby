@@ -43,12 +43,28 @@ export class PodManagerService {
     const podName = this.buildPodName(session.id);
 
     try {
+      // Idempotency: if the pod already exists (e.g. two controller replicas raced),
+      // log and return the pod name without error.
+      const alreadyExists = await this.podExists(podName);
+      if (alreadyExists) {
+        this.logger.log(`Worker pod ${podName} already exists — reusing for session ${session.id}`);
+        return podName;
+      }
+
       const podSpec = this.buildPodSpec(podName, session, app);
       this.logger.log(`Creating worker pod ${podName} for session ${session.id}`);
       await this.createPod(podSpec);
       this.logger.log(`Worker pod ${podName} created`);
       return podName;
-    } catch (error) {
+    } catch (error: any) {
+      // Handle AlreadyExists from Kubernetes API (race between two replicas)
+      if (
+        error?.response?.statusCode === 409 ||
+        String(error?.body || error).includes('AlreadyExists')
+      ) {
+        this.logger.log(`Worker pod ${podName} already exists (K8s AlreadyExists) — reusing`);
+        return podName;
+      }
       this.logger.error(`Failed to create pod ${podName}: ${error}`);
       throw error;
     }

@@ -128,23 +128,29 @@ export class CdpWsProxyService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Verify tabby_vnc cookie for sessions that have owner_user_id (same gate as VNC WS proxy)
       if (session.owner_user_id) {
-        const cookieHeader = (request.headers.cookie as string | undefined) || '';
+        const origin = request.headers.origin;
+        const cookieHeader = Array.isArray(request.headers.cookie)
+          ? request.headers.cookie.join('; ')
+          : request.headers.cookie || '';
         const vncCookie = parseCookie(cookieHeader, 'tabby_vnc');
-        if (!vncCookie) {
+
+        if (!vncCookie && !origin) {
+          // Server-to-server (platform WS proxy): stream token is sufficient
+        } else if (!vncCookie) {
           this.rejectUpgrade(socket, 401, 'Access cookie required');
           return;
-        }
-        try {
-          const payload = this.jwtService.verify<{ type: string; owner_user_id: string; tenant_id: string }>(vncCookie);
-          if (payload.type !== 'vnc_access' || payload.owner_user_id !== session.owner_user_id || payload.tenant_id !== session.tenant_id) {
-            this.rejectUpgrade(socket, 403, 'Cookie owner mismatch');
+        } else {
+          try {
+            const payload = this.jwtService.verify<{ type: string; owner_user_id: string; tenant_id: string }>(vncCookie);
+            if (payload.type !== 'vnc_access' || payload.owner_user_id !== session.owner_user_id || payload.tenant_id !== session.tenant_id) {
+              this.rejectUpgrade(socket, 403, 'Cookie owner mismatch');
+              return;
+            }
+          } catch {
+            this.rejectUpgrade(socket, 401, 'Invalid access cookie');
             return;
           }
-        } catch {
-          this.rejectUpgrade(socket, 401, 'Invalid access cookie');
-          return;
         }
       }
 

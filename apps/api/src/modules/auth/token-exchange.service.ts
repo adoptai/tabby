@@ -89,6 +89,19 @@ export class TokenExchangeService {
       idp = await this.idpRepo.findOne({
         where: { issuer_url: issuer, enabled: true, ...(tenantId ? { tenant_id: tenantId } : {}) },
       });
+      // Fallback: if no IdP matched by issuer_url, check if there is exactly one enabled IdP
+      // (single-IdP deployments where issuer_url may not be configured or may differ)
+      if (!idp) {
+        const fallback = await this.idpRepo.findOne({
+          where: { enabled: true, ...(tenantId ? { tenant_id: tenantId } : {}) },
+        });
+        if (fallback) {
+          this.logger.warn(
+            `No IdP matched issuer "${issuer}" — falling back to single enabled IdP "${fallback.id}"`,
+          );
+          idp = fallback;
+        }
+      }
     }
 
     if (!idp) {

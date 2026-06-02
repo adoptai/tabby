@@ -48,3 +48,6 @@ export * from './env';
 
 // Sentry
 export * from './sentry';
+
+// NATS connection helper
+export * from './nats-connect';

@@ -107,7 +107,8 @@ export class AgentService implements OnModuleDestroy {
     if (hitlActive) {
       try {
         vncStream = await this.hitlService.generateStreamUrl(session.id, tenantId, `agent:${profileId}`);
-      } catch {
+      } catch (err) {
+        this.logger.warn(`Failed to generate stream URL for session ${session.id}: ${(err as Error).message}`);
         vncStream = null;
       }
 

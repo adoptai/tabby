@@ -17,6 +17,7 @@ function createMockSessionRepo() {
   return {
     query: jest.fn().mockResolvedValue([[], 1]), // [rows, affectedCount]
     update: jest.fn().mockResolvedValue(undefined),
+    findOne: jest.fn().mockResolvedValue(null),
   };
 }
 
@@ -205,10 +206,12 @@ describe('StateMachineService', () => {
   // Optimistic lock failure (CAS version mismatch)
   // -----------------------------------------------------------------------
   describe('optimistic locking', () => {
-    it('returns false when state_version does not match (CAS fails)', async () => {
+    it('returns false when state_version does not match and session no longer exists', async () => {
       const { service, sessionRepo, natsPublisher } = buildService();
-      // DB query returns 0 affected rows (version mismatch)
+      // DB query always returns 0 affected rows (version mismatch)
       sessionRepo.query.mockResolvedValue([[], 0]);
+      // findOne returns null (session was deleted or not found)
+      sessionRepo.findOne.mockResolvedValue(null);
 
       const session = makeSession({
         state: SessionState.STARTING,
@@ -219,6 +222,54 @@ describe('StateMachineService', () => {
 
       expect(result).toBe(false);
       // No NATS event published on CAS failure
+      expect(natsPublisher.publishStateChange).not.toHaveBeenCalled();
+    });
+
+    it('retries transition with fresh session on version conflict and succeeds', async () => {
+      const { service, sessionRepo, natsPublisher } = buildService();
+
+      const session = makeSession({
+        state: SessionState.STARTING,
+        state_version: 3,
+      });
+      const freshSession = makeSession({
+        state: SessionState.STARTING,
+        state_version: 4, // newer version
+      });
+
+      // First call: version mismatch; second call (after reload): success
+      sessionRepo.query
+        .mockResolvedValueOnce([[], 0]) // conflict
+        .mockResolvedValueOnce([[], 1]); // success on retry
+      sessionRepo.findOne.mockResolvedValue(freshSession);
+
+      const result = await service.transition(session, SessionState.HEALTHY);
+
+      expect(result).toBe(true);
+      // UPDATE called twice (once with old version, once with fresh version)
+      expect(sessionRepo.query).toHaveBeenCalledTimes(2);
+      expect(natsPublisher.publishStateChange).toHaveBeenCalledWith(
+        'tenant-1', 'session-1', 'app-1', SessionState.STARTING, SessionState.HEALTHY,
+      );
+    });
+
+    it('returns true immediately when concurrent replica already transitioned to target state', async () => {
+      const { service, sessionRepo, natsPublisher } = buildService();
+
+      const session = makeSession({ state: SessionState.STARTING, state_version: 3 });
+      const alreadyTransitioned = makeSession({
+        state: SessionState.HEALTHY, // already at target
+        state_version: 4,
+      });
+
+      sessionRepo.query.mockResolvedValue([[], 0]); // always conflict
+      sessionRepo.findOne.mockResolvedValue(alreadyTransitioned);
+
+      const result = await service.transition(session, SessionState.HEALTHY);
+
+      expect(result).toBe(true);
+      // Only one UPDATE attempt since the reload shows it's already in target state
+      expect(sessionRepo.query).toHaveBeenCalledTimes(1);
       expect(natsPublisher.publishStateChange).not.toHaveBeenCalled();
     });
   });
@@ -551,10 +602,11 @@ describe('StateMachineService', () => {
         expect.stringContaining('UPDATE sessions'),
         expect.arrayContaining([SessionState.HEALTHY]),
       );
-      // Resets HITL counters
+      // Resets HITL counters and clears pending_input_request
       expect(sessionRepo.update).toHaveBeenCalledWith('session-1', {
         hitl_attempt_count: 0,
         hitl_pause_until: null,
+        pending_input_request: null,
       });
       expect(natsPublisher.publishHitlCompleted).toHaveBeenCalledWith(
         'tenant-1',
