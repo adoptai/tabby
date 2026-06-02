@@ -79,15 +79,52 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           const respHeaders: Record<string, string> = {};
           resp.headers.forEach((v, k) => { respHeaders[k] = v; });
 
-          const text = await resp.text();
-          const truncated = text.length > maxBytes
-            ? text.slice(0, maxBytes)
-            : text;
+          // Decide text vs binary from the response Content-Type. Textual
+          // bodies (json/text/xml/form/svg) go through resp.text() as before;
+          // anything else is read as raw bytes and base64-encoded so binary
+          // payloads (e.g. application/pdf) survive transit intact instead of
+          // being mangled by a UTF-8 text decode.
+          const contentType = (respHeaders['content-type'] || '').toLowerCase();
+          const isTextual =
+            contentType === '' ||
+            contentType.startsWith('text/') ||
+            contentType.includes('json') ||
+            contentType.includes('xml') ||
+            contentType.includes('javascript') ||
+            contentType.includes('x-www-form-urlencoded') ||
+            contentType.includes('svg');
 
+          if (isTextual) {
+            const text = await resp.text();
+            const wasTruncated = text.length > maxBytes;
+            return {
+              status: resp.status,
+              headers: respHeaders,
+              body: wasTruncated ? text.slice(0, maxBytes) : text,
+              encoding: 'utf-8' as const,
+              truncated: wasTruncated,
+            };
+          }
+
+          const buf = new Uint8Array(await resp.arrayBuffer());
+          const wasTruncated = buf.length > maxBytes;
+          const bytes = wasTruncated ? buf.subarray(0, maxBytes) : buf;
+          // Chunked base64 encode — String.fromCharCode.apply over the whole
+          // array can blow the call stack for multi-MB payloads.
+          let binary = '';
+          const CHUNK = 0x8000;
+          for (let i = 0; i < bytes.length; i += CHUNK) {
+            binary += String.fromCharCode.apply(
+              null,
+              Array.from(bytes.subarray(i, i + CHUNK)),
+            );
+          }
           return {
             status: resp.status,
             headers: respHeaders,
-            body: truncated,
+            body: btoa(binary),
+            encoding: 'base64' as const,
+            truncated: wasTruncated,
           };
         },
         {
