@@ -1080,6 +1080,55 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
     });
   });
 
+  describe('autoProvisionFromTemplate — execute_enabled propagation', () => {
+    function wireAutoProvision(service: CredentialsService, template: any) {
+      const appsService = { create: jest.fn().mockResolvedValue({ app_id: 'auto-app-1' }) };
+      const profilesService = { create: jest.fn().mockResolvedValue({ id: 'auto-profile-1' }) };
+      const sessionsService = { scale: jest.fn().mockResolvedValue(undefined) };
+      (service as any).templateRepo = { findOne: jest.fn().mockResolvedValue(template) };
+      (service as any).appsService = appsService;
+      (service as any).profilesService = profilesService;
+      (service as any).sessionsService = sessionsService;
+      (service as any).appRepo = { update: jest.fn().mockResolvedValue(undefined) };
+      (service as any).profileRepo = { update: jest.fn().mockResolvedValue(undefined) };
+      return { appsService, profilesService, sessionsService };
+    }
+
+    it('forwards an execute-enabled template onto the cloned app', async () => {
+      const { service } = buildService();
+      const { appsService } = wireAutoProvision(service, {
+        id: 'tpl-1', name: 'Expedia', profile_name_pattern: 'expedia',
+        login_config: {}, keepalive_config: {}, export_policy: {}, notification_config: {},
+        browser_policy: {}, execute_enabled: true,
+      });
+
+      await (service as any).autoProvisionFromTemplate(TEST_TENANT, 'expedia', 'user-a');
+
+      expect(appsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ execute_enabled: true }),
+        TEST_TENANT,
+        expect.any(String),
+      );
+    });
+
+    it('forwards an execute-disabled template as false', async () => {
+      const { service } = buildService();
+      const { appsService } = wireAutoProvision(service, {
+        id: 'tpl-2', name: 'Expedia', profile_name_pattern: 'expedia',
+        login_config: {}, keepalive_config: {}, export_policy: {}, notification_config: {},
+        browser_policy: {}, execute_enabled: false,
+      });
+
+      await (service as any).autoProvisionFromTemplate(TEST_TENANT, 'expedia', 'user-a');
+
+      expect(appsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ execute_enabled: false }),
+        TEST_TENANT,
+        expect.any(String),
+      );
+    });
+  });
+
   describe('findHealthySession — owner_user_id scoping', () => {
     it('includes owner_user_id in WHERE when provided', async () => {
       const { service, sessionRepo } = buildService();

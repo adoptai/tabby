@@ -3,7 +3,7 @@ import {
   UseGuards, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiQuery } from '@nestjs/swagger';
-import { IsString, MinLength, IsOptional, IsObject, IsInt, Min } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsObject, IsInt, IsBoolean, Min } from 'class-validator';
 import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard';
 import { AppTemplatesService } from './app-templates.service';
 
@@ -43,6 +43,10 @@ class CreateAppTemplateDto {
   @ApiProperty({ required: false, example: 'manual:', description: 'Default credential_ref for auto-provisioned apps' })
   @IsOptional() @IsString()
   credential_ref_default?: string;
+
+  @ApiProperty({ required: false, default: false, description: 'Whether apps auto-provisioned from this template can run POST /execute/fetch | /execute/browser. Carried onto each cloned app so the controller provisions the worker Service + JWT_SIGNING_KEY.' })
+  @IsOptional() @IsBoolean()
+  execute_enabled?: boolean;
 
   @ApiProperty({ required: false, description: 'Auto-shutdown session after N seconds idle' })
   @IsOptional() @IsInt() @Min(60)

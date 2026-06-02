@@ -1,5 +1,5 @@
 import {
-  IsString, IsArray, IsObject, IsOptional, IsInt, IsUUID, Min, MinLength, ArrayMinSize,
+  IsString, IsArray, IsObject, IsOptional, IsInt, IsBoolean, IsUUID, Min, MinLength, ArrayMinSize,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
@@ -7,7 +7,7 @@ import { Type } from 'class-transformer';
 export const APP_SELECTABLE_FIELDS = [
   'id', 'name', 'tenant_id', 'target_urls', 'login_config', 'keepalive_config',
   'export_policy', 'notification_config', 'browser_policy', 'desired_session_count',
-  'credential_last_validated_at', 'credential_rotation_reminder_days',
+  'execute_enabled', 'credential_last_validated_at', 'credential_rotation_reminder_days',
   'created_at', 'updated_at',
 ] as const;
 
@@ -78,6 +78,11 @@ export class CreateAppDto {
   @IsObject()
   browser_policy?: Record<string, unknown>;
 
+  @ApiProperty({ description: 'Whether the app can run POST /execute/fetch | /execute/browser. The controller only provisions the worker Service + NetworkPolicy ingress + JWT_SIGNING_KEY when true.', required: false, default: false })
+  @IsOptional()
+  @IsBoolean()
+  execute_enabled?: boolean;
+
   @ApiProperty({ description: 'Target tenant UUID. Admin only — defaults to caller tenant if omitted.', required: false })
   @IsOptional()
   @IsUUID()
@@ -128,4 +133,9 @@ export class UpdateAppDto {
   @IsOptional()
   @IsObject()
   browser_policy?: Record<string, unknown>;
+
+  @ApiProperty({ description: 'Whether the app can run POST /execute/fetch | /execute/browser. The controller only provisions the worker Service + NetworkPolicy ingress + JWT_SIGNING_KEY when true.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  execute_enabled?: boolean;
 }
