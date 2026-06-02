@@ -78,4 +78,8 @@ export class SessionEntity {
 
   @Column({ type: 'boolean', default: false })
   restart_requested: boolean;
+
+  /** Timestamp of last state evaluation by any controller replica (FOR UPDATE SKIP LOCKED) */
+  @Column({ type: 'timestamptz', nullable: true })
+  last_evaluated_at: Date | null;
 }

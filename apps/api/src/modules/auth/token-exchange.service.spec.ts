@@ -122,14 +122,55 @@ describe('TokenExchangeService', () => {
       'fake-signature',
     ].join('.');
 
-    it('rejects when no IdP matches the issuer', async () => {
+    it('rejects when no IdP matches the issuer and no single enabled IdP exists', async () => {
       const { service, idpRepo } = buildService();
+      // Both the issuer-URL lookup and the fallback lookup return null
       idpRepo.findOne.mockResolvedValue(null);
 
       await expect(service.exchange({
         subject_token: fakeJwt,
         subject_token_type: 'oidc_jwt',
       }, 'tenant-1')).rejects.toThrow('No registered IdP');
+    });
+
+    it('falls back to single enabled IdP when issuer_url does not match', async () => {
+      const { service, idpRepo, jwtService, jwksService, auditService } = buildService();
+
+      const fallbackIdp = {
+        id: 'idp-fallback',
+        tenant_id: 'tenant-1',
+        tenant_id_claim: null,
+        issuer_url: 'https://other-auth.example.com',
+        audience: null,
+        user_id_claim: 'sub',
+        default_role: 'Operator',
+        allow_auto_provision: false,
+      };
+
+      // First call (issuer_url lookup) → null; second call (fallback lookup) → idp
+      idpRepo.findOne
+        .mockResolvedValueOnce(null)   // issuer lookup
+        .mockResolvedValueOnce(fallbackIdp); // fallback
+
+      jwksService.getPublicKey.mockResolvedValue('mock-pem');
+      (jwt.verify as jest.Mock).mockReturnValue({
+        iss: 'https://auth.example.com',
+        sub: 'user-abc',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iat: Math.floor(Date.now() / 1000),
+      });
+
+      const result = await service.exchange({
+        subject_token: fakeJwt,
+        subject_token_type: 'oidc_jwt',
+      }, 'tenant-1');
+
+      expect(result.access_token).toBe('mock-federated-jwt');
+      expect(result.owner_user_id).toBe('user-abc');
+      // Fallback should have logged a warning
+      expect((service as any).logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('falling back to single enabled IdP'),
+      );
     });
 
     it('verifies JWT and issues federated token', async () => {

@@ -41,6 +41,16 @@ export class AppTemplateEntity {
   @Column({ type: 'varchar', default: 'manual:' })
   credential_ref_default: string;
 
+  /**
+   * Whether apps auto-provisioned from this template have the execute capability
+   * (POST /execute/fetch | /execute/browser). The controller only provisions the
+   * worker Service + NetworkPolicy ingress + JWT_SIGNING_KEY when the app's
+   * execute_enabled is true, so this must be carried onto each cloned app or the
+   * per-user connection can never run execute calls. Mirrors applications.execute_enabled.
+   */
+  @Column({ type: 'boolean', default: false })
+  execute_enabled: boolean;
+
   @Column({ type: 'integer', nullable: true })
   idle_shutdown_seconds: number | null;
 

@@ -307,6 +307,10 @@ export class CredentialsService {
       export_policy: template.export_policy as any,
       notification_config: template.notification_config as any,
       browser_policy: template.browser_policy as any,
+      // Carry the template's execute capability onto the cloned app — without it the
+      // controller never provisions the worker Service + JWT_SIGNING_KEY, so the
+      // per-user connection could never run /execute/fetch | /execute/browser.
+      execute_enabled: template.execute_enabled,
       desired_session_count: 0, // Start with 0, scale up after profile is created
     }, tenantId, actorId);
 

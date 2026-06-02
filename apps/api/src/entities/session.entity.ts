@@ -85,4 +85,8 @@ export class SessionEntity {
   /** Flag set by API to request pod restart; controller clears it after terminating the session. */
   @Column({ type: 'boolean', default: false })
   restart_requested: boolean;
+
+  /** Timestamp of last state evaluation by any controller replica (FOR UPDATE SKIP LOCKED) */
+  @Column({ type: 'timestamptz', nullable: true })
+  last_evaluated_at: Date | null;
 }

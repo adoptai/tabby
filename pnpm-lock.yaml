@@ -392,6 +392,9 @@ importers:
       '@sentry/node':
         specifier: ^10.51.0
         version: 10.51.0
+      nats:
+        specifier: ^2.29.3
+        version: 2.29.3
     devDependencies:
       '@types/jest':
         specifier: ^29.5.14
