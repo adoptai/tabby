@@ -83,7 +83,7 @@ export class AppTemplatesService {
 
   private static readonly PROPAGATED_FIELDS = [
     'browser_policy', 'login_config', 'keepalive_config',
-    'export_policy', 'notification_config',
+    'export_policy', 'notification_config', 'execute_enabled',
   ] as const;
 
   private async propagateToLinkedApps(template: AppTemplateEntity): Promise<number> {
