@@ -56,6 +56,23 @@ data:
   WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK: {{ .Values.config.workerAllowEnvCredentialFallback | quote }}
   WORKER_IMAGE: {{ $workerImage | quote }}
   NOVNC_IMAGE: {{ $novncImage | quote }}
+  WORKER_CPU_REQUEST: {{ .Values.worker.resources.requests.cpu | quote }}
+  WORKER_CPU_LIMIT: {{ .Values.worker.resources.limits.cpu | quote }}
+  WORKER_MEM_REQUEST: {{ .Values.worker.resources.requests.memory | quote }}
+  WORKER_MEM_LIMIT: {{ .Values.worker.resources.limits.memory | quote }}
+  NOVNC_CPU_REQUEST: {{ .Values.worker.novnc.resources.requests.cpu | quote }}
+  NOVNC_CPU_LIMIT: {{ .Values.worker.novnc.resources.limits.cpu | quote }}
+  NOVNC_MEM_REQUEST: {{ .Values.worker.novnc.resources.requests.memory | quote }}
+  NOVNC_MEM_LIMIT: {{ .Values.worker.novnc.resources.limits.memory | quote }}
+  {{- if .Values.worker.nodeSelector }}
+  WORKER_NODE_SELECTOR: {{ .Values.worker.nodeSelector | toJson | quote }}
+  {{- end }}
+  {{- if .Values.worker.tolerations }}
+  WORKER_TOLERATIONS: {{ .Values.worker.tolerations | toJson | quote }}
+  {{- end }}
+  {{- if .Values.worker.affinity }}
+  WORKER_AFFINITY: {{ .Values.worker.affinity | toJson | quote }}
+  {{- end }}
   WORKER_NAMESPACE: {{ .Release.Namespace | quote }}
   NOVNC_UPSTREAM_PATH: "/websockify"
   # Service discovery
