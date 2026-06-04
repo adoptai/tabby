@@ -213,12 +213,12 @@ export class AppTemplatesService {
     return { apps: totalApps, profiles: totalProfiles };
   }
 
-  async remove(tenantId: string, id: string, actorId: string) {
+  async remove(tenantId: string | undefined, id: string, actorId: string) {
     const template = await this.findOne(tenantId, id);
     await this.templateRepo.remove(template);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: template.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app_template.deleted',
