@@ -1,0 +1,133 @@
+# Test values file — validates all configurable resource/config paths
+# Usage: helm template test charts/adoptapp/charts/adopt-tabby/ -f test-values-validation.yaml
+
+# Secrets (required)
+secrets:
+  jwtSigningKey: "test-jwt-key-minimum-32-characters-long"
+  tenantEncryptionKey: "0000000000000000000000000000000000000000000000000000000000000000"
+  agentHmacKey: "test-hmac-key-64-chars-0000000000000000000000000000000000000000"
+  adminBootstrapPassword: "TestP@ssword123!"
+  serviceAuthClientSecret: "test-service-secret"
+  postgresPassword: "test-pg-password"
+  minioAccessKey: "test-minio-access"
+  minioSecretKey: "test-minio-secret"
+  idpClientId: "test-idp-client-id"
+  idpClientSecret: "test-idp-client-secret"
+  metricsAuthToken: "test-metrics-token"
+  egressProxyAdminToken: "test-egress-admin"
+  egressProxySessionKey: "test-egress-session"
+
+# Config
+config:
+  publicBaseUrl: "https://tabby-api.test.com"
+  streamHost: "tabby-api.test.com"
+  streamProtocol: "wss"
+  reconcileBatchSize: "100"
+  dbPoolSize: "30"
+  maxSessionAgeHours: "12"
+  idleShutdownSeconds: "3600"
+  circuitBreakerAppFailureThreshold: "10"
+  circuitBreakerTenantFailureThreshold: "50"
+  circuitBreakerWindowSeconds: "300"
+  circuitBreakerCooldownSeconds: "600"
+  lifecycleArtifactRetentionDays: "14"
+  lifecycleInterventionRetentionDays: "60"
+  lifecycleSessionRetentionDays: "30"
+  lifecycleAppRetentionDays: "60"
+
+# Custom resources (override defaults)
+api:
+  replicas: 2
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  nodeSelector:
+    workload-type: "tabby-api"
+
+controller:
+  replicas: 2
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+worker:
+  resources:
+    requests:
+      cpu: "1500m"
+      memory: "3Gi"
+    limits:
+      cpu: "3000m"
+      memory: "4Gi"
+
+postgresql:
+  enabled: true
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+redis:
+  enabled: true
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+nats:
+  enabled: true
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  jetstream:
+    maxMemory: "512Mi"
+
+minio:
+  enabled: true
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+egressProxy:
+  enabled: true
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  hosts:
+    - host: tabby-api.test.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: tabby-api-tls
+      hosts:
+        - tabby-api.test.com
