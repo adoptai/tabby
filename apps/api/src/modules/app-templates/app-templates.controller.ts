@@ -91,7 +91,8 @@ export class AppTemplatesController {
   @Roles('Admin')
   @ApiOperation({ summary: 'Update app template' })
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateAppTemplateDto, @Req() req: any) {
-    return this.templateService.update(req.user.tenant_id, id, dto, req.user.user_id);
+    const tenantScope = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    return this.templateService.update(tenantScope, id, dto, req.user.user_id);
   }
 
   @Delete(':id')
@@ -99,6 +100,7 @@ export class AppTemplatesController {
   @HttpCode(204)
   @ApiOperation({ summary: 'Delete app template' })
   async remove(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
-    await this.templateService.remove(req.user.tenant_id, id, req.user.user_id);
+    const tenantScope = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    await this.templateService.remove(tenantScope, id, req.user.user_id);
   }
 }
