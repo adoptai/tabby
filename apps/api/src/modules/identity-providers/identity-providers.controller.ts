@@ -91,6 +91,19 @@ class CreateIdpDto {
   @ApiProperty({ required: false })
   @IsOptional() @IsBoolean()
   allow_shared_session_fallback?: boolean;
+
+  // ── Role mapping ────────────────────────────────────────────────────
+  @ApiProperty({ required: false, example: 'roles', description: 'JWT claim containing source roles array, e.g. "roles" for Frontegg.' })
+  @IsOptional() @IsString()
+  role_claim?: string;
+
+  @ApiProperty({ required: false, example: ['SuperAdmin'], description: 'Source role values that map to Tabby Admin.' })
+  @IsOptional() @IsArray() @IsString({ each: true })
+  admin_role_values?: string[];
+
+  @ApiProperty({ required: false, example: ['Admin'], description: 'Source role values that map to Tabby Editor.' })
+  @IsOptional() @IsArray() @IsString({ each: true })
+  editor_role_values?: string[];
 }
 
 @ApiTags('Identity Providers')

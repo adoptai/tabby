@@ -11,6 +11,7 @@ import { UserEntity } from '../../entities/user.entity';
 import { ExternalJwksService } from './external-jwks.service';
 import { JwtPayload } from './auth.service';
 import { AuditService } from '../audit/audit.service';
+import { resolveRoleFromIdp } from '../../common/helpers/role-resolver.helper';
 
 interface TokenExchangeParams {
   subject_token: string;
@@ -187,10 +188,7 @@ export class TokenExchangeService {
     const ttl = params.requested_ttl_seconds || 3600;
     const jti = crypto.randomUUID();
     const email = String(verifiedPayload[idp.email_claim] || verifiedPayload.email || '');
-    const emailDomain = email.split('@')[1] || '';
-    const role = (idp.admin_domains?.length && emailDomain && idp.admin_domains.includes(emailDomain))
-      ? 'Admin'
-      : (idp.default_role || 'Operator');
+    const role = resolveRoleFromIdp(idp, verifiedPayload, email);
     const payload: JwtPayload = {
       sub: `federated:${ownerUserId}`,
       tenant_id: resolvedTenantId,

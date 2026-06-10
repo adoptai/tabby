@@ -11,6 +11,7 @@ import { ExternalJwksService } from './external-jwks.service';
 import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
 import { TenantEntity } from '../../entities/tenant.entity';
 import { OAuthProviderService } from './oauth-provider.service';
+import { resolveRoleFromIdp } from '../../common/helpers/role-resolver.helper';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -83,7 +84,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       if (!ownerUserId) throw new UnauthorizedException('JWT missing user identifier claim');
 
       const email = String(payload[idp.email_claim] || payload.email || '');
-      const role = this.oauthProvider.resolveRole(idp, email);
+      const role = resolveRoleFromIdp(idp, payload as Record<string, unknown>, email);
 
       // Resolve tenant from claim
       let resolvedTenantId: string;

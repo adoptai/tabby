@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Get, Patch, Delete, Body, Query, Req, Param, UseGuards, HttpCode,
+  Controller, Post, Get, Patch, Delete, Body, Query, Req, Param, UseGuards, HttpCode, ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty, ApiParam } from '@nestjs/swagger';
 import {
@@ -45,12 +45,19 @@ export class TenantsController {
   constructor(private readonly tenantsService: TenantsService) {}
 
   @Post()
-  @Roles('Admin')
-  @ApiOperation({ summary: 'Create tenant', description: 'Creates a new tenant and provisions a MinIO bucket. Admin role required.' })
+  @Roles('Admin', 'Editor')
+  @ApiOperation({ summary: 'Create tenant', description: 'Creates a new tenant and provisions a MinIO bucket. Admin role required. Editor can only create their own tenant (id must match caller tenant_id).' })
   @ApiResponse({ status: 201, description: 'Tenant created', schema: { example: { tenant_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' } } })
   @ApiResponse({ status: 409, description: 'Tenant name already exists' })
   @HttpCode(201)
   async create(@Body() dto: CreateTenantDto, @Req() req: any) {
+    if (req.user.role === 'Editor') {
+      const tenantId = dto.id ?? req.user.tenant_id;
+      if (tenantId !== req.user.tenant_id) {
+        throw new ForbiddenException('Editor can only create their own tenant');
+      }
+      return this.tenantsService.create(dto.name, req.user.user_id, req.user.tenant_id, dto.max_sessions);
+    }
     return this.tenantsService.create(dto.name, req.user.user_id, dto.id, dto.max_sessions);
   }
 
@@ -65,12 +72,15 @@ export class TenantsController {
   }
 
   @Get(':id')
-  @Roles('Admin')
-  @ApiOperation({ summary: 'Get tenant by ID' })
+  @ApiOperation({ summary: 'Get tenant by ID', description: 'Any authenticated user can check their own tenant. Admin can query any tenant.' })
   @ApiParam({ name: 'id', description: 'Tenant ID' })
   @ApiResponse({ status: 200, description: 'Tenant details including current max_sessions' })
+  @ApiResponse({ status: 403, description: 'Non-admin tried to read another tenant' })
   @ApiResponse({ status: 404, description: 'Tenant not found' })
-  async findOne(@Param('id') id: string) {
+  async findOne(@Param('id') id: string, @Req() req: any) {
+    if (req.user.role !== 'Admin' && id !== req.user.tenant_id) {
+      throw new ForbiddenException('You can only view your own tenant');
+    }
     return this.tenantsService.findOne(id);
   }
 

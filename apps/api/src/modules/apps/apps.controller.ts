@@ -69,7 +69,7 @@ export class AppsController {
   }
 
   @Delete(':id')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @ApiOperation({ summary: 'Deactivate application', description: 'Sets desired_session_count to 0. Controller terminates all sessions within 15s. Does NOT delete the app.' })
   @ApiParam({ name: 'id', description: 'Application UUID' })
   @ApiResponse({ status: 200, description: 'App deactivated', schema: { example: { app_id: 'ffffffff-...', desired_session_count: 0 } } })
@@ -79,7 +79,7 @@ export class AppsController {
   }
 
   @Delete(':id/destroy')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @ApiOperation({ summary: 'Permanently delete application', description: 'Hard-deletes the application and ALL related data (profiles, sessions, interventions, artifacts, auth requests) in a single transaction. Rolled back entirely if any step fails. Returns a summary of deleted rows.' })
   @ApiParam({ name: 'id', description: 'Application UUID' })
   @ApiResponse({ status: 200, description: 'App destroyed — returns { deleted: { table: count } }' })

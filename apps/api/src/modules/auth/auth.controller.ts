@@ -3,7 +3,7 @@ import {
   UseGuards, Req, Res, ParseUUIDPipe, UnauthorizedException, Query, BadRequestException,
   Logger, OnModuleDestroy,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiResponse, ApiExcludeEndpoint } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -213,6 +213,17 @@ export class AuthController implements OnModuleDestroy {
     });
 
     return result;
+  }
+
+  @Post('auth/swagger-login')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Quick login for Swagger UI',
+    description: 'Login with email/password and get a JWT token. Copy the `access_token` value and paste it into the Authorize → Bearer dialog above.',
+  })
+  async swaggerLogin(@Body() body: { username: string; password: string }) {
+    const result = await this.authService.login(body.username, body.password);
+    return { access_token: result.token, token_type: 'bearer' };
   }
 
   @ApiOperation({ summary: 'Logout and revoke token', description: 'Revokes the current JWT token by adding its JTI to the blacklist.' })
@@ -601,7 +612,7 @@ export class AuthController implements OnModuleDestroy {
     }
 
     // Determine role
-    const role = this.oauthProvider.resolveRole(idp, email);
+    const role = this.oauthProvider.resolveRole(idp, email, claims);
 
     // Issue Tabby JWT (24h, used for admin-UI and API calls)
     const jti = crypto.randomUUID();

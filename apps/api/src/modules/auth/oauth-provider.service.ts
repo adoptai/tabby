@@ -1,6 +1,7 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { IdentityProviderEntity } from '../../entities/identity-provider.entity';
+import { resolveRoleFromIdp } from '../../common/helpers/role-resolver.helper';
 
 /**
  * Handles the browser-side Generic OAuth flow for the admin-UI login.
@@ -186,15 +187,11 @@ export class OAuthProviderService {
   }
 
   /**
-   * Determine the Tabby role for a user based on their email domain.
-   * Emails in admin_domains get Admin; everyone else gets default_role.
+   * Determine the Tabby role for a user based on IdP role claim mapping and email domain.
+   * Delegates to resolveRoleFromIdp for consistent logic across all auth paths.
    */
-  resolveRole(idp: IdentityProviderEntity, email: string): string {
-    const domain = email.split('@')[1] || '';
-    if (domain && idp.admin_domains?.includes(domain)) {
-      return 'Admin';
-    }
-    return idp.default_role || 'Operator';
+  resolveRole(idp: IdentityProviderEntity, email: string, verifiedPayload: Record<string, unknown> = {}): string {
+    return resolveRoleFromIdp(idp, verifiedPayload, email);
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
