@@ -32,7 +32,7 @@ import { JwtAuthGuard } from '../../common/guards/roles.guard';
 import { parseCookie } from '../../common/utils/cookie';
 
 /** Module-level constant — avoids repeating the env-read inline everywhere. */
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'http://localhost:18080').replace(/\/+$/, '');
 
 /**
  * Redirect to OAuth login (or email gate fallback) when a valid tabby_vnc cookie is absent.
