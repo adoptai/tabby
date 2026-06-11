@@ -112,6 +112,32 @@ describe('TokenExchangeService', () => {
         agent_payload: { sub: 'a', tenant_id: 't', token_type: 'agent', role: 'Operator' },
       })).rejects.toThrow(UnauthorizedException);
     });
+
+    it('propagates unrestricted_profiles: true into the issued federated token', async () => {
+      const { service, jwtService } = buildService();
+
+      await service.exchange({
+        subject_token: 'agent-jwt',
+        subject_token_type: 'agent_assertion',
+        target_user_id: 'end-user-456',
+        agent_payload: {
+          sub: 'agent:agent_cl_xyz',
+          tenant_id: 'tenant-1',
+          token_type: 'agent',
+          role: 'Operator',
+          agent_client_id: 'agent_cl_xyz',
+          allowed_profiles: [],
+          unrestricted_profiles: true,
+        },
+      });
+
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({
+          unrestricted_profiles: true,
+        }),
+        expect.any(Object),
+      );
+    });
   });
 
   describe('oidc_jwt mode', () => {
