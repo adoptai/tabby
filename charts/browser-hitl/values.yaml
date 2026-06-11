@@ -434,6 +434,8 @@ config:
   lifecycleAppRetentionDays: "30"
   workerAllowEnvCredentialFallback: "false"
   reconcileBatchSize: "50"
+  extractTabTimeoutMs: "15000"
+  extractTabPollIntervalMs: "3000"
 
 # =============================================================================
 # Secrets (sensitive values - override in production)

@@ -146,6 +146,8 @@ config:
   sentryDsn: "REPLACE_WITH_SENTRY_DSN"
   sentryEnabled: "true"
   reconcileBatchSize: "50"
+  extractTabTimeoutMs: "15000"
+  extractTabPollIntervalMs: "3000"
 
 
 # Development secrets (NEVER use in production)
