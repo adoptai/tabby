@@ -158,12 +158,28 @@ async function redirectToAuth(
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.setHeader('cache-control', 'no-store');
     const escapedId = JSON.stringify(sessionId);
+    const escapedPrefix = JSON.stringify(prefix);
+    // The fragment token (M-4: client-only) may already prove session ownership
+    // — a token minted by the owner's own authenticated short-link call. Try
+    // verify-token first: on success it mints the viewer cookie and we reload
+    // into the stream, skipping the IdP round-trip entirely (and the tenant
+    // resolution it depends on). Only fall through to OAuth when the token is
+    // absent or not owner-proving (e.g. agent:{profile} consumer tokens).
     const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
 var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
 var t=new URLSearchParams(h).get('token')||'';
-var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
-if(t)p.set('stream_token',t);
-window.location.href='${oauthLoginUrl}?'+p.toString();
+var PREFIX=${escapedPrefix};
+var SID=${escapedId};
+function toOauth(){
+  var p=new URLSearchParams({post_login:'/'+PREFIX+'/'+SID});
+  if(t)p.set('stream_token',t);
+  window.location.href='${oauthLoginUrl}?'+p.toString();
+}
+if(t){
+  fetch('/'+PREFIX+'/'+SID+'/verify-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t}),credentials:'same-origin'})
+    .then(function(r){ if(r.ok){ window.location.href='/'+PREFIX+'/'+SID+(t?'?token='+encodeURIComponent(t):''); } else { toOauth(); } })
+    .catch(toOauth);
+}else{ toOauth(); }
 </script></body></html>`;
     res.status(200).send(bridge);
     return;
