@@ -354,21 +354,18 @@ export class ShortLinkController {
         }
       }
 
-      // No valid cookie: redirect to OAuth login with post_login set to this short-link.
-      // No fallback to the bootstrap-admin tenant — each tenant must configure its own IdP.
-      if (session) {
-        const idp = await this.idpRepo.findOne({
-          where: { enabled: true, auth_url: Not(IsNull()) },
-        });
-        if (idp) {
-          const postLogin = `/s/${shortId}`;
-          res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?post_login=${encodeURIComponent(postLogin)}`);
-          return;
-        }
-      }
+      // No valid cookie: redirect to the stored viewer URL (which carries the
+      // #token fragment) rather than jumping straight to the IdP. The viewer's
+      // openStream → bridge page attempts verify-token first, so an owner-minted
+      // stream token (e.g. from the harness's own short-link call) auto-passes
+      // without an OAuth round-trip, and only non-owner-proving tokens fall
+      // through to the IdP. Previously this branch went directly to OAuth, which
+      // never exposed the fragment token to the client and so defeated the
+      // auto-pass — forcing OAuth (and its tenant resolution) even for the owner.
     }
 
-    // No session context or no OAuth configured: redirect directly
+    // No valid cookie, no session context, or no OAuth configured: redirect to
+    // the stored viewer URL and let the viewer page resolve auth.
     res.redirect(302, url);
   }
 }
