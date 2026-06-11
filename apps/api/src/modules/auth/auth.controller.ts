@@ -15,8 +15,8 @@ import { TokenBlacklistService } from './token-blacklist.service';
 import { TokenExchangeService } from './token-exchange.service';
 import { OAuthProviderService } from './oauth-provider.service';
 import {
-  IsEmail, IsString, MinLength, IsUUID, IsOptional,
-  IsArray, ArrayMinSize, IsInt, Min, Max, Matches,
+  IsEmail, IsString, MinLength, IsUUID, IsOptional, IsBoolean,
+  IsArray, ArrayMinSize, IsInt, Min, Max, Matches, ValidateIf,
 } from 'class-validator';
 import { DEFAULTS } from '@browser-hitl/shared';
 import { AuditService } from '../audit/audit.service';
@@ -92,11 +92,17 @@ class RegisterAgentClientDto {
   @IsUUID()
   tenant_id: string;
 
-  @ApiProperty({ example: ['hubspot-standard'] })
+  @ApiProperty({ example: ['hubspot-standard'], required: false })
+  @ValidateIf(o => !o.unrestricted_profiles)
   @IsArray()
   @ArrayMinSize(1)
   @IsString({ each: true })
-  allowed_profiles: string[];
+  allowed_profiles?: string[];
+
+  @ApiProperty({ example: false, required: false, description: 'When true, agent can access any profile within its tenant (bypasses allowed_profiles check)' })
+  @IsOptional()
+  @IsBoolean()
+  unrestricted_profiles?: boolean;
 
   @ApiProperty({ example: 3600, required: false })
   @IsOptional()
@@ -311,6 +317,7 @@ export class AuthController implements OnModuleDestroy {
       name: dto.name,
       tenant_id: dto.tenant_id,
       allowed_profiles: dto.allowed_profiles,
+      unrestricted_profiles: dto.unrestricted_profiles,
       token_ttl_seconds: dto.token_ttl_seconds,
       rate_limit_per_minute: dto.rate_limit_per_minute,
     });
@@ -344,6 +351,7 @@ export class AuthController implements OnModuleDestroy {
       name: c.name,
       tenant_id: c.tenant_id,
       allowed_profiles: c.allowed_profiles,
+      unrestricted_profiles: c.unrestricted_profiles,
       token_ttl_seconds: c.token_ttl_seconds,
       rate_limit_per_minute: c.rate_limit_per_minute,
       enabled: c.enabled,

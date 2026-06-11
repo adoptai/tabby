@@ -383,22 +383,55 @@ export class ArtifactExtractor {
     const results: Record<string, string> = {};
     let newPage: Page | null = null;
 
+    const timeoutMs = parseInt(process.env.EXTRACT_TAB_TIMEOUT_MS || '15000', 10);
+    const pollIntervalMs = parseInt(process.env.EXTRACT_TAB_POLL_INTERVAL_MS || '3000', 10);
+
     try {
       newPage = await this.context.newPage();
       console.log(`[Artifacts] Opening new tab for extraction: ${url}`);
-      await newPage.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' });
-      await newPage.waitForTimeout(8000);
+      await newPage.goto(url, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
 
-      for (const extraction of extractions) {
-        try {
-          const value = await this.runSingleExtraction(newPage, extraction);
-          if (value) results[extraction.key] = value;
-        } catch (error) {
-          console.warn(`Custom extraction '${extraction.key}' failed in new tab: ${error}`);
+      const deadline = Date.now() + timeoutMs;
+      let attempt = 0;
+      let prevSuccessCount = 0;
+      let stableRounds = 0;
+
+      while (Date.now() < deadline) {
+        attempt++;
+        await newPage.waitForTimeout(pollIntervalMs);
+
+        for (const extraction of extractions) {
+          if (results[extraction.key]) continue;
+          try {
+            const value = await this.runSingleExtraction(newPage, extraction);
+            if (value) results[extraction.key] = value;
+          } catch (error) {
+            console.warn(`Custom extraction '${extraction.key}' attempt ${attempt} failed: ${error}`);
+          }
         }
+
+        const successCount = Object.keys(results).length;
+
+        if (successCount === extractions.length) {
+          console.log(`[Artifacts] All ${successCount} extractions succeeded on attempt ${attempt}`);
+          break;
+        }
+
+        if (successCount > 0 && successCount === prevSuccessCount) {
+          stableRounds++;
+          if (stableRounds >= 2) {
+            console.log(`[Artifacts] Extractions stabilized at ${successCount}/${extractions.length} after ${attempt} attempts — stopping early`);
+            break;
+          }
+        } else {
+          stableRounds = 0;
+        }
+        prevSuccessCount = successCount;
       }
 
-      console.log(`[Artifacts] New tab extractions: ${Object.keys(results).map(k => `${k}=${results[k]?.length || 0}chars`).join(', ')}`);
+      const extracted = Object.keys(results);
+      const failed = extractions.filter(e => !results[e.key]).map(e => e.key);
+      console.log(`[Artifacts] New tab extractions after ${attempt} attempt(s): ${extracted.map(k => `${k}=${results[k]?.length || 0}chars`).join(', ')}${failed.length ? ` | gave up on: ${failed.join(', ')}` : ''}`);
     } catch (error) {
       console.error(`[Artifacts] New tab extraction failed for ${url}: ${error}`);
     } finally {

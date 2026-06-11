@@ -61,11 +61,11 @@ controller:
 worker:
   resources:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "1000m"
+      memory: "2Gi"
     limits:
-      cpu: "1500m"
-      memory: "1536Mi"
+      cpu: "2000m"
+      memory: "3Gi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
 teamsBot:
@@ -146,6 +146,8 @@ config:
   sentryDsn: "REPLACE_WITH_SENTRY_DSN"
   sentryEnabled: "true"
   reconcileBatchSize: "50"
+  extractTabTimeoutMs: "15000"
+  extractTabPollIntervalMs: "3000"
 
 
 # Development secrets (NEVER use in production)

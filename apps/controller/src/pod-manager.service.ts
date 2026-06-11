@@ -385,6 +385,8 @@ export class PodManagerService {
       { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
       { name: 'APP_ENV', value: process.env.APP_ENV || '' },
       { name: 'CHART_VERSION', value: process.env.CHART_VERSION || '' },
+      { name: 'EXTRACT_TAB_TIMEOUT_MS', value: process.env.EXTRACT_TAB_TIMEOUT_MS || '' },
+      { name: 'EXTRACT_TAB_POLL_INTERVAL_MS', value: process.env.EXTRACT_TAB_POLL_INTERVAL_MS || '' },
     ];
 
     // VNC mode needs DISPLAY for Xvfb; CDP mode does not
