@@ -325,6 +325,15 @@ values:
       # --- Workday ---
       - ".workday.com"
       - ".workdaycdn.com"
+      # --- Adopt platform assets + Frontegg-hosted logins (Spendflo etc.) ---
+      # These were applied via kubectl set env during the 2026-06 blank-screen
+      # incident but never persisted; every chart deploy reverted them.
+      - ".adopt.ai"
+      - ".frontegg.com"
+      - ".spendflo.com"
+      - ".googleusercontent.com"
+      # --- BeyondRisk / Adopt Bank demo VM (exact host, kept narrow) ---
+      - ".nearby-nifty.eastus2.cloudapp.azure.com"
 
   ingress:
     enabled: false
