@@ -326,8 +326,6 @@ values:
       - ".workday.com"
       - ".workdaycdn.com"
       # --- Adopt platform assets + Frontegg-hosted logins (Spendflo etc.) ---
-      # These were applied via kubectl set env during the 2026-06 blank-screen
-      # incident but never persisted; every chart deploy reverted them.
       - ".adopt.ai"
       - ".frontegg.com"
       - ".spendflo.com"
