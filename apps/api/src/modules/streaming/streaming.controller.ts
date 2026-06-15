@@ -442,6 +442,14 @@ export class CdpStreamingController {
           <div id="hitl-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5">Checking session…</div>
           <button id="resolveBtn" class="pbtn pbtn-green" disabled>Mark as Resolved</button>
         </section>
+        <section id="recording-section" class="psec" style="display:none">
+          <div style="font-size:13px;line-height:1.5">
+            <span style="color:#f87171;font-weight:600">&#9679; REC</span> &mdash; this session is being recorded.
+            Drive the browser to complete the flow, then finish to export it to NoUI.
+          </div>
+          <button id="finishRecordingBtn" class="pbtn pbtn-green">Finish &amp; export</button>
+          <div id="recording-status" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;margin-top:6px"></div>
+        </section>
         <details open>
           <summary>Clipboard</summary>
           <div class="psec">
@@ -676,6 +684,11 @@ export class CdpStreamingController {
         }
         var fromMcp = new URLSearchParams(window.location.search).get('from') === 'mcp';
         if (fromMcp) document.getElementById('hitl-section').style.display = '';
+        var recordingMode = new URLSearchParams(window.location.search).get('mode') === 'recording';
+        if (recordingMode) {
+          var recSection = document.getElementById('recording-section');
+          if (recSection) recSection.style.display = '';
+        }
 
         var currentStepIndex = null;
         var resolvedStepIndex = null;
@@ -804,6 +817,42 @@ export class CdpStreamingController {
         });
         clipInput.addEventListener('keyup', function(e) { e.stopPropagation(); });
         clipSend.addEventListener('click', sendClipboard);
+
+        // ── Recording: "Finish & export" ──────────────────────────────────────
+        var finishBtn = document.getElementById('finishRecordingBtn');
+        var recStatus = document.getElementById('recording-status');
+        if (finishBtn) {
+          finishBtn.addEventListener('click', function() {
+            if (!TOKEN) return;
+            finishBtn.disabled = true; finishBtn.textContent = 'Exporting…';
+            fetch('/vnc/' + SESSION_ID + '/recording-stop?token=' + encodeURIComponent(TOKEN), {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+            }).then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(d) {
+                if (!d) { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; return; }
+                finishBtn.textContent = 'Recording complete ✓'; finishBtn.style.background = '#16a34a';
+                recStatus.textContent = 'Captured ' + d.har_entries + ' requests and ' + d.events
+                  + ' interactions. You can return to NoUI.';
+              }).catch(function() { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; });
+          });
+        }
+
+        // ── Keep the stream token fresh (single-use token expires in ~10 min) ──
+        // The recording lives server-side in the worker pod, so refreshing the
+        // token keeps the viewer + Finish button working across the TTL boundary.
+        window.__streamToken = TOKEN;
+        function refreshToken() {
+          if (sessionTerminated || !TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/refresh-token?token=' + encodeURIComponent(TOKEN), { method: 'POST' })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(d) {
+              if (d && d.token) {
+                TOKEN = d.token; tokenExpired = false; window.__streamToken = d.token;
+                cfg.setAttribute('data-stream-token', d.token);
+              }
+            }).catch(function() {});
+        }
+        setInterval(refreshToken, 8 * 60 * 1000);
 
         poll();
         setInterval(poll, 3000);
@@ -1390,6 +1439,14 @@ export class StreamingController {
           <div id="hitl-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5">Checking session…</div>
           <button id="resolveBtn" class="pbtn pbtn-green" disabled>Mark as Resolved</button>
         </section>
+        <section id="recording-section" class="psec" style="display:none">
+          <div style="font-size:13px;line-height:1.5">
+            <span style="color:#f87171;font-weight:600">&#9679; REC</span> &mdash; this session is being recorded.
+            Drive the browser to complete the flow, then finish to export it to NoUI.
+          </div>
+          <button id="finishRecordingBtn" class="pbtn pbtn-green">Finish &amp; export</button>
+          <div id="recording-status" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;margin-top:6px"></div>
+        </section>
         <details open>
           <summary>Clipboard</summary>
           <div class="psec">
@@ -1460,6 +1517,11 @@ export class StreamingController {
         }
         var fromMcp = new URLSearchParams(window.location.search).get('from') === 'mcp';
         if (fromMcp) document.getElementById('hitl-section').style.display = '';
+        var recordingMode = new URLSearchParams(window.location.search).get('mode') === 'recording';
+        if (recordingMode) {
+          var recSection = document.getElementById('recording-section');
+          if (recSection) recSection.style.display = '';
+        }
 
         var currentStepIndex = null;
         var resolvedStepIndex = null;
@@ -1573,6 +1635,42 @@ export class StreamingController {
             }).catch(function() { setTimeout(pollForSuccessor, 3000); });
         }
 
+        // ── Recording: "Finish & export" ──────────────────────────────────────
+        var finishBtn = document.getElementById('finishRecordingBtn');
+        var recStatus = document.getElementById('recording-status');
+        if (finishBtn) {
+          finishBtn.addEventListener('click', function() {
+            if (!TOKEN) return;
+            finishBtn.disabled = true; finishBtn.textContent = 'Exporting…';
+            fetch('/vnc/' + SESSION_ID + '/recording-stop?token=' + encodeURIComponent(TOKEN), {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+            }).then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(d) {
+                if (!d) { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; return; }
+                finishBtn.textContent = 'Recording complete ✓'; finishBtn.style.background = '#16a34a';
+                recStatus.textContent = 'Captured ' + d.har_entries + ' requests and ' + d.events
+                  + ' interactions. You can return to NoUI.';
+              }).catch(function() { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; });
+          });
+        }
+
+        // ── Keep the stream token fresh (single-use token expires in ~10 min) ──
+        // The recording lives server-side in the worker pod, so refreshing the
+        // token keeps the viewer + Finish button working across the TTL boundary.
+        window.__streamToken = TOKEN;
+        function refreshToken() {
+          if (sessionTerminated || !TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/refresh-token?token=' + encodeURIComponent(TOKEN), { method: 'POST' })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(d) {
+              if (d && d.token) {
+                TOKEN = d.token; tokenExpired = false; window.__streamToken = d.token;
+                cfg.setAttribute('data-stream-token', d.token);
+              }
+            }).catch(function() {});
+        }
+        setInterval(refreshToken, 8 * 60 * 1000);
+
         poll();
         setInterval(poll, 3000);
       })();
@@ -1598,16 +1696,33 @@ export class StreamingController {
       document.getElementById('panel-config').setAttribute('data-stream-token', token);
 
       const wsUrl = proto + '://' + window.location.host + '/vnc-ws?session_id=' + encodeURIComponent(sessionId);
-      const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + token] });
-      rfb.scaleViewport = true;
-      rfb.resizeSession = true;
-      rfb.background = '#0b1020';
-      window.rfb = rfb;
+      window.__streamToken = window.__streamToken || token;
+      let reconnectAttempts = 0;
 
-      rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; });
-      rfb.addEventListener('disconnect', (e) => {
-        stateEl.textContent = 'Disconnected (' + (e.detail?.clean ? 'clean' : 'error') + ')';
-      });
+      function connectVnc() {
+        // Use the freshest token (the side-panel IIFE refreshes it before the
+        // ~10-min single-use TTL). The recording itself lives server-side in
+        // the worker pod, so reconnecting does not lose any captured evidence.
+        const activeToken = window.__streamToken || token;
+        const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + activeToken] });
+        rfb.scaleViewport = true;
+        rfb.resizeSession = true;
+        rfb.background = '#0b1020';
+        window.rfb = rfb;
+
+        rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; reconnectAttempts = 0; });
+        rfb.addEventListener('disconnect', (e) => {
+          const clean = e.detail && e.detail.clean;
+          if (!clean && reconnectAttempts < 5) {
+            reconnectAttempts++;
+            stateEl.textContent = 'Reconnecting…';
+            setTimeout(connectVnc, 1500);
+          } else {
+            stateEl.textContent = 'Disconnected (' + (clean ? 'clean' : 'error') + ')';
+          }
+        });
+      }
+      connectVnc();
 
       // Side panel clipboard: paste text → sends to VNC remote clipboard → user Ctrl+V inside VNC
       const clipInput = document.getElementById('clip-input');
