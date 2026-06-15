@@ -982,6 +982,23 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
 
       expect(envelope.profile_id).toBe('salesforce-standard');
     });
+
+    it('should bypass allowed_profiles check when unrestrictedProfiles is true', async () => {
+      const { service, profileRepo, sessionRepo } = buildService();
+      profileRepo.find.mockResolvedValueOnce([TEST_PROFILE]);
+      sessionRepo.findOne.mockResolvedValueOnce(TEST_SESSION);
+
+      const envelope = await service.requestCredentials({
+        tenantId: TEST_TENANT,
+        profileId: 'salesforce-standard',
+        requestId: 'req-1',
+        role: 'Agent',
+        allowedProfiles: [],
+        unrestrictedProfiles: true,
+      });
+
+      expect(envelope.profile_id).toBe('salesforce-standard');
+    });
   });
 
   // =========================================================================

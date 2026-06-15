@@ -17,6 +17,7 @@ export interface JwtPayload {
   service_client_id?: string;
   agent_client_id?: string;
   allowed_profiles?: string[];
+  unrestricted_profiles?: boolean;
   owner_user_id?: string;   // external user ID for per-user session isolation
   idp_id?: string;          // identity provider that federated this token
   exp?: number;       // expiration timestamp (set by JWT library)
@@ -189,6 +190,7 @@ export class AuthService {
       token_type: 'agent',
       agent_client_id: client.client_id,
       allowed_profiles: client.allowed_profiles,
+      unrestricted_profiles: client.unrestricted_profiles || undefined,
     };
 
     const token = this.jwtService.sign(payload, { expiresIn: ttl });
@@ -208,7 +210,8 @@ export class AuthService {
   async registerAgentClient(params: {
     name: string;
     tenant_id: string;
-    allowed_profiles: string[];
+    allowed_profiles?: string[];
+    unrestricted_profiles?: boolean;
     token_ttl_seconds?: number;
     rate_limit_per_minute?: number;
   }): Promise<{
@@ -218,6 +221,7 @@ export class AuthService {
     name: string;
     tenant_id: string;
     allowed_profiles: string[];
+    unrestricted_profiles: boolean;
     created_at: Date;
   }> {
     const { client_id, client_secret } = this.generateAgentCredentials();
@@ -228,7 +232,8 @@ export class AuthService {
       client_secret_hash: secretHash,
       name: params.name,
       tenant_id: params.tenant_id,
-      allowed_profiles: params.allowed_profiles,
+      allowed_profiles: params.allowed_profiles ?? [],
+      unrestricted_profiles: params.unrestricted_profiles ?? false,
       token_ttl_seconds: params.token_ttl_seconds ?? DEFAULTS.AGENT_TOKEN_TTL_SECONDS,
       rate_limit_per_minute: params.rate_limit_per_minute ?? DEFAULTS.AGENT_RATE_LIMIT_PER_MINUTE,
     });
@@ -242,6 +247,7 @@ export class AuthService {
       name: saved.name,
       tenant_id: saved.tenant_id,
       allowed_profiles: saved.allowed_profiles,
+      unrestricted_profiles: saved.unrestricted_profiles,
       created_at: saved.created_at,
     };
   }

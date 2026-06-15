@@ -1,7 +1,8 @@
 import { Injectable, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { AppTemplateEntity, ApplicationEntity } from '../../entities';
+import { DataSource, Repository } from 'typeorm';
+import { ProfileVersionState } from '@browser-hitl/shared';
+import { AppTemplateEntity, ApplicationEntity, ServiceProfileEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 
 @Injectable()
@@ -13,6 +14,9 @@ export class AppTemplatesService {
     private readonly templateRepo: Repository<AppTemplateEntity>,
     @InjectRepository(ApplicationEntity)
     private readonly appRepo: Repository<ApplicationEntity>,
+    @InjectRepository(ServiceProfileEntity)
+    private readonly profileRepo: Repository<ServiceProfileEntity>,
+    private readonly dataSource: DataSource,
     private readonly auditService: AuditService,
   ) {}
 
@@ -73,9 +77,11 @@ export class AppTemplatesService {
       payload: { template_id: id },
     });
 
-    const propagated = await this.propagateToLinkedApps(saved);
-    if (propagated > 0) {
-      this.logger.log(`Propagated template "${saved.name}" changes to ${propagated} linked app(s)`);
+    const { apps: propagatedApps, profiles: propagatedProfiles } = await this.propagateToLinkedApps(saved);
+    if (propagatedApps > 0 || propagatedProfiles > 0) {
+      this.logger.log(
+        `Propagated template "${saved.name}" changes to ${propagatedApps} linked app(s), ${propagatedProfiles} profile(s)`,
+      );
     }
 
     return saved;
@@ -86,10 +92,45 @@ export class AppTemplatesService {
     'export_policy', 'notification_config', 'execute_enabled',
   ] as const;
 
-  private async propagateToLinkedApps(template: AppTemplateEntity): Promise<number> {
+  /** Bump minor version, reset patch. e.g. "1.0.0" → "1.1.0", "2.5.3" → "2.6.0" */
+  private bumpMinorVersion(version: string): string {
+    const parts = version.split('.');
+    const major = parseInt(parts[0] ?? '1', 10);
+    const minor = parseInt(parts[1] ?? '0', 10);
+    return `${major}.${minor + 1}.0`;
+  }
+
+  /** Deterministic JSON.stringify that sorts object keys recursively (JSONB key order is not stable across round-trips). */
+  private static stableStringify(value: unknown): string {
+    if (value === null || value === undefined) return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(v => AppTemplatesService.stableStringify(v)).join(',')}]`;
+    if (typeof value === 'object') {
+      const sorted = Object.keys(value as Record<string, unknown>).sort()
+        .map(k => `${JSON.stringify(k)}:${AppTemplatesService.stableStringify((value as Record<string, unknown>)[k])}`);
+      return `{${sorted.join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  /** Returns true if the profile's template-derived fields differ from what the template would produce. */
+  private profileNeedsUpdate(profile: ServiceProfileEntity, template: AppTemplateEntity): boolean {
+    const exportPolicy = (template.export_policy as any) ?? {};
+    const templateCredentialTypes = exportPolicy.credential_types ?? {};
+    const templateTargetDomains = exportPolicy.target_domains ?? [];
+    const s = AppTemplatesService.stableStringify;
+
+    return (
+      s(profile.login_config) !== s(template.login_config) ||
+      s(profile.credential_types) !== s(templateCredentialTypes) ||
+      s(profile.target_domains) !== s(templateTargetDomains)
+    );
+  }
+
+  private async propagateToLinkedApps(template: AppTemplateEntity): Promise<{ apps: number; profiles: number }> {
     const CHUNK_SIZE = 50;
     let offset = 0;
-    let total = 0;
+    let totalApps = 0;
+    let totalProfiles = 0;
 
     while (true) {
       const apps = await this.appRepo.find({
@@ -107,21 +148,77 @@ export class AppTemplatesService {
 
       for (const app of apps) {
         await this.appRepo.update(app.id, payload);
-        total++;
+        totalApps++;
+
+        const activeProfiles = await this.profileRepo.find({
+          where: { app_id: app.id, version_state: ProfileVersionState.ACTIVE },
+        });
+
+        for (const profile of activeProfiles) {
+          if (!this.profileNeedsUpdate(profile, template)) {
+            continue;
+          }
+
+          const exportPolicy = (template.export_policy as any) ?? {};
+          const newVersion = this.bumpMinorVersion(profile.version);
+
+          await this.dataSource.transaction(async (manager) => {
+            await manager.update(ServiceProfileEntity, { id: profile.id }, {
+              version_state: ProfileVersionState.RETIRED,
+            });
+
+            await manager.save(ServiceProfileEntity, {
+              tenant_id: profile.tenant_id,
+              app_id: profile.app_id,
+              profile_id: profile.profile_id,
+              version: newVersion,
+              version_state: ProfileVersionState.ACTIVE,
+              parent_version_id: profile.id,
+              login_config: template.login_config,
+              credential_types: exportPolicy.credential_types ?? {},
+              target_domains: exportPolicy.target_domains ?? [],
+              owner_user_id: profile.owner_user_id,
+              login_concurrency_limit: profile.login_concurrency_limit,
+              extra_config: profile.extra_config,
+              promoted_at: new Date(),
+            });
+          });
+
+          this.logger.log(
+            `Profile propagated: ${profile.profile_id} ${profile.version} → ${newVersion} (app ${app.id})`,
+          );
+
+          await this.auditService.log({
+            tenant_id: profile.tenant_id,
+            actor_type: 'system',
+            actor_id: template.id,
+            event_type: 'profile.propagated',
+            payload: {
+              entity_id: profile.id,
+              app_id: app.id,
+              profile_id: profile.profile_id,
+              from_version: profile.version,
+              to_version: newVersion,
+              template_id: template.id,
+            },
+          });
+
+          totalProfiles++;
+        }
       }
 
       offset += apps.length;
       if (apps.length < CHUNK_SIZE) break;
     }
-    return total;
+    return { apps: totalApps, profiles: totalProfiles };
   }
 
-  async remove(tenantId: string, id: string, actorId: string) {
+  async remove(tenantId: string | undefined, id: string, actorId: string) {
     const template = await this.findOne(tenantId, id);
     await this.templateRepo.remove(template);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: template.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app_template.deleted',

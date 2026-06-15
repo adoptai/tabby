@@ -35,7 +35,102 @@ import { JwtAuthGuard } from '../../common/guards/roles.guard';
 import { parseCookie } from '../../common/utils/cookie';
 
 /** Module-level constant — avoids repeating the env-read inline everywhere. */
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'http://localhost:18080').replace(/\/+$/, '');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve the email the gate should match for a session owner.
+ *
+ * owner_user_id is a users.id uuid for password/OAuth users, but
+ * agent_assertion token-exchange stores the raw federated identity —
+ * typically an email — and never provisions a users row. Querying
+ * users.id (uuid column) with an email throws a Postgres cast error,
+ * so only uuid-shaped owners hit the table; email-shaped owners match
+ * directly.
+ */
+async function resolveOwnerEmail(
+  userRepo: Repository<UserEntity>,
+  ownerUserId: string,
+): Promise<string | null> {
+  if (UUID_RE.test(ownerUserId)) {
+    const ownerUser = await userRepo.findOne({ where: { id: ownerUserId } });
+    return ownerUser?.email?.toLowerCase() ?? null;
+  }
+  if (ownerUserId.includes('@')) {
+    return ownerUserId.toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * Does a verified stream token prove the viewer IS the session owner?
+ *
+ * Stream tokens minted through the owner's own authenticated call (e.g.
+ * POST /sessions/:id/short-link with a user-scoped token-exchange JWT)
+ * carry that caller's identity as `user_id`, prefixed `federated:` for
+ * token-exchange users. When it matches the session owner, the OAuth /
+ * email gate adds nothing — the token already proves the same identity
+ * the gate would ask for — so the viewer cookie is minted directly.
+ * Tokens minted by other consumers (e.g. `agent:{profile}` from
+ * session-status) do NOT match and still go through the gate.
+ */
+function streamTokenProvesOwner(tokenUserId: string | undefined, ownerUserId: string): boolean {
+  if (!tokenUserId) return false;
+  const normalized = tokenUserId.replace(/^federated:/, '').toLowerCase();
+  return normalized === ownerUserId.toLowerCase();
+}
+
+/**
+ * Cookie-minting body shared by both viewers' POST :sessionId/verify-token.
+ *
+ * The stream token travels in the URL FRAGMENT (M-4: never sent to the
+ * server), so the page GET cannot auto-pass the gate — the gate page's
+ * script posts the fragment token here instead. When the token was minted
+ * by the session owner's own authenticated call, it proves the identity
+ * the email gate would ask for, so the viewer cookie is set without
+ * prompting. Any mismatch falls back to the manual gate (403).
+ */
+async function verifyStreamTokenForOwner(
+  streamTokenService: StreamTokenService,
+  sessionRepo: Repository<SessionEntity>,
+  jwtService: JwtService,
+  sessionId: string,
+  token: string | undefined,
+  res: Response,
+): Promise<{ status: string }> {
+  const denyMsg = 'Access denied';
+  if (!token) throw new BadRequestException('token is required');
+
+  const result = streamTokenService.verifyToken(token);
+  if (!result.valid || result.payload.session_id !== sessionId) {
+    throw new ForbiddenException(denyMsg);
+  }
+
+  const session = await sessionRepo.findOne({ where: { id: sessionId } });
+  if (!session || !session.owner_user_id) throw new ForbiddenException(denyMsg);
+  if (!streamTokenProvesOwner(result.payload.user_id, session.owner_user_id)) {
+    throw new ForbiddenException(denyMsg);
+  }
+
+  const vncToken = jwtService.sign({
+    sub: session.owner_user_id,
+    tenant_id: session.tenant_id,
+    type: 'vnc_access',
+    owner_user_id: session.owner_user_id,
+    jti: randomUUID(),
+  }, { expiresIn: 3600 });
+  const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
+  res.cookie('tabby_vnc', vncToken, {
+    httpOnly: true,
+    secure: isHttps,
+    sameSite: 'lax',
+    maxAge: 3600 * 1000,
+    path: '/',
+  });
+
+  return { status: 'ok' };
+}
 
 /**
  * Redirect to OAuth login (or email gate fallback) when a valid tabby_vnc cookie is absent.
@@ -66,12 +161,28 @@ async function redirectToAuth(
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.setHeader('cache-control', 'no-store');
     const escapedId = JSON.stringify(sessionId);
+    const escapedPrefix = JSON.stringify(prefix);
+    // The fragment token (M-4: client-only) may already prove session ownership
+    // — a token minted by the owner's own authenticated short-link call. Try
+    // verify-token first: on success it mints the viewer cookie and we reload
+    // into the stream, skipping the IdP round-trip entirely (and the tenant
+    // resolution it depends on). Only fall through to OAuth when the token is
+    // absent or not owner-proving (e.g. agent:{profile} consumer tokens).
     const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
 var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
 var t=new URLSearchParams(h).get('token')||'';
-var p=new URLSearchParams({post_login:'/${prefix}/'+${escapedId}});
-if(t)p.set('stream_token',t);
-window.location.href='${oauthLoginUrl}?'+p.toString();
+var PREFIX=${escapedPrefix};
+var SID=${escapedId};
+function toOauth(){
+  var p=new URLSearchParams({post_login:'/'+PREFIX+'/'+SID});
+  if(t)p.set('stream_token',t);
+  window.location.href='${oauthLoginUrl}?'+p.toString();
+}
+if(t){
+  fetch('/'+PREFIX+'/'+SID+'/verify-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t}),credentials:'same-origin'})
+    .then(function(r){ if(r.ok){ window.location.href='/'+PREFIX+'/'+SID+(t?'?token='+encodeURIComponent(t):''); } else { toOauth(); } })
+    .catch(toOauth);
+}else{ toOauth(); }
 </script></body></html>`;
     res.status(200).send(bridge);
     return;
@@ -120,11 +231,38 @@ function renderEmailGatePage(sessionId: string, token: string | undefined, prefi
     </div>
     <script>
       var SESSION_ID = ${JSON.stringify(sessionId)};
+      var GATE_PREFIX = ${JSON.stringify(prefix)};
       var STREAM_TOKEN = ${JSON.stringify(token ?? '')};
       // Also check URL fragment for stream token (server never sees #fragment)
       if (!STREAM_TOKEN) {
         var h = window.location.hash.charAt(0) === '#' ? window.location.hash.slice(1) : window.location.hash;
         STREAM_TOKEN = new URLSearchParams(h).get('token') || '';
+      }
+
+      // A stream token minted by the session owner's own authenticated call
+      // proves the identity this gate would ask for — try it first and only
+      // show the email form when the server rejects it.
+      if (STREAM_TOKEN) {
+        document.getElementById('msg').style.color = '#94a3b8';
+        document.getElementById('msg').textContent = 'Verifying access…';
+        fetch('/' + GATE_PREFIX + '/' + SESSION_ID + '/verify-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: STREAM_TOKEN }),
+          credentials: 'same-origin',
+        })
+          .then(function(r) {
+            if (r.ok) {
+              window.location.reload();
+            } else {
+              document.getElementById('msg').style.color = '';
+              document.getElementById('msg').textContent = '';
+            }
+          })
+          .catch(function() {
+            document.getElementById('msg').style.color = '';
+            document.getElementById('msg').textContent = '';
+          });
       }
 
       document.getElementById('submitBtn').addEventListener('click', verify);
@@ -219,21 +357,18 @@ export class ShortLinkController {
         }
       }
 
-      // No valid cookie: redirect to OAuth login with post_login set to this short-link.
-      // No fallback to the bootstrap-admin tenant — each tenant must configure its own IdP.
-      if (session) {
-        const idp = await this.idpRepo.findOne({
-          where: { enabled: true, auth_url: Not(IsNull()) },
-        });
-        if (idp) {
-          const postLogin = `/s/${shortId}`;
-          res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?post_login=${encodeURIComponent(postLogin)}`);
-          return;
-        }
-      }
+      // No valid cookie: redirect to the stored viewer URL (which carries the
+      // #token fragment) rather than jumping straight to the IdP. The viewer's
+      // openStream → bridge page attempts verify-token first, so an owner-minted
+      // stream token (e.g. from the harness's own short-link call) auto-passes
+      // without an OAuth round-trip, and only non-owner-proving tokens fall
+      // through to the IdP. Previously this branch went directly to OAuth, which
+      // never exposed the fragment token to the client and so defeated the
+      // auto-pass — forcing OAuth (and its tenant resolution) even for the owner.
     }
 
-    // No session context or no OAuth configured: redirect directly
+    // No valid cookie, no session context, or no OAuth configured: redirect to
+    // the stored viewer URL and let the viewer page resolve auth.
     res.redirect(302, url);
   }
 }
@@ -295,11 +430,14 @@ export class CdpStreamingController {
     if (!session) throw new ForbiddenException(denyMsg);
     if (!session.owner_user_id) throw new ForbiddenException(denyMsg);
 
-    const ownerUser = await this.userRepo.findOne({ where: { id: session.owner_user_id } });
-    if (!ownerUser || ownerUser.email?.toLowerCase() !== email) throw new ForbiddenException(denyMsg);
+    // agent_assertion sessions carry the federated identity (often an email)
+    // in owner_user_id; users.id is a uuid, so querying it with that value
+    // throws a Postgres cast error. Match email-form owners directly.
+    const ownerEmail = await resolveOwnerEmail(this.userRepo, session.owner_user_id);
+    if (!ownerEmail || ownerEmail !== email) throw new ForbiddenException(denyMsg);
 
     const vncToken = this.jwtService.sign({
-      sub: ownerUser.id,
+      sub: session.owner_user_id,
       tenant_id: session.tenant_id,
       type: 'vnc_access',
       owner_user_id: session.owner_user_id,
@@ -318,6 +456,19 @@ export class CdpStreamingController {
     return { status: 'ok' };
   }
 
+  @Post(':sessionId/verify-token')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @HttpCode(200)
+  async verifyCdpToken(
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Body() body: { token?: string },
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ status: string }> {
+    return verifyStreamTokenForOwner(
+      this.streamTokenService, this.sessionRepo, this.jwtService, sessionId, body?.token, res,
+    );
+  }
+
   @SkipThrottle()
   @Get(':sessionId')
   async openStream(
@@ -326,10 +477,12 @@ export class CdpStreamingController {
     @Res() res: Response,
     @Query('token') token?: string,
   ): Promise<void> {
+    let tokenUserId: string | undefined;
     if (token) {
       const result = this.streamTokenService.verifyToken(token);
       if (!result.valid) throw new UnauthorizedException(result.reason);
       if (result.payload.session_id !== sessionId) throw new UnauthorizedException('Token is not valid for this session');
+      tokenUserId = result.payload.user_id;
     }
 
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
@@ -337,7 +490,25 @@ export class CdpStreamingController {
     if (session.state === 'TERMINATED') throw new BadRequestException('Cannot open stream for TERMINATED session');
 
     // ── Auth gate (same pattern as VNC) ─────────────────────────────────────
-    if (session.owner_user_id) {
+    if (session.owner_user_id && streamTokenProvesOwner(tokenUserId, session.owner_user_id)) {
+      // Token already proves the owner's identity — mint the viewer cookie
+      // directly (the /cdp-ws upgrade requires it) and skip the gate.
+      const vncToken = this.jwtService.sign({
+        sub: session.owner_user_id,
+        tenant_id: session.tenant_id,
+        type: 'vnc_access',
+        owner_user_id: session.owner_user_id,
+        jti: randomUUID(),
+      }, { expiresIn: 3600 });
+      const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
+      res.cookie('tabby_vnc', vncToken, {
+        httpOnly: true,
+        secure: isHttps,
+        sameSite: 'lax',
+        maxAge: 3600 * 1000,
+        path: '/',
+      });
+    } else if (session.owner_user_id) {
       const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
 
       if (!cookieToken) {
@@ -608,6 +779,24 @@ export class CdpStreamingController {
         'F6':117,'F7':118,'F8':119,'F9':120,'F10':121,'F11':122,'F12':123,
       };
 
+      // VK_OEM_* codes for punctuation. charCodeAt would collide with control
+      // VKs — '.'(46) is VK_DELETE, '-'(45) is VK_INSERT, ','(44) — so the
+      // remote browser executed Delete/Insert instead of typing the char.
+      var PUNCT_VK = {
+        ';':186,'=':187,',':188,'-':189,'.':190,'/':191,'\`':192,
+        '[':219,'\\\\':220,']':221,"'":222,
+        ':':186,'+':187,'<':188,'_':189,'>':190,'?':191,'~':192,
+        '{':219,'|':220,'}':221,'"':222,
+      };
+
+      function vkForKey(key) {
+        if (key.length !== 1) return KEY_VK[key] || 0;
+        var c = key.toUpperCase();
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return c.charCodeAt(0);
+        // Unknown printable char: vk 0 is safe — the text param still types it.
+        return PUNCT_VK[key] || 0;
+      }
+
       function sendKey(type, e) {
         if (!ws || ws.readyState !== 1) return;
         // Never send keys while an input inside the side panel is focused
@@ -632,7 +821,7 @@ export class CdpStreamingController {
         }
 
         if (onCanvas) e.preventDefault();
-        var vk = e.key.length === 1 ? e.key.toUpperCase().charCodeAt(0) : (KEY_VK[e.key] || 0);
+        var vk = vkForKey(e.key);
         ws.send(JSON.stringify({
           id: cmdId++,
           method: 'Input.dispatchKeyEvent',
@@ -1150,13 +1339,16 @@ export class StreamingController {
     if (!session) throw new ForbiddenException(denyMsg);
     if (!session.owner_user_id) throw new ForbiddenException(denyMsg);
 
-    const ownerUser = await this.userRepo.findOne({ where: { id: session.owner_user_id } });
-    if (!ownerUser || ownerUser.email?.toLowerCase() !== email) {
+    // agent_assertion sessions carry the federated identity (often an email)
+    // in owner_user_id; users.id is a uuid, so querying it with that value
+    // throws a Postgres cast error. Match email-form owners directly.
+    const ownerEmail = await resolveOwnerEmail(this.userRepo, session.owner_user_id);
+    if (!ownerEmail || ownerEmail !== email) {
       throw new ForbiddenException(denyMsg);
     }
 
     const vncPayload = {
-      sub: ownerUser.id,
+      sub: session.owner_user_id,
       tenant_id: session.tenant_id,
       type: 'vnc_access',
       owner_user_id: session.owner_user_id,
@@ -1333,6 +1525,19 @@ export class StreamingController {
     return { session_id: newSession.id, url };
   }
 
+  @Post(':sessionId/verify-token')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @HttpCode(200)
+  async verifyVncToken(
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Body() body: { token?: string },
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ status: string }> {
+    return verifyStreamTokenForOwner(
+      this.streamTokenService, this.sessionRepo, this.jwtService, sessionId, body?.token, res,
+    );
+  }
+
   @SkipThrottle()
   @Get(':sessionId')
   async openStream(
@@ -1341,6 +1546,7 @@ export class StreamingController {
     @Res() res: Response,
     @Query('token') token?: string,
   ): Promise<void> {
+    let tokenUserId: string | undefined;
     if (token) {
       const result = this.streamTokenService.verifyToken(token);
       if (!result.valid) {
@@ -1349,6 +1555,7 @@ export class StreamingController {
       if (result.payload.session_id !== sessionId) {
         throw new UnauthorizedException('Token is not valid for this session');
       }
+      tokenUserId = result.payload.user_id;
     }
 
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
@@ -1360,7 +1567,25 @@ export class StreamingController {
     }
 
     // ── Auth gate ──────────────────────────────────────────────────────────
-    if (session.owner_user_id) {
+    if (session.owner_user_id && streamTokenProvesOwner(tokenUserId, session.owner_user_id)) {
+      // Token already proves the owner's identity — mint the viewer cookie
+      // directly (the /vnc-ws upgrade requires it) and skip the gate.
+      const vncToken = this.jwtService.sign({
+        sub: session.owner_user_id,
+        tenant_id: session.tenant_id,
+        type: 'vnc_access',
+        owner_user_id: session.owner_user_id,
+        jti: randomUUID(),
+      }, { expiresIn: 3600 });
+      const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
+      res.cookie('tabby_vnc', vncToken, {
+        httpOnly: true,
+        secure: isHttps,
+        sameSite: 'lax',
+        maxAge: 3600 * 1000,
+        path: '/',
+      });
+    } else if (session.owner_user_id) {
       const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
 
       if (!cookieToken) {
@@ -1718,48 +1943,16 @@ export class StreamingController {
       document.getElementById('panel-config').setAttribute('data-stream-token', token);
 
       const wsUrl = proto + '://' + window.location.host + '/vnc-ws?session_id=' + encodeURIComponent(sessionId);
-      window.__streamToken = window.__streamToken || token;
-      let reconnectAttempts = 0;
+      const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + token] });
+      rfb.scaleViewport = true;
+      rfb.resizeSession = true;
+      rfb.background = '#0b1020';
+      window.rfb = rfb;
 
-      async function mintFreshToken() {
-        // Stream tokens are SINGLE-USE (consumed at WS connect). Mint a fresh one
-        // before every connect — including reloads and reconnects — so we never
-        // reuse a consumed token (which 401s). refresh-token uses verifyToken,
-        // which accepts the current token while its JWT is unexpired even if it
-        // was already consumed. The recording lives server-side, so reconnecting
-        // loses nothing.
-        const cur = window.__streamToken || token;
-        try {
-          const r = await fetch('/vnc/' + sessionId + '/refresh-token?token=' + encodeURIComponent(cur), { method: 'POST' });
-          if (r.ok) {
-            const d = await r.json();
-            if (d && d.token) { window.__streamToken = d.token; return d.token; }
-          }
-        } catch (e) { /* fall back to current token */ }
-        return cur;
-      }
-
-      async function connectVnc() {
-        const activeToken = await mintFreshToken();
-        const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + activeToken] });
-        rfb.scaleViewport = true;
-        rfb.resizeSession = true;
-        rfb.background = '#0b1020';
-        window.rfb = rfb;
-
-        rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; reconnectAttempts = 0; });
-        rfb.addEventListener('disconnect', (e) => {
-          const clean = e.detail && e.detail.clean;
-          if (!clean && reconnectAttempts < 5) {
-            reconnectAttempts++;
-            stateEl.textContent = 'Reconnecting…';
-            setTimeout(connectVnc, 1500);
-          } else {
-            stateEl.textContent = 'Disconnected (' + (clean ? 'clean' : 'error') + ')';
-          }
-        });
-      }
-      connectVnc();
+      rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; });
+      rfb.addEventListener('disconnect', (e) => {
+        stateEl.textContent = 'Disconnected (' + (e.detail?.clean ? 'clean' : 'error') + ')';
+      });
 
       // Side panel clipboard: paste text → sends to VNC remote clipboard → user Ctrl+V inside VNC
       const clipInput = document.getElementById('clip-input');
