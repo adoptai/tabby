@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Delete,
   ForbiddenException,
@@ -23,6 +24,7 @@ import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { SessionEntity, ApplicationEntity, InterventionEntity, IdentityProviderEntity, UserEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
+import { RecordingStore } from '../recording/recording.store';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, randomBytes } from 'crypto';
@@ -821,6 +823,7 @@ export class StreamingController {
 
   constructor(
     private readonly streamTokenService: StreamTokenService,
+    private readonly recordingStore: RecordingStore,
     private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
@@ -978,6 +981,73 @@ export class StreamingController {
     await this.streamTokenService.writeHumanInput(sessionId, stepIndex, inputType, value);
 
     return { status: 'delivered' };
+  }
+
+  /**
+   * "Finish & export" button in the recording viewer. Stream-token-authed.
+   * Drains the recording bundle from the worker (synchronous flush) and
+   * persists it encrypted for NoUI to pull via GET /recording/sessions/:id/bundle.
+   */
+  @Post(':sessionId/recording-stop')
+  @HttpCode(200)
+  async stopRecording(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ status: 'stopped'; har_entries: number; events: number; url_events: number }> {
+    if (!token) {
+      throw new UnauthorizedException('Missing stream token');
+    }
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) {
+      throw new UnauthorizedException(result.reason);
+    }
+    if (result.payload.session_id !== sessionId) {
+      throw new UnauthorizedException('Token is not valid for this session');
+    }
+
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+    if (!session.pod_name) {
+      throw new ConflictException('Session has no active worker pod');
+    }
+
+    const bundle = await this.recordingStore.drainFromWorker(session.pod_name, sessionId);
+    await this.recordingStore.persist(session.tenant_id, sessionId, bundle);
+
+    return {
+      status: 'stopped',
+      har_entries: bundle.har?.log?.entries?.length ?? 0,
+      events: bundle.click_events?.length ?? 0,
+      url_events: bundle.url_events?.length ?? 0,
+    };
+  }
+
+  /**
+   * Re-mint a fresh stream token for an in-progress recording so the viewer
+   * survives past the 10-minute single-use token TTL without losing the
+   * server-side recording (which lives in the worker pod, not the connection).
+   */
+  @Post(':sessionId/refresh-token')
+  @HttpCode(200)
+  async refreshStreamToken(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ token: string; expires_at: string }> {
+    if (!token) {
+      throw new UnauthorizedException('Missing stream token');
+    }
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) {
+      throw new UnauthorizedException(result.reason);
+    }
+    if (result.payload.session_id !== sessionId) {
+      throw new UnauthorizedException('Token is not valid for this session');
+    }
+
+    const fresh = await this.streamTokenService.generateToken(sessionId, result.payload.user_id);
+    return { token: fresh, expires_at: new Date(Date.now() + 600 * 1000).toISOString() };
   }
 
   /**
