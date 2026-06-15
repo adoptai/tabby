@@ -183,6 +183,10 @@ async function main() {
 
     const page = await context.newPage();
 
+    // Recording sessions are human-VNC-only — disable execute before wiring the
+    // page so /execute/* returns 409 instead of registering handlers.
+    healthServer.setRecordingMode(Boolean(recordingMode));
+
     // Register execute endpoint on the health server
     healthServer.setPage(page);
 

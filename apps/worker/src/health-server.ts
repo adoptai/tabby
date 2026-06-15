@@ -22,8 +22,18 @@ export class HealthServer {
   private page: Page | null = null;
   private healthy = true;
   private recordingRunner: RecordingRunner | null = null;
+  private recording = false;
 
   constructor(private readonly sessionId: string) {}
+
+  /**
+   * Mark this worker as a recording session. Must be called before setPage().
+   * Disables the execute endpoints (a recording session is human-VNC-only;
+   * concurrent /execute commands would corrupt the capture).
+   */
+  setRecordingMode(recording: boolean): void {
+    this.recording = recording;
+  }
 
   /**
    * Register the recording runner so POST /recording/stop can drain it.
@@ -40,7 +50,16 @@ export class HealthServer {
    */
   setPage(page: Page): void {
     this.page = page;
-    if (this.app && process.env.EXECUTE_ENABLED === 'true') {
+    if (!this.app) return;
+    if (this.recording) {
+      // Reject any execute traffic on recording sessions (one active consumer).
+      this.app.use('/execute', (_req, res) =>
+        res.status(409).json({ success: false, error: 'Execute is disabled during recording sessions' }),
+      );
+      console.log('Recording mode: /execute/* disabled (409)');
+      return;
+    }
+    if (process.env.EXECUTE_ENABLED === 'true') {
       this.app.use('/execute', executeAuthMiddleware);
       registerExecuteHandler(this.app, page);
       registerBrowserHandler(this.app, page);

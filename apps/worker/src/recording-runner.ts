@@ -7,6 +7,7 @@ import type {
 } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, cleanupHarListeners } from './har-capture';
 import { RECORD_BINDING, domRecorderScript } from './dom-recorder.injected';
+import { sanitizeHar } from './har-sanitizer';
 
 /**
  * Drives server-side capture for a human-operated VNC recording session:
@@ -80,9 +81,20 @@ export class RecordingRunner {
     const harResult = stopHarCapture(this.page);
     this.detach();
 
-    const har = harResult.har ?? {
+    const rawHar = harResult.har ?? {
       log: { version: '1.2', creator: { name: 'tabby-recording', version: '1.0' }, entries: [] },
     };
+
+    // Compliance: scrub credential material from HAR request bodies IN-POD,
+    // before the bundle crosses the drain boundary. Cross-reference the field
+    // names the DOM recorder flagged as password/otp.
+    const sensitiveNames = new Set<string>();
+    for (const ev of this.events) {
+      if (ev.is_redacted || ev.field_role === 'password' || ev.field_role === 'otp') {
+        if (ev.field_name) sensitiveNames.add(ev.field_name);
+      }
+    }
+    const har = sanitizeHar(rawHar, sensitiveNames);
 
     console.log(
       `[Recording] drained: session=${this.sessionId}, ` +
