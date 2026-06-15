@@ -77,10 +77,21 @@ export class RecordingProvisionController {
       {
         name: `recording-${mode}-${shortId}`,
         target_urls: [startUrl],
-        login_config: { login_url: startUrl, credential_ref: 'manual:', steps: [] },
-        keepalive_config: { interval_seconds: 60, actions: [], health_checks: [] },
+        // The worker SKIPS login DSL + keepalive actions in recording mode
+        // (main.ts), so these are never executed — but the app DTO requires
+        // non-empty arrays, so we provide minimal valid placeholders.
+        login_config: {
+          login_url: startUrl,
+          credential_ref: 'manual:',
+          steps: [{ action: 'goto', url: startUrl }],
+        },
+        keepalive_config: {
+          interval_seconds: 60,
+          actions: [],
+          health_checks: [{ type: 'dom_check', selector: 'body', exists: true }],
+        },
         export_policy: {
-          artifact_types: [],
+          artifact_types: ['cookies'],
           encryption: { algo: 'AES-256-GCM', key_version: 'v1' },
           ttl_seconds: 300,
         },

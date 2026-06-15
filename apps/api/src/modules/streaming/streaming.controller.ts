@@ -30,7 +30,7 @@ import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, randomBytes } from 'crypto';
 import { Not, IsNull, MoreThan } from 'typeorm';
-import { Throttle } from '@nestjs/throttler';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/roles.guard';
 import { parseCookie } from '../../common/utils/cookie';
 
@@ -318,6 +318,7 @@ export class CdpStreamingController {
     return { status: 'ok' };
   }
 
+  @SkipThrottle()
   @Get(':sessionId')
   async openStream(
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
@@ -888,6 +889,7 @@ export class StreamingController {
     private readonly userRepo: Repository<UserEntity>,
   ) {}
 
+  @SkipThrottle()
   @Get('assets/*')
   async getNoVncAsset(@Req() req: Request, @Res() res: Response): Promise<void> {
     const rawAssetPath = (req.params as Record<string, string | undefined>)['0'] || 'rfb.js';
@@ -1039,6 +1041,7 @@ export class StreamingController {
    * Drains the recording bundle from the worker (synchronous flush) and
    * persists it encrypted for NoUI to pull via GET /recording/sessions/:id/bundle.
    */
+  @SkipThrottle()
   @Post(':sessionId/recording-stop')
   @HttpCode(200)
   async stopRecording(
@@ -1094,6 +1097,7 @@ export class StreamingController {
    * survives past the 10-minute single-use token TTL without losing the
    * server-side recording (which lives in the worker pod, not the connection).
    */
+  @SkipThrottle()
   @Post(':sessionId/refresh-token')
   @HttpCode(200)
   async refreshStreamToken(
@@ -1180,6 +1184,7 @@ export class StreamingController {
    * Returns session state, HITL info, and diagnostic counters in one call.
    * Authenticated via stream token (same as hitl-state).
    */
+  @SkipThrottle()
   @Get(':sessionId/panel-state')
   async getPanelState(
     @Param('sessionId') sessionId: string,
@@ -1328,6 +1333,7 @@ export class StreamingController {
     return { session_id: newSession.id, url };
   }
 
+  @SkipThrottle()
   @Get(':sessionId')
   async openStream(
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
@@ -1715,11 +1721,26 @@ export class StreamingController {
       window.__streamToken = window.__streamToken || token;
       let reconnectAttempts = 0;
 
-      function connectVnc() {
-        // Use the freshest token (the side-panel IIFE refreshes it before the
-        // ~10-min single-use TTL). The recording itself lives server-side in
-        // the worker pod, so reconnecting does not lose any captured evidence.
-        const activeToken = window.__streamToken || token;
+      async function mintFreshToken() {
+        // Stream tokens are SINGLE-USE (consumed at WS connect). Mint a fresh one
+        // before every connect — including reloads and reconnects — so we never
+        // reuse a consumed token (which 401s). refresh-token uses verifyToken,
+        // which accepts the current token while its JWT is unexpired even if it
+        // was already consumed. The recording lives server-side, so reconnecting
+        // loses nothing.
+        const cur = window.__streamToken || token;
+        try {
+          const r = await fetch('/vnc/' + sessionId + '/refresh-token?token=' + encodeURIComponent(cur), { method: 'POST' });
+          if (r.ok) {
+            const d = await r.json();
+            if (d && d.token) { window.__streamToken = d.token; return d.token; }
+          }
+        } catch (e) { /* fall back to current token */ }
+        return cur;
+      }
+
+      async function connectVnc() {
+        const activeToken = await mintFreshToken();
         const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + activeToken] });
         rfb.scaleViewport = true;
         rfb.resizeSession = true;
