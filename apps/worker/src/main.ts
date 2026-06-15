@@ -234,8 +234,10 @@ async function main() {
       await recordingRunner.start();
       healthServer.setRecordingRunner(recordingRunner);
 
-      const startUrl = (process.env.RECORDING_START_URL || '').trim();
-      if (startUrl) {
+      const startUrl = (
+        process.env.RECORDING_START_URL || appConfig.login_config?.login_url || ''
+      ).trim();
+      if (startUrl && startUrl !== 'about:blank') {
         try {
           await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
         } catch (err) {

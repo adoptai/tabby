@@ -30,6 +30,7 @@ import { IdentityProvidersModule } from './modules/identity-providers/identity-p
 import { AppTemplatesModule } from './modules/app-templates/app-templates.module';
 import { ExecuteModule } from './modules/execute/execute.module';
 import { RecordingModule } from './modules/recording/recording.module';
+import { RecordingProvisionModule } from './modules/recording/recording-provision.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { RecordingModule } from './modules/recording/recording.module';
     AppTemplatesModule,
     ExecuteModule,
     RecordingModule,
+    RecordingProvisionModule,
     HealthModule,
   ],
   providers: [
