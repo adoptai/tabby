@@ -6,6 +6,7 @@ import type { Page } from 'playwright';
 import { registerExecuteHandler } from './execute-handler';
 import { registerBrowserHandler, cleanupHarListeners } from './execute-browser-handler';
 import { executeAuthMiddleware } from './execute-auth';
+import type { RecordingRunner } from './recording-runner';
 
 /**
  * Worker Health HTTP Server per spec section 15.5.
@@ -20,8 +21,17 @@ export class HealthServer {
   private app: Express | null = null;
   private page: Page | null = null;
   private healthy = true;
+  private recordingRunner: RecordingRunner | null = null;
 
   constructor(private readonly sessionId: string) {}
+
+  /**
+   * Register the recording runner so POST /recording/stop can drain it.
+   * Pod-internal route — the API is the authenticated boundary.
+   */
+  setRecordingRunner(runner: RecordingRunner): void {
+    this.recordingRunner = runner;
+  }
 
   /**
    * Register the Playwright page for execute endpoints.
@@ -39,6 +49,9 @@ export class HealthServer {
   }
 
   cleanupBeforeShutdown(): void {
+    if (this.recordingRunner) {
+      this.recordingRunner.detach();
+    }
     if (this.page) {
       cleanupHarListeners(this.page);
     }
@@ -71,6 +84,25 @@ export class HealthServer {
 
     app.post('/health/sentry-test', (_req, res) => {
       res.json({ sent: testSentry('worker'), service: 'worker' });
+    });
+
+    // Drain a VNC recording session. Synchronous: HAR + interaction + URL
+    // events are flushed before responding (no fire-and-forget race).
+    // Pod-internal only — the API authenticates the caller.
+    app.post('/recording/stop', (_req, res) => {
+      if (!this.recordingRunner) {
+        res.status(409).json({ success: false, error: 'No active recording on this session' });
+        return;
+      }
+      try {
+        const bundle = this.recordingRunner.drain();
+        this.recordingRunner = null;
+        res.json({ success: true, bundle });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`Recording drain error: ${message}`);
+        res.status(500).json({ success: false, error: message });
+      }
     });
 
     this.server = app.listen(port, () => {
