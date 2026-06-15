@@ -25,6 +25,7 @@ import { JwtService } from '@nestjs/jwt';
 import { SessionEntity, ApplicationEntity, InterventionEntity, IdentityProviderEntity, UserEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
 import { RecordingStore } from '../recording/recording.store';
+import { AppsService } from '../apps/apps.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, randomBytes } from 'crypto';
@@ -873,6 +874,7 @@ export class StreamingController {
   constructor(
     private readonly streamTokenService: StreamTokenService,
     private readonly recordingStore: RecordingStore,
+    private readonly appsService: AppsService,
     private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
@@ -1064,6 +1066,20 @@ export class StreamingController {
 
     const bundle = await this.recordingStore.drainFromWorker(session.pod_name, sessionId);
     await this.recordingStore.persist(session.tenant_id, sessionId, bundle);
+
+    // Cleanup: deactivate the (throwaway) recording app so its pod is torn down
+    // (desired_session_count -> 0). The session row + persisted bundle survive
+    // for NoUI to pull via GET /recording/sessions/:id/bundle. Best-effort —
+    // never fail the stop on a cleanup error.
+    if (session.app_id) {
+      try {
+        await this.appsService.deactivate(session.app_id, session.tenant_id, `recording:${sessionId}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`Recording cleanup (deactivate app ${session.app_id}) failed: ${msg}`);
+      }
+    }
 
     return {
       status: 'stopped',

@@ -4,6 +4,8 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { SessionEntity, ApplicationEntity, InterventionEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
+import { RecordingStore } from '../recording/recording.store';
+import { AppsService } from '../apps/apps.service';
 import { StreamingController } from './streaming.controller';
 
 function makeSession(overrides: Record<string, unknown> = {}) {
@@ -54,6 +56,8 @@ function buildModule(overrides: {
     controllers: [StreamingController],
     providers: [
       { provide: StreamTokenService, useValue: streamTokenService },
+      { provide: RecordingStore, useValue: { drainFromWorker: jest.fn(), persist: jest.fn() } },
+      { provide: AppsService, useValue: { deactivate: jest.fn() } },
       { provide: JwtService, useValue: jwtService },
       { provide: getRepositoryToken(SessionEntity), useValue: sessionRepo },
       { provide: getRepositoryToken(ApplicationEntity), useValue: appRepo },
