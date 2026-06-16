@@ -13,6 +13,8 @@ import {
 import { StreamingController, CdpStreamingController, ShortLinkController } from './streaming.controller';
 import { VncWsProxyService } from './vnc-ws-proxy.service';
 import { resolveJwtSigningKey } from '../auth/jwt-config';
+import { RecordingModule } from '../recording/recording.module';
+import { AppsModule } from '../apps/apps.module';
 
 @Module({
   imports: [
@@ -24,6 +26,8 @@ import { resolveJwtSigningKey } from '../auth/jwt-config';
       secret: resolveJwtSigningKey(),
       signOptions: { expiresIn: '10m' },
     }),
+    RecordingModule,
+    AppsModule,
   ],
   controllers: [ShortLinkController, StreamingController, CdpStreamingController],
   providers: [

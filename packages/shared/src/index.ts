@@ -43,6 +43,9 @@ export * from './cdp-whitelist';
 // Execute Endpoint Types
 export * from './execute-types';
 
+// VNC Recording Types
+export * from './recording.types';
+
 // Environment helpers
 export * from './env';
 
