@@ -3,7 +3,7 @@ import {
   UseGuards, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiQuery } from '@nestjs/swagger';
-import { IsString, MinLength, IsOptional, IsObject, IsInt, IsBoolean, Min } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsObject, IsInt, IsBoolean, IsArray, Min } from 'class-validator';
 import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard';
 import { AppTemplatesService } from './app-templates.service';
 import { resolveTenantScope } from '../../common/helpers/tenant-scope.helper';
@@ -52,6 +52,10 @@ class CreateAppTemplateDto {
   @ApiProperty({ required: false, description: 'Auto-shutdown session after N seconds idle' })
   @IsOptional() @IsInt() @Min(60)
   idle_shutdown_seconds?: number;
+
+  @ApiProperty({ required: false, description: 'Extra egress domains cloned onto every auto-provisioned app (suffix patterns like ".expedia.com" or exact hosts). Typically populated from recorded HAR.', example: ['.expedia.com', '.trvl-media.com'] })
+  @IsOptional() @IsArray() @IsString({ each: true })
+  extra_egress_allowlist?: string[];
 }
 
 class UpdateAppTemplateDto {

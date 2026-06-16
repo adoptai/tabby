@@ -29,6 +29,8 @@ import { CredentialsModule } from './modules/credentials/credentials.module';
 import { IdentityProvidersModule } from './modules/identity-providers/identity-providers.module';
 import { AppTemplatesModule } from './modules/app-templates/app-templates.module';
 import { ExecuteModule } from './modules/execute/execute.module';
+import { RecordingModule } from './modules/recording/recording.module';
+import { RecordingProvisionModule } from './modules/recording/recording-provision.module';
 
 @Module({
   imports: [
@@ -60,6 +62,8 @@ import { ExecuteModule } from './modules/execute/execute.module';
     IdentityProvidersModule,
     AppTemplatesModule,
     ExecuteModule,
+    RecordingModule,
+    RecordingProvisionModule,
     HealthModule,
   ],
   providers: [

@@ -307,6 +307,9 @@ export class CredentialsService {
         ...((template.login_config as any)?.login_url ? [(template.login_config as any).login_url] : []),
         ...((template.export_policy as any)?.target_domains || []).map((d: string) => `https://${d}`),
       ],
+      // Carry the template's extra egress domains onto the cloned app so the
+      // per-user session's allowlist includes the vendor's auth/CDN hosts.
+      extra_egress_allowlist: template.extra_egress_allowlist ?? [],
       login_config: template.login_config as any,
       keepalive_config: template.keepalive_config as any,
       export_policy: template.export_policy as any,
