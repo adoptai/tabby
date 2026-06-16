@@ -89,8 +89,8 @@ values:
         memory: "${WORKER_MEM_LIMIT}"
 
   slackBot:
-    enabled: true
-    slackDefaultChannel: "tabby-experiments"
+    enabled: ${SLACK_BOT_ENABLED}
+    slackDefaultChannel: "${SLACK_DEFAULT_CHANNEL}"
 
   teamsBot:
     enabled: false
