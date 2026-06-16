@@ -2,12 +2,13 @@ import { RecordingRunner } from './recording-runner';
 import type { RecordedInteractionEvent } from '@browser-hitl/shared';
 
 /**
- * Fakes for Playwright Page/Context. We capture the exposed binding and the
- * framenavigated listener so the test can drive synthetic events, then assert
- * drain() assembles a well-formed RecordingBundle.
+ * Fakes for Playwright Page/Context. We capture the console + framenavigated
+ * listeners so the test can drive synthetic events (the recorder now emits over
+ * the browser console, not an exposeBinding binding), then assert drain()
+ * assembles a well-formed RecordingBundle.
  */
 function makeFakes(initialUrl: string) {
-  let bindingFn: ((source: unknown, ev: RecordedInteractionEvent) => void) | null = null;
+  let requestListener: ((req: unknown) => void) | null = null;
   let navListener: ((frame: unknown) => void) | null = null;
   let currentUrl = initialUrl;
 
@@ -20,22 +21,26 @@ function makeFakes(initialUrl: string) {
     mainFrame: () => mainFrame,
     on: (event: string, fn: (arg: unknown) => void) => {
       if (event === 'framenavigated') navListener = fn as typeof navListener;
+      if (event === 'request') requestListener = fn as typeof requestListener;
+      // 'domcontentloaded' (recorder re-injection) is accepted and ignored.
     },
+    evaluate: jest.fn(async () => undefined),
     removeListener: jest.fn(),
-    // har-capture attaches request/response listeners; accept and ignore.
   } as unknown as import('playwright').Page;
 
   const context = {
-    exposeBinding: jest.fn(async (_name: string, fn: typeof bindingFn) => {
-      bindingFn = fn;
-    }),
     addInitScript: jest.fn(async () => undefined),
   } as unknown as import('playwright').BrowserContext;
+
+  // Simulate the sentinel fetch() beacon the injected recorder would issue.
+  const beaconReq = (url: string, body: string | null) => ({ url: () => url, postData: () => body });
 
   return {
     page,
     context,
-    emit: (ev: RecordedInteractionEvent) => bindingFn?.(null, ev),
+    emit: (ev: RecordedInteractionEvent) =>
+      requestListener?.(beaconReq('https://tabby-rec.local/e', JSON.stringify(ev))),
+    install: () => requestListener?.(beaconReq('https://tabby-rec.local/i', 'https://example.com/login')),
     navigate: (to: string) => {
       currentUrl = to;
       navListener?.(mainFrame);
@@ -54,13 +59,24 @@ const clickEvent: RecordedInteractionEvent = {
 };
 
 describe('RecordingRunner', () => {
-  it('exposes the binding and injects the recorder on start', async () => {
+  it('injects the recorder on start', async () => {
     const f = makeFakes('https://example.com/login');
     const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
     await runner.start();
 
-    expect(f.context.exposeBinding).toHaveBeenCalledWith('__tabbyRecordEvent', expect.any(Function));
     expect(f.context.addInitScript).toHaveBeenCalledTimes(1);
+  });
+
+  it('captures interaction events emitted over the request beacon channel', async () => {
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    f.install();
+    f.emit(clickEvent);
+    const bundle = runner.drain();
+    expect(bundle.click_events).toHaveLength(1);
+    expect(bundle.click_events[0].selector).toBe('#submit');
   });
 
   it('drains a bundle with captured interaction + url events', async () => {

@@ -311,13 +311,18 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createNoVncService(savedSession.id, podName);
       }
 
-      if (app.execute_enabled) {
+      // The worker health server (port 8091) must be reachable via a Service for
+      // both execute calls AND recording drain (POST /recording/stop). Recording
+      // sessions don't set execute_enabled, so key off either.
+      const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+      const needsWorkerHealth = app.execute_enabled || allowAll;
+      if (needsWorkerHealth) {
         await this.podManager.createWorkerService(savedSession.id, podName);
       }
 
-      // Generate NetworkPolicy
-      const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled, extraAllowlist, allowAll);
+      // Generate NetworkPolicy — open the 8091 ingress when the worker health
+      // Service exists (execute or recording drain).
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll);
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {

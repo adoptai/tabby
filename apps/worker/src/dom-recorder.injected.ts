@@ -6,17 +6,20 @@
  * events with rich selector metadata, detects username/password/otp field
  * roles, and REDACTS password/otp values IN-POD before they leave the browser.
  *
- * Instead of chrome.runtime.sendMessage it calls window[RECORD_BINDING], an
- * async binding exposed via context.exposeBinding() in RecordingRunner. The
- * binding name is referenced as a literal inside the injected function because
- * the function body is serialized and executed in the browser context.
- *
- * addInitScript runs on every navigation and in every frame, so listeners are
- * re-attached against each fresh document automatically — the SPA re-injection
- * the extension handled manually comes for free.
+ * Event channel: each event is POSTed as a sentinel `fetch()` to a fake host
+ * (REC_BEACON). RecordingRunner reads them via page.on('request') + postData —
+ * the SAME network-capture path HAR uses, which is the only CDP channel proven
+ * to survive CloakBrowser's stealth Chromium (exposeBinding bindings are
+ * stripped and console forwarding is suppressed as automation fingerprints).
+ * The request never leaves the box: the .local host fails to resolve, but the
+ * request-initiation event still fires with the body. Host/paths are inlined as
+ * literals because the function body is serialized into the page context.
  */
 
-export const RECORD_BINDING = '__tabbyRecordEvent';
+// Sentinel beacon (kept in sync with the literals inlined in domRecorderScript).
+export const REC_BEACON = 'https://tabby-rec.local/';
+export const REC_EVENT_PATH = 'https://tabby-rec.local/e';
+export const REC_INSTALL_PATH = 'https://tabby-rec.local/i';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -25,12 +28,31 @@ export function domRecorderScript(): void {
   const w = window as any;
   if (w.__tabbyDomRecorder) return;
 
-  const emit = (data: any): void => {
+  // Capture the original fetch up front so a later page override can't sever the
+  // channel. Network requests are the one CDP signal the stealth build forwards.
+  const send: ((url: string, body: string) => void) | null = (() => {
     try {
-      const fn = w.__tabbyRecordEvent;
-      if (typeof fn === 'function') fn(data);
+      const f = w.fetch;
+      if (typeof f !== 'function') return null;
+      const fetchFn = f.bind(w);
+      return (url: string, body: string) => {
+        try {
+          fetchFn(url, { method: 'POST', body, mode: 'no-cors', keepalive: true }).catch(() => undefined);
+        } catch {
+          /* ignore */
+        }
+      };
     } catch {
-      cleanup();
+      return null;
+    }
+  })();
+
+  const emit = (data: any): void => {
+    if (!send) return;
+    try {
+      send('https://tabby-rec.local/e', JSON.stringify(data));
+    } catch {
+      /* serialization failure on one event must not tear down the recorder */
     }
   };
 
@@ -221,6 +243,11 @@ export function domRecorderScript(): void {
   document.addEventListener('input', handleInput, true);
   document.addEventListener('change', handleChange, true);
   document.addEventListener('submit', handleSubmit, true);
+
+  // Breadcrumb: proves the recorder actually ran in this document. RecordingRunner
+  // logs it; if it never appears, injection itself is blocked and we must launch
+  // a non-stealth browser for recording.
+  if (send) send('https://tabby-rec.local/i', w.location ? String(w.location.href) : '');
 
   function cleanup(): void {
     document.removeEventListener('click', handleClick, true);
