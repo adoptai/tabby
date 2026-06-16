@@ -87,6 +87,12 @@ async function main() {
   try {
     // Launch browser
     const browserArgs = [...CHROMIUM_FLAGS] as string[];
+    if (streamingMode !== 'cdp') {
+      // VNC mode: size the headed browser window to fill the Xvfb framebuffer
+      // (1920x1080) so the viewer shows the full window, not a small default
+      // window in a black canvas.
+      browserArgs.push('--window-position=0,0', '--window-size=1920,1080', '--start-maximized');
+    }
     const launchOptions: LaunchOptions = {
       headless: streamingMode === 'cdp', // CDP: headless; VNC: renders in Xvfb display
       args: browserArgs,
@@ -132,7 +138,10 @@ async function main() {
     }
 
     context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
+      // VNC: null viewport => the page fills the actual browser window (which we
+      // sized to the Xvfb display), so the human sees a full, properly-sized
+      // page. CDP/headless keeps a fixed 1920x1080 viewport.
+      viewport: streamingMode === 'cdp' ? { width: 1920, height: 1080 } : null,
     });
 
     // Disable downloads, clipboard, file chooser per browser_policy
