@@ -113,15 +113,16 @@ export class HealthServer {
         res.status(409).json({ success: false, error: 'No active recording on this session' });
         return;
       }
-      try {
-        const bundle = this.recordingRunner.drain();
-        this.recordingRunner = null;
-        res.json({ success: true, bundle });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`Recording drain error: ${message}`);
-        res.status(500).json({ success: false, error: message });
-      }
+      const runner = this.recordingRunner;
+      this.recordingRunner = null;
+      runner
+        .drain()
+        .then((bundle) => res.json({ success: true, bundle }))
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`Recording drain error: ${message}`);
+          res.status(500).json({ success: false, error: message });
+        });
     });
 
     this.server = app.listen(port, () => {

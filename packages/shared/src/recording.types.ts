@@ -55,6 +55,23 @@ export interface RecordingHar {
   };
 }
 
+/**
+ * A browser cookie captured at drain time (Playwright Cookie shape) so an
+ * authenticated session can be reused: a workflow recording provisioned
+ * `--from` a login recording seeds these via context.addCookies(), starting the
+ * human already signed in without storing username/password.
+ */
+export interface RecordedCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+}
+
 /** The bundle drained on "Finish & export" and pulled by NoUI. */
 export interface RecordingBundle {
   session_id: string;
@@ -64,4 +81,6 @@ export interface RecordingBundle {
   har: RecordingHar;
   click_events: RecordedInteractionEvent[];
   url_events: RecordedUrlEvent[];
+  /** Session cookies captured at drain (login recordings) for session reuse. */
+  cookies?: RecordedCookie[];
 }

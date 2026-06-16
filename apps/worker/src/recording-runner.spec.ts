@@ -30,6 +30,7 @@ function makeFakes(initialUrl: string) {
 
   const context = {
     addInitScript: jest.fn(async () => undefined),
+    cookies: jest.fn(async () => []),
   } as unknown as import('playwright').BrowserContext;
 
   // Simulate the sentinel fetch() beacon the injected recorder would issue.
@@ -74,7 +75,7 @@ describe('RecordingRunner', () => {
 
     f.install();
     f.emit(clickEvent);
-    const bundle = runner.drain();
+    const bundle = await runner.drain();
     expect(bundle.click_events).toHaveLength(1);
     expect(bundle.click_events[0].selector).toBe('#submit');
   });
@@ -87,7 +88,7 @@ describe('RecordingRunner', () => {
     f.emit(clickEvent);
     f.navigate('https://example.com/dashboard');
 
-    const bundle = runner.drain();
+    const bundle = await runner.drain();
 
     expect(bundle.session_id).toBe('sess-1');
     expect(bundle.recording_mode).toBe('login');
@@ -110,7 +111,7 @@ describe('RecordingRunner', () => {
     await runner.start();
 
     f.navigate('https://example.com/login'); // same url
-    const bundle = runner.drain();
+    const bundle = await runner.drain();
 
     expect(bundle.url_events).toHaveLength(0);
   });
@@ -119,7 +120,7 @@ describe('RecordingRunner', () => {
     const f = makeFakes('https://example.com/login');
     const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
     await runner.start();
-    runner.drain();
+    await runner.drain();
 
     expect(f.page.removeListener).toHaveBeenCalledWith('framenavigated', expect.any(Function));
   });

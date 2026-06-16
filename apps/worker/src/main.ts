@@ -247,6 +247,19 @@ async function main() {
       await recordingRunner.start();
       healthServer.setRecordingRunner(recordingRunner);
 
+      // Session reuse: seed cookies captured from a prior login recording so the
+      // human starts already authenticated (no stored credentials). Provisioned
+      // via recording-provision when `--from <login-session>` is given.
+      const seedCookies = (appConfig.login_config as { seed_cookies?: unknown })?.seed_cookies;
+      if (Array.isArray(seedCookies) && seedCookies.length > 0) {
+        try {
+          await context.addCookies(seedCookies as Parameters<typeof context.addCookies>[0]);
+          console.log(`Seeded ${seedCookies.length} cookie(s) from source login recording`);
+        } catch (err) {
+          console.warn(`Failed to seed cookies: ${err}`);
+        }
+      }
+
       const startUrl = (
         process.env.RECORDING_START_URL || appConfig.login_config?.login_url || ''
       ).trim();

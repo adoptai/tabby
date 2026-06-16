@@ -18,12 +18,18 @@ import { SessionEntity, ApplicationEntity } from '../../entities';
 import { AppsService } from '../apps/apps.service';
 import { SessionsService } from '../sessions/sessions.service';
 import { VncStreamProvider } from '../streaming/vnc-stream.provider';
+import { RecordingStore } from './recording.store';
 
 interface CreateRecordingSessionBody {
   recording_mode?: RecordingMode;
   start_url?: string;
-  /** Reserved: bind a workflow recording to an existing authenticated profile. */
-  profile_id?: string;
+  /**
+   * Session reuse: seed this recording browser with the cookies captured by a
+   * prior login recording (that session's id), so the human starts already
+   * authenticated — no stored credentials. Typically a workflow recording
+   * `--from` a login recording.
+   */
+  source_session_id?: string;
 }
 
 /**
@@ -45,6 +51,7 @@ export class RecordingProvisionController {
     private readonly appsService: AppsService,
     private readonly sessionsService: SessionsService,
     private readonly vncStreamProvider: VncStreamProvider,
+    private readonly recordingStore: RecordingStore,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
     @InjectRepository(ApplicationEntity)
@@ -71,6 +78,30 @@ export class RecordingProvisionController {
       }
     }
 
+    // Session reuse: pull cookies captured by a prior login recording so the
+    // worker can seed this browser (the human starts already authenticated).
+    let seedCookies: unknown[] = [];
+    const sourceSessionId = (body?.source_session_id || '').trim();
+    if (sourceSessionId) {
+      try {
+        const sourceBundle = await this.recordingStore.retrieve(tenantId, sourceSessionId);
+        const cookies = sourceBundle?.cookies ?? [];
+        if (cookies.length === 0) {
+          throw new BadRequestException(
+            `Source recording ${sourceSessionId} has no captured cookies. Re-record the ` +
+              `login (cookie capture is newer than that recording) and retry.`,
+          );
+        }
+        seedCookies = cookies;
+        this.logger.log(`Seeding ${cookies.length} cookie(s) from source recording ${sourceSessionId}`);
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+        throw new BadRequestException(
+          `Could not load source recording ${sourceSessionId}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
     // 1. Create the recording-shell app (no login, manual creds, recording mode).
     const shortId = randomUUID().slice(0, 8);
     const { app_id } = await this.appsService.create(
@@ -80,10 +111,13 @@ export class RecordingProvisionController {
         // The worker SKIPS login DSL + keepalive actions in recording mode
         // (main.ts), so these are never executed — but the app DTO requires
         // non-empty arrays, so we provide minimal valid placeholders.
+        // seed_cookies (if any) is read by the worker and injected via
+        // context.addCookies() before the human drives the session.
         login_config: {
           login_url: startUrl,
           credential_ref: 'manual:',
           steps: [{ action: 'goto', url: startUrl }],
+          ...(seedCookies.length > 0 ? { seed_cookies: seedCookies } : {}),
         },
         keepalive_config: {
           interval_seconds: 60,

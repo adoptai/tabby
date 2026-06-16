@@ -4,6 +4,7 @@ import { SessionEntity, ApplicationEntity } from '../../entities';
 import { AppsModule } from '../apps/apps.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { StreamingModule } from '../streaming/streaming.module';
+import { RecordingModule } from './recording.module';
 import { RecordingProvisionController } from './recording-provision.controller';
 
 /**
@@ -18,6 +19,7 @@ import { RecordingProvisionController } from './recording-provision.controller';
     AppsModule,
     SessionsModule,
     StreamingModule,
+    RecordingModule,
   ],
   controllers: [RecordingProvisionController],
 })

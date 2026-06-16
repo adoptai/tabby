@@ -117,7 +117,17 @@ export class RecordingRunner {
   }
 
   /** Assemble and return the bundle. Detaches listeners (idempotent). */
-  drain(): RecordingBundle {
+  async drain(): Promise<RecordingBundle> {
+    // Capture session cookies before tearing down so a workflow recording can
+    // reuse this authenticated session (seeded via context.addCookies()). Best
+    // effort — never fail the drain over cookies.
+    let cookies: RecordingBundle['cookies'];
+    try {
+      cookies = (await this.context.cookies()) as RecordingBundle['cookies'];
+    } catch {
+      cookies = undefined;
+    }
+
     const harResult = stopHarCapture(this.page);
     this.detach();
 
@@ -146,7 +156,7 @@ export class RecordingRunner {
     console.log(
       `[Recording] drained: session=${this.sessionId}, ` +
         `har_entries=${har.log.entries.length}, events=${this.events.length}, urls=${this.urlEvents.length}, ` +
-        `recorder_installed=${this.installSeen}`,
+        `cookies=${cookies?.length ?? 0}, recorder_installed=${this.installSeen}`,
     );
 
     return {
@@ -157,6 +167,7 @@ export class RecordingRunner {
       har,
       click_events: this.events,
       url_events: this.urlEvents,
+      cookies,
     };
   }
 
