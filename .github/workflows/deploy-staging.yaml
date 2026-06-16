@@ -195,6 +195,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add charts/browser-hitl/Chart.yaml
           git commit -m "chore: bump chart version to ${{ steps.version.outputs.version }} [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin dev
           git push
 
       - name: Get image tag
