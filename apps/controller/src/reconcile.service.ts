@@ -7,6 +7,7 @@ import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
 import { CircuitBreakerStateEntity } from './entities/circuit-breaker-state.entity';
+import { AppTemplateEntity } from './entities/app-template.entity';
 import { StateMachineService } from './state-machine.service';
 import { PodManagerService } from './pod-manager.service';
 
@@ -47,6 +48,8 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     private readonly batonRepo: Repository<SessionBatonEntity>,
     @InjectRepository(CircuitBreakerStateEntity)
     private readonly circuitRepo: Repository<CircuitBreakerStateEntity>,
+    @InjectRepository(AppTemplateEntity)
+    private readonly templateRepo: Repository<AppTemplateEntity>,
     private readonly dataSource: DataSource,
     private readonly stateMachine: StateMachineService,
     private readonly podManager: PodManagerService,
@@ -371,27 +374,46 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       where: { state: SessionState.HEALTHY as any },
     });
 
-    const idleShutdownSeconds = parseInt(process.env.IDLE_SHUTDOWN_SECONDS || '0', 10);
-    const idleShutdownMs = idleShutdownSeconds * 1000;
+    const globalIdleShutdownSeconds = parseInt(process.env.IDLE_SHUTDOWN_SECONDS || '0', 10);
+
+    // Pre-load apps + templates for per-app idle_shutdown_seconds
+    const appIds = [...new Set(healthySessions.map(s => s.app_id))];
+    const apps = appIds.length > 0
+      ? await this.appRepo.findByIds(appIds)
+      : [];
+    const appById = new Map(apps.map(a => [a.id, a]));
+    const templateIds = [...new Set(apps.map(a => a.template_id).filter(Boolean))];
+    const templates = templateIds.length > 0
+      ? await this.templateRepo.findByIds(templateIds)
+      : [];
+    const templateById = new Map(templates.map(t => [t.id, t]));
 
     for (const session of healthySessions) {
       const age = now - new Date(session.started_at).getTime();
       if (age >= maxAgeMs) {
-        this.logger.log(`Recycling session ${session.id} (age: ${Math.round(age / 3600000)}h)`);
-        // Terminate and let reconcile recreate it
+        this.logger.log(
+          `Max-age shutdown: session ${session.id} age=${Math.round(age / 3600000)}h ` +
+          `(max: ${maxAgeHours}h) — scaling app ${session.app_id} to 0`,
+        );
+        await this.appRepo.update(session.app_id, { desired_session_count: 0 });
         await this.terminateSession(session);
         continue;
       }
 
-      // Idle shutdown: if session has owner_user_id (per-user) and hasn't been used
-      if (idleShutdownMs > 0 && session.owner_user_id && session.last_credential_request_at) {
-        const idleTime = now - new Date(session.last_credential_request_at).getTime();
-        if (idleTime >= idleShutdownMs) {
+      // Idle shutdown: per-app setting falls back to global env
+      const app = appById.get(session.app_id);
+      const template = app?.template_id ? templateById.get(app.template_id) : undefined;
+      const idleSeconds = template?.idle_shutdown_seconds ?? globalIdleShutdownSeconds;
+      const idleMs = idleSeconds * 1000;
+
+      if (idleMs > 0 && session.owner_user_id) {
+        const lastUsed = session.last_activity_at || session.last_credential_request_at || session.started_at;
+        const idleTime = now - new Date(lastUsed).getTime();
+        if (idleTime >= idleMs) {
           this.logger.log(
             `Idle shutdown: session ${session.id} owner=${session.owner_user_id} ` +
-            `idle ${Math.round(idleTime / 60000)}min (threshold: ${idleShutdownSeconds}s)`,
+            `idle ${Math.round(idleTime / 60000)}min (threshold: ${idleSeconds}s, source: ${template?.idle_shutdown_seconds ? 'template' : 'env'})`,
           );
-          // Set desired_session_count to 0 so it doesn't restart
           await this.appRepo.update(session.app_id, { desired_session_count: 0 });
           await this.terminateSession(session);
         }
@@ -399,8 +421,9 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Clean up FAILED sessions: terminate after half the idle TTL (or 30 min default)
-    if (idleShutdownMs > 0) {
-      const failedTtlMs = idleShutdownMs / 2;
+    const globalIdleMs = globalIdleShutdownSeconds * 1000;
+    if (globalIdleMs > 0) {
+      const failedTtlMs = globalIdleMs / 2;
       const failedSessions = await this.sessionRepo.find({
         where: { state: SessionState.FAILED as any },
       });
