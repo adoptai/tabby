@@ -89,9 +89,9 @@ async function main() {
     const browserArgs = [...CHROMIUM_FLAGS] as string[];
     if (streamingMode !== 'cdp') {
       // VNC mode: size the headed browser window to fill the Xvfb framebuffer
-      // (1920x1080) so the viewer shows the full window, not a small default
+      // (1440x900) so the viewer shows the full window, not a small default
       // window in a black canvas.
-      browserArgs.push('--window-position=0,0', '--window-size=1920,1080', '--start-maximized');
+      browserArgs.push('--window-position=0,0', '--window-size=1440,900', '--start-maximized');
     }
     const launchOptions: LaunchOptions = {
       headless: streamingMode === 'cdp', // CDP: headless; VNC: renders in Xvfb display

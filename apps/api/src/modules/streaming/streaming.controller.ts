@@ -1947,6 +1947,10 @@ export class StreamingController {
       rfb.scaleViewport = true;
       rfb.resizeSession = true;
       rfb.background = '#0b1020';
+      // Trade server CPU (now uncapped) for fewer bytes over the slow transport:
+      // max zlib compression, JPEG quality kept legible for login forms.
+      rfb.qualityLevel = 6;
+      rfb.compressionLevel = 9;
       window.rfb = rfb;
 
       rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; });
