@@ -385,6 +385,8 @@ export class PodManagerService {
       { name: 'SENTRY_TRACES_SAMPLE_RATE', value: process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1' },
       { name: 'APP_ENV', value: process.env.APP_ENV || '' },
       { name: 'CHART_VERSION', value: process.env.CHART_VERSION || '' },
+      { name: 'EXTRACT_TAB_TIMEOUT_MS', value: process.env.EXTRACT_TAB_TIMEOUT_MS || '' },
+      { name: 'EXTRACT_TAB_POLL_INTERVAL_MS', value: process.env.EXTRACT_TAB_POLL_INTERVAL_MS || '' },
     ];
 
     // VNC mode needs DISPLAY for Xvfb; CDP mode does not
@@ -407,8 +409,14 @@ export class PodManagerService {
       ports: workerPorts,
       env: workerEnv,
       resources: {
-        requests: { cpu: '1', memory: '2Gi' },
-        limits: { cpu: '2', memory: '3Gi' },
+        requests: {
+          cpu: process.env.WORKER_CPU_REQUEST || '500m',
+          memory: process.env.WORKER_MEM_REQUEST || '1Gi',
+        },
+        limits: {
+          cpu: process.env.WORKER_CPU_LIMIT || '1500m',
+          memory: process.env.WORKER_MEM_LIMIT || '1536Mi',
+        },
       },
       livenessProbe: {
         httpGet: { path: '/health', port: 8091 },
@@ -437,8 +445,14 @@ export class PodManagerService {
         ports: [{ containerPort: 6080, name: 'novnc' }],
         command: ['websockify', '--web', '/usr/share/novnc', '6080', 'localhost:5900'],
         resources: {
-          requests: { cpu: '0.1', memory: '128Mi' },
-          limits: { cpu: '0.5', memory: '256Mi' },
+          requests: {
+            cpu: process.env.NOVNC_CPU_REQUEST || '0.1',
+            memory: process.env.NOVNC_MEM_REQUEST || '128Mi',
+          },
+          limits: {
+            cpu: process.env.NOVNC_CPU_LIMIT || '0.5',
+            memory: process.env.NOVNC_MEM_LIMIT || '256Mi',
+          },
         },
         securityContext: {
           runAsNonRoot: true,
@@ -470,6 +484,9 @@ export class PodManagerService {
         },
         containers,
         volumes,
+        ...this.parseJsonEnv('WORKER_NODE_SELECTOR', 'nodeSelector'),
+        ...this.parseJsonEnv('WORKER_TOLERATIONS', 'tolerations'),
+        ...this.parseJsonEnv('WORKER_AFFINITY', 'affinity'),
       },
     };
   }
@@ -835,5 +852,22 @@ export class PodManagerService {
 
   private egressFailClosed(): boolean {
     return (process.env.EGRESS_POLICY_FAIL_CLOSED || 'true').trim().toLowerCase() !== 'false';
+  }
+
+  /**
+   * Parse a JSON env var and return { key: value } or {} on missing/invalid input.
+   * Logs a warning if the env var is set but not valid JSON.
+   */
+  private parseJsonEnv(envVar: string, key: string): Record<string, unknown> {
+    const raw = process.env[envVar];
+    if (!raw) {
+      return {};
+    }
+    try {
+      return { [key]: JSON.parse(raw) };
+    } catch {
+      this.logger.warn(`Invalid JSON in ${envVar} — skipping ${key}: ${raw}`);
+      return {};
+    }
   }
 }

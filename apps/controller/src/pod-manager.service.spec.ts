@@ -103,6 +103,161 @@ describe('PodManagerService egress allowlist sync', () => {
   });
 });
 
+describe('PodManagerService worker pod resources', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    process.env = { ...originalEnv };
+    delete process.env.WORKER_CPU_REQUEST;
+    delete process.env.WORKER_CPU_LIMIT;
+    delete process.env.WORKER_MEM_REQUEST;
+    delete process.env.WORKER_MEM_LIMIT;
+    delete process.env.NOVNC_CPU_REQUEST;
+    delete process.env.NOVNC_CPU_LIMIT;
+    delete process.env.NOVNC_MEM_REQUEST;
+    delete process.env.NOVNC_MEM_LIMIT;
+    delete process.env.WORKER_NODE_SELECTOR;
+    delete process.env.WORKER_TOLERATIONS;
+    delete process.env.WORKER_AFFINITY;
+    delete process.env.EGRESS_PROXY_URL;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('uses default resource values when env vars are not set', () => {
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    const workerContainer = podSpec.spec.containers.find((c: any) => c.name === 'worker');
+    expect(workerContainer.resources).toEqual({
+      requests: { cpu: '500m', memory: '1Gi' },
+      limits: { cpu: '1500m', memory: '1536Mi' },
+    });
+  });
+
+  it('uses env var resource values when set', () => {
+    process.env.WORKER_CPU_REQUEST = '2000m';
+    process.env.WORKER_CPU_LIMIT = '4000m';
+    process.env.WORKER_MEM_REQUEST = '4Gi';
+    process.env.WORKER_MEM_LIMIT = '8Gi';
+
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    const workerContainer = podSpec.spec.containers.find((c: any) => c.name === 'worker');
+    expect(workerContainer.resources).toEqual({
+      requests: { cpu: '2000m', memory: '4Gi' },
+      limits: { cpu: '4000m', memory: '8Gi' },
+    });
+  });
+
+  it('uses default noVNC resource values when env vars are not set', () => {
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    const novncContainer = podSpec.spec.containers.find((c: any) => c.name === 'novnc');
+    expect(novncContainer.resources).toEqual({
+      requests: { cpu: '0.1', memory: '128Mi' },
+      limits: { cpu: '0.5', memory: '256Mi' },
+    });
+  });
+
+  it('uses env var noVNC resource values when set', () => {
+    process.env.NOVNC_CPU_REQUEST = '200m';
+    process.env.NOVNC_CPU_LIMIT = '500m';
+    process.env.NOVNC_MEM_REQUEST = '256Mi';
+    process.env.NOVNC_MEM_LIMIT = '512Mi';
+
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    const novncContainer = podSpec.spec.containers.find((c: any) => c.name === 'novnc');
+    expect(novncContainer.resources).toEqual({
+      requests: { cpu: '200m', memory: '256Mi' },
+      limits: { cpu: '500m', memory: '512Mi' },
+    });
+  });
+
+  it('applies nodeSelector to pod spec when WORKER_NODE_SELECTOR is set', () => {
+    process.env.WORKER_NODE_SELECTOR = '{"kubernetes.io/arch":"amd64","node-role":"worker"}';
+
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    expect(podSpec.spec.nodeSelector).toEqual({
+      'kubernetes.io/arch': 'amd64',
+      'node-role': 'worker',
+    });
+  });
+
+  it('applies tolerations to pod spec when WORKER_TOLERATIONS is set', () => {
+    process.env.WORKER_TOLERATIONS = '[{"key":"dedicated","operator":"Equal","value":"browser","effect":"NoSchedule"}]';
+
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    expect(podSpec.spec.tolerations).toEqual([
+      { key: 'dedicated', operator: 'Equal', value: 'browser', effect: 'NoSchedule' },
+    ]);
+  });
+
+  it('omits nodeSelector when WORKER_NODE_SELECTOR is not set', () => {
+    const service = new PodManagerService();
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    expect(podSpec.spec.nodeSelector).toBeUndefined();
+    expect(podSpec.spec.tolerations).toBeUndefined();
+    expect(podSpec.spec.affinity).toBeUndefined();
+  });
+
+  it('logs a warning and skips nodeSelector on invalid JSON', () => {
+    process.env.WORKER_NODE_SELECTOR = 'not-valid-json';
+
+    const service = new PodManagerService();
+    const warnSpy = jest.spyOn((service as any).logger, 'warn');
+
+    const podSpec = (service as any).buildPodSpec(
+      'worker-session-1',
+      { id: 'session-1', app_id: 'app-1', tenant_id: 'tenant-1' },
+      {},
+    );
+
+    expect(podSpec.spec.nodeSelector).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('WORKER_NODE_SELECTOR'));
+  });
+});
+
 describe('PodManagerService not-found handling', () => {
   const originalEnv = { ...process.env };
 

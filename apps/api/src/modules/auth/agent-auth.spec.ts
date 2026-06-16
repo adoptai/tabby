@@ -248,6 +248,21 @@ describe('Agent Authentication (ADR-010)', () => {
       await expect(service.issueAgentToken('agent_cl_abc123', 'secret_sk_valid'))
         .rejects.toThrow(UnauthorizedException);
     });
+
+    it('should include unrestricted_profiles: true in JWT payload when client has it set', async () => {
+      const { service, agentClientRepo, jwtService } = buildService();
+      const secretHash = service.hashAgentSecret('secret_sk_valid');
+      agentClientRepo.findOne.mockResolvedValue({
+        ...mockClient,
+        client_secret_hash: secretHash,
+        unrestricted_profiles: true,
+      });
+
+      await service.issueAgentToken('agent_cl_abc123', 'secret_sk_valid');
+
+      const payload: JwtPayload = jwtService.sign.mock.calls[0][0];
+      expect(payload.unrestricted_profiles).toBe(true);
+    });
   });
 
   // =========================================================================
@@ -285,6 +300,22 @@ describe('Agent Authentication (ADR-010)', () => {
       const savedEntity = agentClientRepo.create.mock.calls[0][0];
       expect(savedEntity.token_ttl_seconds).toBe(DEFAULTS.AGENT_TOKEN_TTL_SECONDS);
       expect(savedEntity.rate_limit_per_minute).toBe(DEFAULTS.AGENT_RATE_LIMIT_PER_MINUTE);
+    });
+
+    it('should register client with unrestricted_profiles: true and empty allowed_profiles', async () => {
+      const { service, agentClientRepo } = buildService();
+
+      const result = await service.registerAgentClient({
+        name: 'unrestricted-agent',
+        tenant_id: 'tenant-1',
+        allowed_profiles: [],
+        unrestricted_profiles: true,
+      });
+
+      expect(result.client_id).toMatch(/^agent_cl_/);
+      const savedEntity = agentClientRepo.create.mock.calls[0][0];
+      expect(savedEntity.unrestricted_profiles).toBe(true);
+      expect(savedEntity.allowed_profiles).toEqual([]);
     });
   });
 

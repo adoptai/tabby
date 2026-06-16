@@ -186,20 +186,62 @@ JWT-minting SPAs typically rotate bearers faster than the default 3600s `refresh
 - Two-host ingress topology required for on-prem: `tabby-api.*` (API VirtualService) + `tabby-admin.*` (admin-UI VirtualService) — a single shared host does not work because the chart renders them as separate VirtualServices.
 - `ADMIN_UI_ENABLED` env (chart: `.Values.adminUi.enabled`) gates the admin-UI Deployment, Service, VirtualService, and Ingress route (`/` path). Turning it off removes all admin-UI resources.
 
+### Platform Integration
+For how the Adopt platform calls Tabby (entry points, resolution flow, Token Manager, Playground Profile, deployment rules), see `docs/tabby-platform-handoff.md`.
+
+### Controller Scaling (Multi-Replica)
+- Reconcile loop uses `SELECT ... FOR UPDATE SKIP LOCKED` — multiple controller replicas process different apps in parallel
+- Circuit breaker persisted in `circuit_breaker_state` DB table (shared across replicas, not in-memory)
+- Pod creation is idempotent: pre-checks + catches K8s 409 AlreadyExists
+- State machine retries 3x on version conflict (detects if another replica already transitioned)
+- `RECONCILE_BATCH_SIZE` (default 50) controls apps/sessions per tick per replica
+- `DB_POOL_SIZE` (default 20) configurable Postgres connection pool for API and Controller
+
+### NATS Resilience
+All services use `connectNats()` from `packages/shared/src/nats-connect.ts` with infinite reconnect, 2s wait, jitter. Status monitor calls `process.exit(1)` on permanent close (forces K8s restart instead of silent dead connection).
+
+### Execute Endpoints (NoUI / Browser-Use)
+Gated behind `execute_enabled` boolean on `applications` entity (migration 022). When enabled:
+- `POST /execute/fetch` — runs `fetch()` inside the browser page, inherits cookies/TLS
+- `POST /execute/browser` — runs Playwright commands (navigate, click, type, screenshot, HAR capture)
+- Worker auth via JWT signed with `JWT_SIGNING_KEY` (2 min TTL), validates `tenant_id` match
+- Commands: `navigate`, `click_element`, `click_by_text`, `click_at`, `type_text`, `type_into_label`, `press_key`, `get_page_summary`, `get_page_info`, `screenshot`, `wait_for_selector`, `scroll_page`, `har_start`, `har_stop`, `har_status`
+- No raw JS evaluation, no file download/export, no multi-tab
+
+### CDP Streaming Mode
+Alternative to VNC — lighter (no Xvfb, no noVNC sidecar). Set `browser_policy.streaming_mode: "cdp"` in app template.
+- Worker runs headless Chromium with CDP relay server on port 9223
+- API proxies `/cdp-ws` with allowlisted CDP methods (screencast, input events, insertText)
+- Canvas-based viewer renders JPEG frames from `Page.screencastFrame`
+- Controller creates `{podName}-cdp` service instead of `{podName}-novnc`
+
+### HPA (Horizontal Pod Autoscaler)
+Optional HPA for API (max 4 replicas) and Controller (max 3 replicas). Disabled by default.
+- `api.autoscaling.enabled: true` / `controller.autoscaling.enabled: true`
+- Scales on CPU (70%) and memory (80%) utilization
+- Worker pods do NOT auto-scale via HPA — managed by controller based on `desired_session_count`
+
 ## Database Migrations
 
-17 migrations in `apps/api/src/migrations/`. TypeORM, `synchronize: false`, `migrationsRun: true`. Auto-run on API startup.
+24 migrations in `apps/api/src/migrations/`. TypeORM, `synchronize: false`, `migrationsRun: true`. Auto-run on API startup.
 
-Latest: `1708300000016-GenericOAuth` — adds `client_secret`, `auth_url`, `token_url`, `userinfo_url`, `sign_out_url`, `scopes`, `admin_domains`, `name_claim` to `identity_providers` (Generic IdP / browser OAuth support).
+Latest: `1708300000023-ControllerScaling` — adds `last_reconciled_at` to applications, `last_evaluated_at` to sessions, creates `circuit_breaker_state` table.
 
 Recent migrations (newest first):
-- `...016-GenericOAuth` — Generic IdP OAuth columns on `identity_providers` (see above)
-- `...015-MultiTenantCloud` — Changes `tenants.id` from uuid to varchar for custom IDs (Frontegg org IDs); adds `tenant_id_claim` to `identity_providers`; fixes `service_profiles` unique indexes to include `owner_user_id`
+- `...023-ControllerScaling` — Controller multi-replica support columns + circuit breaker table
+- `...022-AddExecuteEnabled` — Adds `execute_enabled` boolean to `applications` (NoUI gating)
+- `...021-DropIdpSecrets` — Removes legacy IdP client_id/secret from DB (now env vars)
+- `...020-AddTemplateLineage` — Template-to-app lineage tracking
+- `...019-AddRestartRequested` — Adds `restart_requested` to sessions
+- `...018-GlobalIdp` — Global IdP configuration
+- `...017-NullablePasswordHash` — Makes `password_hash` nullable for federated users
+- `...016-GenericOAuth` — Generic IdP OAuth columns on `identity_providers`
+- `...015-MultiTenantCloud` — Changes `tenants.id` to varchar; adds `tenant_id_claim`
 - `...014-AddAppOwnerUserId` — Adds `owner_user_id` to `applications`
-- `...013-AddIdleShutdown` — Adds `sessions.last_credential_request_at` for idle shutdown tracking
+- `...013-AddIdleShutdown` — Adds `sessions.last_credential_request_at`
 - `...012-AddAppTemplates` — Creates `app_templates` table
-- `...011-AddOwnerUserIds` — Adds `owner_user_id` to `sessions` and `service_profiles`; adds `oidc`/`saml` to identity_provider enum
-- `...009-GenericHumanInput` — Adds `sessions.pending_input_request` (JSONB), `interventions.input_request_metadata` (JSONB), `INPUT_NEEDED` to intervention type enum
+- `...011-AddOwnerUserIds` — Adds `owner_user_id` to `sessions` and `service_profiles`
+- `...009-GenericHumanInput` — Adds `sessions.pending_input_request`, `interventions.input_request_metadata`
 
 ## Known Gotchas
 
@@ -220,11 +262,12 @@ Recent migrations (newest first):
 15. **`screenshot` keepalive does not keep sessions alive** — `screenshot` only captures pixels, does NOT make HTTP requests. Server-side session timers keep ticking. Use `goto` (real navigation) or `evaluate` with `fetch()` for keepalive actions.
 16. **`url_check` preferred over `dom_check` for SPAs** — `dom_check` on `body` returns `isVisible()=false` for SPAs like Salesforce Lightning and Workday even when logged in. Use `url_check` with `expect_status: 200` instead.
 17. **`refresh_interval_seconds` defaults to 3600** — If not set in `export_policy`, credentials are only re-extracted once per hour. For volatile tokens (Salesforce aura, CSRF), set to 60-120.
-18. **`streaming_mode` ignored in `browser_policy`** — Not a valid field. VNC streaming is always enabled for HITL sessions. Remove from app payloads.
+18. **`streaming_mode` in `browser_policy`** — Valid values: `"vnc"` (default) or `"cdp"`. CDP mode runs headless Chromium without Xvfb/noVNC. Set to `"cdp"` for lighter sessions when VNC viewer is not needed.
 19. **No initContainers for Postgres/Redis/MinIO/NATS** — Removed (required `runAsUser: 0`, rejected by PodSecurityAdmission in restricted namespaces). `fsGroup` handles volume ownership instead.
 20. **Concurrent auto-provisioning race on `credentials/request`** — Catches Postgres duplicate-key (23505) and retries the lookup. See `apps/api/src/modules/credentials/credentials.service.ts`.
 21. **Admin-UI ingress route gated on `adminUi.enabled`** — The `{{- if .Values.adminUi.enabled }}` block in `charts/browser-hitl/templates/ingress.yaml` controls the `/` route. Disabling admin-UI removes it cleanly.
 22. **VNC access requires OAuth authentication** — Opening a VNC viewer URL sets a `tabby_vnc` HttpOnly cookie (1h TTL) via OAuth callback. Without it, the user hits the IdP login wall. Falls back to email gate if no OAuth IdP is configured. Wrong user → 403 (not a redirect loop). Currently owner-only (session owner matched via `owner_user_id` in cookie).
+23. **Squash merge breaks long-lived branch sync** — Repo only allows squash merge. For feature→dev PRs this is fine, but syncing between long-lived branches (e.g. `dev`→`tabby-noui`) via GitHub PR causes the next sync to show ALL previous changes again (different SHAs). Sync locally instead: `git checkout target && git merge origin/source && git push`.
 
 ## Git
 

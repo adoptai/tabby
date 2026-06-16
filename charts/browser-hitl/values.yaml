@@ -102,16 +102,16 @@ controller:
 
 # =============================================================================
 # Browser Worker (Dynamic pods created by controller)
-# Per spec section 15.7: request 1 vCPU / 2 GB, limit 2 vCPU / 3 GB
+# Per spec section 15.7: request 0.5 vCPU / 1 GB, limit 1.5 vCPU / 1.5 GB
 # =============================================================================
 worker:
   resources:
     requests:
-      cpu: "1000m"
-      memory: "2Gi"
+      cpu: "500m"
+      memory: "1Gi"
     limits:
-      cpu: "2000m"
-      memory: "3Gi"
+      cpu: "1500m"
+      memory: "1536Mi"
   novnc:
     port: 6080
     resources:
@@ -434,6 +434,8 @@ config:
   lifecycleAppRetentionDays: "30"
   workerAllowEnvCredentialFallback: "false"
   reconcileBatchSize: "50"
+  extractTabTimeoutMs: "15000"
+  extractTabPollIntervalMs: "3000"
 
 # =============================================================================
 # Secrets (sensitive values - override in production)
