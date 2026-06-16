@@ -107,15 +107,16 @@ export class CredentialsService {
     requestId: string;
     role?: string;
     allowedProfiles?: string[];
+    unrestrictedProfiles?: boolean;
     ownerUserId?: string | null;
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
       forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
-      role, allowedProfiles = [], ownerUserId,
+      role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
     } = params;
 
-    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
       throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
     }
 

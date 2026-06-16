@@ -95,6 +95,7 @@ export class ExecuteController {
       },
       role: req.user.role,
       allowedProfiles: req.user.allowed_profiles,
+      unrestrictedProfiles: req.user.unrestricted_profiles,
       ownerUserId: req.user.owner_user_id ?? null,
     });
   }
@@ -125,6 +126,7 @@ export class ExecuteController {
       },
       role: req.user.role,
       allowedProfiles: req.user.allowed_profiles,
+      unrestrictedProfiles: req.user.unrestricted_profiles,
       ownerUserId: req.user.owner_user_id ?? null,
     });
   }

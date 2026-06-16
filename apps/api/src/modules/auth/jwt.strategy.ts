@@ -116,6 +116,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         owner_user_id: ownerUserId,
         idp_id: idp.id,
         allowed_profiles: [],
+        unrestricted_profiles: false,
         jti: null,
       };
     }
@@ -134,6 +135,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       exp: payload.exp,
       token_type: payload.token_type,
       allowed_profiles: payload.allowed_profiles ?? [],
+      unrestricted_profiles: payload.unrestricted_profiles ?? false,
       owner_user_id: payload.owner_user_id ?? null,
       idp_id: payload.idp_id ?? null,
     };

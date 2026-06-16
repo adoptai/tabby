@@ -50,6 +50,9 @@ export class AgentClientEntity {
   @Column({ type: 'integer', default: 30 })
   rate_limit_per_minute: number;
 
+  @Column({ type: 'boolean', default: false })
+  unrestricted_profiles: boolean;
+
   @Column({ type: 'boolean', default: true })
   enabled: boolean;
 

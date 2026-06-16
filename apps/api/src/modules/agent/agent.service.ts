@@ -79,8 +79,9 @@ export class AgentService implements OnModuleDestroy {
     allowedProfiles: string[],
     role: string,
     ownerUserId?: string | null,
+    unrestrictedProfiles?: boolean,
   ): Promise<Record<string, unknown>> {
-    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
       throw new ForbiddenException(`Agent is not authorized for profile "${profileId}"`);
     }
 

@@ -49,15 +49,16 @@ export class ExecuteService {
     request: ExecuteFetchRequest;
     role?: string;
     allowedProfiles?: string[];
+    unrestrictedProfiles?: boolean;
     ownerUserId?: string | null;
   }): Promise<ExecuteFetchResponse> {
     const {
       tenantId, profileId, request,
-      role, allowedProfiles = [], ownerUserId,
+      role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
     } = params;
 
     // Agent profile authorization
-    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
       throw new BadRequestException(`Agent not authorized for profile "${profileId}"`);
     }
 
@@ -140,14 +141,15 @@ export class ExecuteService {
     request: ExecuteBrowserRequest;
     role?: string;
     allowedProfiles?: string[];
+    unrestrictedProfiles?: boolean;
     ownerUserId?: string | null;
   }): Promise<ExecuteBrowserResponse> {
     const {
       tenantId, profileId, request,
-      role, allowedProfiles = [], ownerUserId,
+      role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
     } = params;
 
-    if (role === 'Agent' && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
       throw new BadRequestException(`Agent not authorized for profile "${profileId}"`);
     }
 

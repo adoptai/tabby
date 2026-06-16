@@ -264,6 +264,7 @@ export class TokenExchangeService {
       token_type: 'federated',
       owner_user_id: params.target_user_id,
       allowed_profiles: params.agent_payload.allowed_profiles,
+      unrestricted_profiles: params.agent_payload.unrestricted_profiles || undefined,
     };
 
     const token = this.jwtService.sign(payload, { expiresIn: ttl });
