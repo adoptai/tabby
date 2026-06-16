@@ -51,6 +51,14 @@ export class AppTemplateEntity {
   @Column({ type: 'boolean', default: false })
   execute_enabled: boolean;
 
+  /**
+   * Extra egress domains cloned onto every app auto-provisioned from this
+   * template. Mirrors applications.extra_egress_allowlist. NoUI populates this
+   * from recorded HAR so per-user sessions inherit the full domain set.
+   */
+  @Column({ type: 'jsonb', default: () => `'[]'` })
+  extra_egress_allowlist: string[];
+
   @Column({ type: 'integer', nullable: true })
   idle_shutdown_seconds: number | null;
 

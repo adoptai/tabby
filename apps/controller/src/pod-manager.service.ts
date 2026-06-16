@@ -204,6 +204,8 @@ export class PodManagerService {
     targetUrls: string[],
     streamingMode: StreamingMode = StreamingMode.VNC,
     executeEnabled: boolean = false,
+    extraAllowlist: string[] = [],
+    allowAll: boolean = false,
   ): Promise<void> {
     const policyName = this.buildNetworkPolicyName(sessionId);
 
@@ -211,7 +213,7 @@ export class PodManagerService {
       const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode, executeEnabled);
       this.logger.log(`Creating NetworkPolicy ${policyName} for pod ${podName}`);
       await this.createPolicy(policy);
-      await this.syncEgressAllowlist(sessionId, targetUrls);
+      await this.syncEgressAllowlist(sessionId, targetUrls, extraAllowlist, allowAll);
       this.logger.log(`NetworkPolicy ${policyName} created`);
     } catch (error) {
       this.logger.error(`Failed to create NetworkPolicy ${policyName}: ${error}`);
@@ -238,7 +240,12 @@ export class PodManagerService {
   /**
    * Sync session-specific target URLs into the egress proxy allowlist control plane.
    */
-  async syncEgressAllowlist(sessionId: string, targetUrls: string[]): Promise<void> {
+  async syncEgressAllowlist(
+    sessionId: string,
+    targetUrls: string[],
+    extraAllowlist: string[] = [],
+    allowAll: boolean = false,
+  ): Promise<void> {
     const allowlistEndpoint = process.env.EGRESS_PROXY_ALLOWLIST_URL;
     if (!allowlistEndpoint) {
       if (this.egressFailClosed()) {
@@ -253,6 +260,8 @@ export class PodManagerService {
       body: JSON.stringify({
         session_id: sessionId,
         target_urls: targetUrls,
+        extra_allowlist: extraAllowlist,
+        allow_all: allowAll,
       }),
     });
 

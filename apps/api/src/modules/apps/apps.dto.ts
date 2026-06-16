@@ -5,7 +5,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 
 export const APP_SELECTABLE_FIELDS = [
-  'id', 'name', 'tenant_id', 'target_urls', 'login_config', 'keepalive_config',
+  'id', 'name', 'tenant_id', 'target_urls', 'extra_egress_allowlist', 'login_config', 'keepalive_config',
   'export_policy', 'notification_config', 'browser_policy', 'desired_session_count',
   'execute_enabled', 'credential_last_validated_at', 'credential_rotation_reminder_days',
   'created_at', 'updated_at',
@@ -49,6 +49,12 @@ export class CreateAppDto {
   @ArrayMinSize(1)
   @IsString({ each: true })
   target_urls: string[];
+
+  @ApiProperty({ description: 'Extra egress domains (suffix patterns like ".expedia.com" or exact hosts) merged into the session allowlist alongside target_urls. Typically populated from recorded HAR.', example: ['.expedia.com', '.trvl-media.com'], required: false })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  extra_egress_allowlist?: string[];
 
   @ApiProperty({ description: 'Login DSL configuration with URL, credential ref, and steps', example: { login_url: 'https://app.hubspot.com/login', credential_ref: 'k8s:secret/hubspot-creds', steps: [{ action: 'goto', url: 'https://app.hubspot.com/login' }, { action: 'fill', selector: '#username', value: '${USERNAME}' }, { action: 'click', selector: '#loginBtn' }] } })
   @IsObject()

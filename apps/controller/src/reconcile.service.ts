@@ -214,12 +214,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     const actual = activeSessions.length;
 
     // Keep egress allowlist synced for all currently active runtime sessions.
+    const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
     for (const session of activeSessions) {
       if (!session.pod_name) {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls);
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll);
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -259,6 +260,19 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.terminateSession(sorted[i]);
       }
     }
+  }
+
+  /**
+   * Derive per-session egress proxy options from an app:
+   * - `extraAllowlist`: vendor/auth domains declared on the app (e.g. populated
+   *   by NoUI from recorded HAR), added to the allowlist alongside target_urls.
+   * - `allowAll`: recording sessions run unrestricted — the vendor's domains are
+   *   unknowable in advance and the recorder discovers them via HAR.
+   */
+  private resolveEgressOptions(app: ApplicationEntity): { extraAllowlist: string[]; allowAll: boolean } {
+    const extraAllowlist = Array.isArray(app.extra_egress_allowlist) ? app.extra_egress_allowlist : [];
+    const allowAll = Boolean((app.browser_policy as Record<string, unknown> | undefined)?.recording_mode);
+    return { extraAllowlist, allowAll };
   }
 
   private async createSession(app: ApplicationEntity): Promise<void> {
@@ -302,7 +316,8 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Generate NetworkPolicy
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled);
+      const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled, extraAllowlist, allowAll);
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {
