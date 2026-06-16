@@ -34,6 +34,10 @@ export class KeepaliveRunner {
     private readonly appId: string,
     private readonly sessionId: string,
     private readonly credentials: { username: string; password: string },
+    // In VNC recording mode, suppress keepalive actions (reload/navigate)
+    // so they cannot pollute or disrupt the human-driven recording. Health
+    // checks still run to keep the session HEALTHY.
+    private readonly recordingMode = false,
   ) {}
 
   async start(): Promise<void> {
@@ -89,8 +93,8 @@ export class KeepaliveRunner {
     try {
       await this.refreshConfig();
 
-      // Step 1: Execute keepalive actions
-      const actions = this.appConfig.keepalive_config?.actions || [];
+      // Step 1: Execute keepalive actions (suppressed in recording mode)
+      const actions = this.recordingMode ? [] : (this.appConfig.keepalive_config?.actions || []);
       if (actions.length > 0) {
         try {
           await this.dslRunner.execute(actions, this.credentials);

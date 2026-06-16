@@ -214,12 +214,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     const actual = activeSessions.length;
 
     // Keep egress allowlist synced for all currently active runtime sessions.
+    const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
     for (const session of activeSessions) {
       if (!session.pod_name) {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls);
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll);
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -261,6 +262,19 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Derive per-session egress proxy options from an app:
+   * - `extraAllowlist`: vendor/auth domains declared on the app (e.g. populated
+   *   by NoUI from recorded HAR), added to the allowlist alongside target_urls.
+   * - `allowAll`: recording sessions run unrestricted — the vendor's domains are
+   *   unknowable in advance and the recorder discovers them via HAR.
+   */
+  private resolveEgressOptions(app: ApplicationEntity): { extraAllowlist: string[]; allowAll: boolean } {
+    const extraAllowlist = Array.isArray(app.extra_egress_allowlist) ? app.extra_egress_allowlist : [];
+    const allowAll = Boolean((app.browser_policy as Record<string, unknown> | undefined)?.recording_mode);
+    return { extraAllowlist, allowAll };
+  }
+
   private async createSession(app: ApplicationEntity): Promise<void> {
     // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
@@ -297,12 +311,18 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createNoVncService(savedSession.id, podName);
       }
 
-      if (app.execute_enabled) {
+      // The worker health server (port 8091) must be reachable via a Service for
+      // both execute calls AND recording drain (POST /recording/stop). Recording
+      // sessions don't set execute_enabled, so key off either.
+      const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+      const needsWorkerHealth = app.execute_enabled || allowAll;
+      if (needsWorkerHealth) {
         await this.podManager.createWorkerService(savedSession.id, podName);
       }
 
-      // Generate NetworkPolicy
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled);
+      // Generate NetworkPolicy — open the 8091 ingress when the worker health
+      // Service exists (execute or recording drain).
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll);
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {

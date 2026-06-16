@@ -62,10 +62,14 @@ worker:
   resources:
     requests:
       cpu: "1000m"
-      memory: "2Gi"
+      memory: "1Gi"
     limits:
-      cpu: "2000m"
-      memory: "3Gi"
+      # 4 cores: the node has 16 idle; the old 1.5 cap starved x11vnc's encoder
+      # against Chromium during page load (multi-minute first paint).
+      cpu: "4000m"
+      # Memory held at 1536Mi — the Kind node has only ~3.6Gi total. The 1440x900
+      # framebuffer (down from 1920x1080) lowers the footprint to compensate.
+      memory: "1536Mi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
 teamsBot:
