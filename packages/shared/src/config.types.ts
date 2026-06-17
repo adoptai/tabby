@@ -105,6 +105,13 @@ export interface BrowserPolicy {
   downloads: boolean;           // Default: false
   clipboard: boolean;           // Default: false
   file_chooser: boolean;        // Default: false
+  /**
+   * When set, the worker runs in VNC recording mode: ambient HAR + DOM
+   * interaction capture for a human-driven session, keepalive actions are
+   * suppressed, and POST /recording/stop drains a RecordingBundle.
+   * Undefined for normal (non-recording) sessions.
+   */
+  recording_mode?: 'login' | 'workflow';
 }
 
 export const DEFAULT_BROWSER_POLICY: BrowserPolicy = {

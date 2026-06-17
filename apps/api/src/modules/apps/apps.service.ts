@@ -21,6 +21,7 @@ import { APP_SELECTABLE_FIELDS, AppSelectableField } from './apps.dto';
 interface CreateAppInput {
   name: string;
   target_urls: string[];
+  extra_egress_allowlist?: string[];
   login_config: Record<string, unknown>;
   keepalive_config: Record<string, unknown>;
   export_policy: Record<string, unknown>;
@@ -92,6 +93,7 @@ export class AppsService {
       tenant_id: tenantId,
       name: input.name,
       target_urls: input.target_urls,
+      extra_egress_allowlist: input.extra_egress_allowlist ?? [],
       login_config: input.login_config,
       keepalive_config: input.keepalive_config,
       export_policy: input.export_policy,

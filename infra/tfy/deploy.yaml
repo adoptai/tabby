@@ -89,8 +89,8 @@ values:
         memory: "${WORKER_MEM_LIMIT}"
 
   slackBot:
-    enabled: true
-    slackDefaultChannel: "tabby-experiments"
+    enabled: ${SLACK_BOT_ENABLED}
+    slackDefaultChannel: "${SLACK_DEFAULT_CHANNEL}"
 
   teamsBot:
     enabled: false
@@ -325,6 +325,13 @@ values:
       # --- Workday ---
       - ".workday.com"
       - ".workdaycdn.com"
+      # --- Adopt platform assets + Frontegg-hosted logins (Spendflo etc.) ---
+      - ".adopt.ai"
+      - ".frontegg.com"
+      - ".spendflo.com"
+      - ".googleusercontent.com"
+      # --- BeyondRisk / Adopt Bank demo VM (exact host, kept narrow) ---
+      - ".nearby-nifty.eastus2.cloudapp.azure.com"
 
   ingress:
     enabled: false

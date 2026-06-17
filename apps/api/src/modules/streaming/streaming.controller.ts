@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Delete,
   ForbiddenException,
@@ -23,11 +24,13 @@ import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { SessionEntity, ApplicationEntity, InterventionEntity, IdentityProviderEntity, UserEntity } from '../../entities';
 import { StreamTokenService } from './stream-token.service';
+import { RecordingStore } from '../recording/recording.store';
+import { AppsService } from '../apps/apps.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, randomBytes } from 'crypto';
 import { Not, IsNull, MoreThan } from 'typeorm';
-import { Throttle } from '@nestjs/throttler';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/roles.guard';
 import { parseCookie } from '../../common/utils/cookie';
 
@@ -466,6 +469,7 @@ export class CdpStreamingController {
     );
   }
 
+  @SkipThrottle()
   @Get(':sessionId')
   async openStream(
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
@@ -610,6 +614,14 @@ export class CdpStreamingController {
         <section id="hitl-section" class="psec" style="display:none">
           <div id="hitl-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5">Checking session…</div>
           <button id="resolveBtn" class="pbtn pbtn-green" disabled>Mark as Resolved</button>
+        </section>
+        <section id="recording-section" class="psec" style="display:none">
+          <div style="font-size:13px;line-height:1.5">
+            <span style="color:#f87171;font-weight:600">&#9679; REC</span> &mdash; this session is being recorded.
+            Drive the browser to complete the flow, then finish to export it to NoUI.
+          </div>
+          <button id="finishRecordingBtn" class="pbtn pbtn-green">Finish &amp; export</button>
+          <div id="recording-status" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;margin-top:6px"></div>
         </section>
         <details open>
           <summary>Clipboard</summary>
@@ -863,6 +875,11 @@ export class CdpStreamingController {
         }
         var fromMcp = new URLSearchParams(window.location.search).get('from') === 'mcp';
         if (fromMcp) document.getElementById('hitl-section').style.display = '';
+        var recordingMode = new URLSearchParams(window.location.search).get('mode') === 'recording';
+        if (recordingMode) {
+          var recSection = document.getElementById('recording-section');
+          if (recSection) recSection.style.display = '';
+        }
 
         var currentStepIndex = null;
         var resolvedStepIndex = null;
@@ -992,6 +1009,42 @@ export class CdpStreamingController {
         clipInput.addEventListener('keyup', function(e) { e.stopPropagation(); });
         clipSend.addEventListener('click', sendClipboard);
 
+        // ── Recording: "Finish & export" ──────────────────────────────────────
+        var finishBtn = document.getElementById('finishRecordingBtn');
+        var recStatus = document.getElementById('recording-status');
+        if (finishBtn) {
+          finishBtn.addEventListener('click', function() {
+            if (!TOKEN) return;
+            finishBtn.disabled = true; finishBtn.textContent = 'Exporting…';
+            fetch('/vnc/' + SESSION_ID + '/recording-stop?token=' + encodeURIComponent(TOKEN), {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+            }).then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(d) {
+                if (!d) { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; return; }
+                finishBtn.textContent = 'Recording complete ✓'; finishBtn.style.background = '#16a34a';
+                recStatus.textContent = 'Captured ' + d.har_entries + ' requests and ' + d.events
+                  + ' interactions. You can return to NoUI.';
+              }).catch(function() { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; });
+          });
+        }
+
+        // ── Keep the stream token fresh (single-use token expires in ~10 min) ──
+        // The recording lives server-side in the worker pod, so refreshing the
+        // token keeps the viewer + Finish button working across the TTL boundary.
+        window.__streamToken = TOKEN;
+        function refreshToken() {
+          if (sessionTerminated || !TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/refresh-token?token=' + encodeURIComponent(TOKEN), { method: 'POST' })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(d) {
+              if (d && d.token) {
+                TOKEN = d.token; tokenExpired = false; window.__streamToken = d.token;
+                cfg.setAttribute('data-stream-token', d.token);
+              }
+            }).catch(function() {});
+        }
+        setInterval(refreshToken, 8 * 60 * 1000);
+
         poll();
         setInterval(poll, 3000);
       })();
@@ -1010,6 +1063,8 @@ export class StreamingController {
 
   constructor(
     private readonly streamTokenService: StreamTokenService,
+    private readonly recordingStore: RecordingStore,
+    private readonly appsService: AppsService,
     private readonly jwtService: JwtService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
@@ -1023,6 +1078,7 @@ export class StreamingController {
     private readonly userRepo: Repository<UserEntity>,
   ) {}
 
+  @SkipThrottle()
   @Get('assets/*')
   async getNoVncAsset(@Req() req: Request, @Res() res: Response): Promise<void> {
     const rawAssetPath = (req.params as Record<string, string | undefined>)['0'] || 'rfb.js';
@@ -1170,6 +1226,89 @@ export class StreamingController {
   }
 
   /**
+   * "Finish & export" button in the recording viewer. Stream-token-authed.
+   * Drains the recording bundle from the worker (synchronous flush) and
+   * persists it encrypted for NoUI to pull via GET /recording/sessions/:id/bundle.
+   */
+  @SkipThrottle()
+  @Post(':sessionId/recording-stop')
+  @HttpCode(200)
+  async stopRecording(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ status: 'stopped'; har_entries: number; events: number; url_events: number }> {
+    if (!token) {
+      throw new UnauthorizedException('Missing stream token');
+    }
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) {
+      throw new UnauthorizedException(result.reason);
+    }
+    if (result.payload.session_id !== sessionId) {
+      throw new UnauthorizedException('Token is not valid for this session');
+    }
+
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+    if (!session.pod_name) {
+      throw new ConflictException('Session has no active worker pod');
+    }
+
+    const bundle = await this.recordingStore.drainFromWorker(session.pod_name, sessionId);
+    await this.recordingStore.persist(session.tenant_id, sessionId, bundle);
+
+    // Cleanup: deactivate the (throwaway) recording app so its pod is torn down
+    // (desired_session_count -> 0). The session row + persisted bundle survive
+    // for NoUI to pull via GET /recording/sessions/:id/bundle. Best-effort —
+    // never fail the stop on a cleanup error.
+    if (session.app_id) {
+      try {
+        await this.appsService.deactivate(session.app_id, session.tenant_id, `recording:${sessionId}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`Recording cleanup (deactivate app ${session.app_id}) failed: ${msg}`);
+      }
+    }
+
+    return {
+      status: 'stopped',
+      har_entries: bundle.har?.log?.entries?.length ?? 0,
+      events: bundle.click_events?.length ?? 0,
+      url_events: bundle.url_events?.length ?? 0,
+    };
+  }
+
+  /**
+   * Re-mint a fresh stream token for an in-progress recording so the viewer
+   * survives past the 10-minute single-use token TTL without losing the
+   * server-side recording (which lives in the worker pod, not the connection).
+   */
+  @SkipThrottle()
+  @Post(':sessionId/refresh-token')
+  @HttpCode(200)
+  async refreshStreamToken(
+    @Param('sessionId') sessionId: string,
+    @Query('token') token?: string,
+  ): Promise<{ token: string; expires_at: string }> {
+    if (!token) {
+      throw new UnauthorizedException('Missing stream token');
+    }
+    const result = this.streamTokenService.verifyToken(token);
+    if (!result.valid) {
+      throw new UnauthorizedException(result.reason);
+    }
+    if (result.payload.session_id !== sessionId) {
+      throw new UnauthorizedException('Token is not valid for this session');
+    }
+
+    const fresh = await this.streamTokenService.generateToken(sessionId, result.payload.user_id);
+    return { token: fresh, expires_at: new Date(Date.now() + 600 * 1000).toISOString() };
+  }
+
+  /**
    * Email gate: the session owner must have been auto-provisioned (allow_auto_provision=true
    * on the IdP) before this endpoint can succeed. Federated users whose owner_user_id is an
    * external sub but who have no local user row must authenticate via OAuth instead.
@@ -1237,6 +1376,7 @@ export class StreamingController {
    * Returns session state, HITL info, and diagnostic counters in one call.
    * Authenticated via stream token (same as hitl-state).
    */
+  @SkipThrottle()
   @Get(':sessionId/panel-state')
   async getPanelState(
     @Param('sessionId') sessionId: string,
@@ -1320,7 +1460,7 @@ export class StreamingController {
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Session not found');
 
-    if (req.user.role !== 'Admin' && session.owner_user_id && req.user.owner_user_id !== session.owner_user_id) {
+    if (!['Admin', 'Editor'].includes(req.user.role) && session.owner_user_id && req.user.owner_user_id !== session.owner_user_id) {
       throw new ForbiddenException('You can only revoke stream access for your own sessions');
     }
 
@@ -1398,6 +1538,7 @@ export class StreamingController {
     );
   }
 
+  @SkipThrottle()
   @Get(':sessionId')
   async openStream(
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
@@ -1545,6 +1686,14 @@ export class StreamingController {
           <div id="hitl-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5">Checking session…</div>
           <button id="resolveBtn" class="pbtn pbtn-green" disabled>Mark as Resolved</button>
         </section>
+        <section id="recording-section" class="psec" style="display:none">
+          <div style="font-size:13px;line-height:1.5">
+            <span style="color:#f87171;font-weight:600">&#9679; REC</span> &mdash; this session is being recorded.
+            Drive the browser to complete the flow, then finish to export it to NoUI.
+          </div>
+          <button id="finishRecordingBtn" class="pbtn pbtn-green">Finish &amp; export</button>
+          <div id="recording-status" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;margin-top:6px"></div>
+        </section>
         <details open>
           <summary>Clipboard</summary>
           <div class="psec">
@@ -1615,6 +1764,11 @@ export class StreamingController {
         }
         var fromMcp = new URLSearchParams(window.location.search).get('from') === 'mcp';
         if (fromMcp) document.getElementById('hitl-section').style.display = '';
+        var recordingMode = new URLSearchParams(window.location.search).get('mode') === 'recording';
+        if (recordingMode) {
+          var recSection = document.getElementById('recording-section');
+          if (recSection) recSection.style.display = '';
+        }
 
         var currentStepIndex = null;
         var resolvedStepIndex = null;
@@ -1728,6 +1882,42 @@ export class StreamingController {
             }).catch(function() { setTimeout(pollForSuccessor, 3000); });
         }
 
+        // ── Recording: "Finish & export" ──────────────────────────────────────
+        var finishBtn = document.getElementById('finishRecordingBtn');
+        var recStatus = document.getElementById('recording-status');
+        if (finishBtn) {
+          finishBtn.addEventListener('click', function() {
+            if (!TOKEN) return;
+            finishBtn.disabled = true; finishBtn.textContent = 'Exporting…';
+            fetch('/vnc/' + SESSION_ID + '/recording-stop?token=' + encodeURIComponent(TOKEN), {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+            }).then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(d) {
+                if (!d) { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; return; }
+                finishBtn.textContent = 'Recording complete ✓'; finishBtn.style.background = '#16a34a';
+                recStatus.textContent = 'Captured ' + d.har_entries + ' requests and ' + d.events
+                  + ' interactions. You can return to NoUI.';
+              }).catch(function() { finishBtn.disabled = false; finishBtn.textContent = 'Failed — retry'; });
+          });
+        }
+
+        // ── Keep the stream token fresh (single-use token expires in ~10 min) ──
+        // The recording lives server-side in the worker pod, so refreshing the
+        // token keeps the viewer + Finish button working across the TTL boundary.
+        window.__streamToken = TOKEN;
+        function refreshToken() {
+          if (sessionTerminated || !TOKEN) return;
+          fetch('/vnc/' + SESSION_ID + '/refresh-token?token=' + encodeURIComponent(TOKEN), { method: 'POST' })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(d) {
+              if (d && d.token) {
+                TOKEN = d.token; tokenExpired = false; window.__streamToken = d.token;
+                cfg.setAttribute('data-stream-token', d.token);
+              }
+            }).catch(function() {});
+        }
+        setInterval(refreshToken, 8 * 60 * 1000);
+
         poll();
         setInterval(poll, 3000);
       })();
@@ -1757,6 +1947,10 @@ export class StreamingController {
       rfb.scaleViewport = true;
       rfb.resizeSession = true;
       rfb.background = '#0b1020';
+      // Trade server CPU (now uncapped) for fewer bytes over the slow transport:
+      // max zlib compression, JPEG quality kept legible for login forms.
+      rfb.qualityLevel = 6;
+      rfb.compressionLevel = 9;
       window.rfb = rfb;
 
       rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; });

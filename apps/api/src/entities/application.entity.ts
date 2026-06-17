@@ -21,6 +21,15 @@ export class ApplicationEntity {
   @Column({ type: 'jsonb' })
   target_urls: string[];
 
+  /**
+   * Extra egress domains (suffix patterns like `.expedia.com` or exact hosts)
+   * merged into the session's egress allowlist alongside target_urls. Populated
+   * by NoUI from the auth/CDN domains observed in a recording's HAR, so the
+   * compiled app runs under enforce without per-vendor kubectl edits.
+   */
+  @Column({ type: 'jsonb', default: () => `'[]'` })
+  extra_egress_allowlist: string[];
+
   @Column({ type: 'jsonb' })
   login_config: Record<string, unknown>;
 

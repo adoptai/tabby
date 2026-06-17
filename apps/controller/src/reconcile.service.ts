@@ -7,6 +7,7 @@ import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
 import { CircuitBreakerStateEntity } from './entities/circuit-breaker-state.entity';
+import { AppTemplateEntity } from './entities/app-template.entity';
 import { StateMachineService } from './state-machine.service';
 import { PodManagerService } from './pod-manager.service';
 
@@ -47,6 +48,8 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     private readonly batonRepo: Repository<SessionBatonEntity>,
     @InjectRepository(CircuitBreakerStateEntity)
     private readonly circuitRepo: Repository<CircuitBreakerStateEntity>,
+    @InjectRepository(AppTemplateEntity)
+    private readonly templateRepo: Repository<AppTemplateEntity>,
     private readonly dataSource: DataSource,
     private readonly stateMachine: StateMachineService,
     private readonly podManager: PodManagerService,
@@ -214,12 +217,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     const actual = activeSessions.length;
 
     // Keep egress allowlist synced for all currently active runtime sessions.
+    const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
     for (const session of activeSessions) {
       if (!session.pod_name) {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls);
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll);
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -261,6 +265,19 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Derive per-session egress proxy options from an app:
+   * - `extraAllowlist`: vendor/auth domains declared on the app (e.g. populated
+   *   by NoUI from recorded HAR), added to the allowlist alongside target_urls.
+   * - `allowAll`: recording sessions run unrestricted — the vendor's domains are
+   *   unknowable in advance and the recorder discovers them via HAR.
+   */
+  private resolveEgressOptions(app: ApplicationEntity): { extraAllowlist: string[]; allowAll: boolean } {
+    const extraAllowlist = Array.isArray(app.extra_egress_allowlist) ? app.extra_egress_allowlist : [];
+    const allowAll = Boolean((app.browser_policy as Record<string, unknown> | undefined)?.recording_mode);
+    return { extraAllowlist, allowAll };
+  }
+
   private async createSession(app: ApplicationEntity): Promise<void> {
     // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
@@ -297,12 +314,18 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createNoVncService(savedSession.id, podName);
       }
 
-      if (app.execute_enabled) {
+      // The worker health server (port 8091) must be reachable via a Service for
+      // both execute calls AND recording drain (POST /recording/stop). Recording
+      // sessions don't set execute_enabled, so key off either.
+      const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+      const needsWorkerHealth = app.execute_enabled || allowAll;
+      if (needsWorkerHealth) {
         await this.podManager.createWorkerService(savedSession.id, podName);
       }
 
-      // Generate NetworkPolicy
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, app.execute_enabled);
+      // Generate NetworkPolicy — open the 8091 ingress when the worker health
+      // Service exists (execute or recording drain).
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll);
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {
@@ -371,27 +394,46 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       where: { state: SessionState.HEALTHY as any },
     });
 
-    const idleShutdownSeconds = parseInt(process.env.IDLE_SHUTDOWN_SECONDS || '0', 10);
-    const idleShutdownMs = idleShutdownSeconds * 1000;
+    const globalIdleShutdownSeconds = parseInt(process.env.IDLE_SHUTDOWN_SECONDS || '0', 10);
+
+    // Pre-load apps + templates for per-app idle_shutdown_seconds
+    const appIds = [...new Set(healthySessions.map(s => s.app_id))];
+    const apps = appIds.length > 0
+      ? await this.appRepo.findByIds(appIds)
+      : [];
+    const appById = new Map(apps.map(a => [a.id, a]));
+    const templateIds = [...new Set(apps.map(a => a.template_id).filter(Boolean))];
+    const templates = templateIds.length > 0
+      ? await this.templateRepo.findByIds(templateIds)
+      : [];
+    const templateById = new Map(templates.map(t => [t.id, t]));
 
     for (const session of healthySessions) {
       const age = now - new Date(session.started_at).getTime();
       if (age >= maxAgeMs) {
-        this.logger.log(`Recycling session ${session.id} (age: ${Math.round(age / 3600000)}h)`);
-        // Terminate and let reconcile recreate it
+        this.logger.log(
+          `Max-age shutdown: session ${session.id} age=${Math.round(age / 3600000)}h ` +
+          `(max: ${maxAgeHours}h) — scaling app ${session.app_id} to 0`,
+        );
+        await this.appRepo.update(session.app_id, { desired_session_count: 0 });
         await this.terminateSession(session);
         continue;
       }
 
-      // Idle shutdown: if session has owner_user_id (per-user) and hasn't been used
-      if (idleShutdownMs > 0 && session.owner_user_id && session.last_credential_request_at) {
-        const idleTime = now - new Date(session.last_credential_request_at).getTime();
-        if (idleTime >= idleShutdownMs) {
+      // Idle shutdown: per-app setting falls back to global env
+      const app = appById.get(session.app_id);
+      const template = app?.template_id ? templateById.get(app.template_id) : undefined;
+      const idleSeconds = template?.idle_shutdown_seconds ?? globalIdleShutdownSeconds;
+      const idleMs = idleSeconds * 1000;
+
+      if (idleMs > 0 && session.owner_user_id) {
+        const lastUsed = session.last_activity_at || session.last_credential_request_at || session.started_at;
+        const idleTime = now - new Date(lastUsed).getTime();
+        if (idleTime >= idleMs) {
           this.logger.log(
             `Idle shutdown: session ${session.id} owner=${session.owner_user_id} ` +
-            `idle ${Math.round(idleTime / 60000)}min (threshold: ${idleShutdownSeconds}s)`,
+            `idle ${Math.round(idleTime / 60000)}min (threshold: ${idleSeconds}s, source: ${template?.idle_shutdown_seconds ? 'template' : 'env'})`,
           );
-          // Set desired_session_count to 0 so it doesn't restart
           await this.appRepo.update(session.app_id, { desired_session_count: 0 });
           await this.terminateSession(session);
         }
@@ -399,8 +441,9 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Clean up FAILED sessions: terminate after half the idle TTL (or 30 min default)
-    if (idleShutdownMs > 0) {
-      const failedTtlMs = idleShutdownMs / 2;
+    const globalIdleMs = globalIdleShutdownSeconds * 1000;
+    if (globalIdleMs > 0) {
+      const failedTtlMs = globalIdleMs / 2;
       const failedSessions = await this.sessionRepo.find({
         where: { state: SessionState.FAILED as any },
       });

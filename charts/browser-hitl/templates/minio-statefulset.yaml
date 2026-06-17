@@ -22,6 +22,7 @@ spec:
         {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: minio
     spec:
+      {{- include "browser-hitl.imagePullSecrets" . | nindent 6 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

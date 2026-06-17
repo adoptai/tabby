@@ -44,6 +44,18 @@ export class IdentityProviderEntity {
   @Column({ type: 'jsonb', nullable: true })
   admin_domains: string[] | null;
 
+  /** JWT claim containing source roles array, e.g. "roles" for Frontegg */
+  @Column({ type: 'varchar', nullable: true })
+  role_claim: string | null;
+
+  /** Source role values that map to Tabby Admin */
+  @Column({ type: 'jsonb', nullable: true })
+  admin_role_values: string[] | null;
+
+  /** Source role values that map to Tabby Editor */
+  @Column({ type: 'jsonb', nullable: true })
+  editor_role_values: string[] | null;
+
   // Claim mapping
   @Column({ type: 'varchar', nullable: true })
   tenant_id_claim: string | null;

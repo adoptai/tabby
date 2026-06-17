@@ -20,8 +20,8 @@ class CreateUserDto {
   @Matches(PASSWORD_RULES.PATTERN, { message: PASSWORD_RULES.DESCRIPTION })
   password: string;
 
-  @ApiProperty({ example: 'Operator', enum: ['Admin', 'Operator', 'Viewer'] })
-  @IsIn(['Admin', 'Operator', 'Viewer'])
+  @ApiProperty({ example: 'Operator', enum: ['Admin', 'Editor', 'Operator', 'Viewer'] })
+  @IsIn(['Admin', 'Editor', 'Operator', 'Viewer'])
   role: string;
 
   @ApiProperty()

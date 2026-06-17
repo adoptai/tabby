@@ -195,6 +195,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add charts/browser-hitl/Chart.yaml
           git commit -m "chore: bump chart version to ${{ steps.version.outputs.version }} [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin dev
           git push
 
       - name: Get image tag
@@ -238,6 +239,8 @@ jobs:
       NATS_ENABLED: ${{ secrets.NATS_ENABLED || 'true' }}
       MINIO_ENABLED: ${{ secrets.MINIO_ENABLED || 'true' }}
       ADMIN_UI_ENABLED: ${{ secrets.ADMIN_UI_ENABLED || 'true' }}
+      SLACK_BOT_ENABLED: ${{ secrets.SLACK_BOT_ENABLED || 'false' }}
+      SLACK_DEFAULT_CHANNEL: ${{ secrets.SLACK_DEFAULT_CHANNEL || '' }}
       API_DOCS_ENABLED: ${{ secrets.API_DOCS_ENABLED || 'true' }}
       # App secrets (from environment secrets)
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}

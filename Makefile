@@ -234,6 +234,10 @@ endif
 
 KIND_CLUSTER ?= tabby-dev
 
+.PHONY: tilt
+tilt: ## Start Tilt for live rebuild and deploy (replaces kind-reload-all)
+	tilt up
+
 .PHONY: kind-create
 kind-create: ## Create a Kind cluster for local development
 	kind create cluster --name $(KIND_CLUSTER)

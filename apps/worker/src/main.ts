@@ -14,6 +14,8 @@ import { SessionDb } from './session-db';
 import { RecyclingMonitor } from './recycling-monitor';
 import { ScreenshotFallback } from './screenshot-fallback';
 import { resolveCredentials } from './credential-resolver';
+import { RecordingRunner } from './recording-runner';
+import type { RecordingMode } from '@browser-hitl/shared';
 
 /**
  * Browser Worker Main Entry Point
@@ -60,6 +62,7 @@ async function main() {
   let recyclingMonitor: RecyclingMonitor | null = null;
   let screenshotFallback: ScreenshotFallback | null = null;
   let cdpRelay: { stop(): void } | null = null;
+  let recordingRunner: RecordingRunner | null = null;
 
   // Install shutdown handler once so both success and failure paths are covered.
   process.on('SIGTERM', async () => {
@@ -68,6 +71,7 @@ async function main() {
     recyclingMonitor?.stop();
     screenshotFallback?.stop();
     cdpRelay?.stop();
+    recordingRunner?.detach();
     healthServer.cleanupBeforeShutdown();
     if (context) {
       await context.close();
@@ -83,6 +87,12 @@ async function main() {
   try {
     // Launch browser
     const browserArgs = [...CHROMIUM_FLAGS] as string[];
+    if (streamingMode !== 'cdp') {
+      // VNC mode: size the headed browser window to fill the Xvfb framebuffer
+      // (1440x900) so the viewer shows the full window, not a small default
+      // window in a black canvas.
+      browserArgs.push('--window-position=0,0', '--window-size=1440,900', '--start-maximized');
+    }
     const launchOptions: LaunchOptions = {
       headless: streamingMode === 'cdp', // CDP: headless; VNC: renders in Xvfb display
       args: browserArgs,
@@ -128,11 +138,15 @@ async function main() {
     }
 
     context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
+      // VNC: null viewport => the page fills the actual browser window (which we
+      // sized to the Xvfb display), so the human sees a full, properly-sized
+      // page. CDP/headless keeps a fixed 1920x1080 viewport.
+      viewport: streamingMode === 'cdp' ? { width: 1920, height: 1080 } : null,
     });
 
     // Disable downloads, clipboard, file chooser per browser_policy
     const browserPolicy = appConfig.browser_policy || { downloads: false, clipboard: false, file_chooser: false };
+    const recordingMode = (browserPolicy as { recording_mode?: RecordingMode }).recording_mode;
     if (!browserPolicy.downloads) {
       // Playwright doesn't have a direct "disable downloads" API,
       // but we intercept and cancel download events
@@ -178,6 +192,10 @@ async function main() {
 
     const page = await context.newPage();
 
+    // Recording sessions are human-VNC-only — disable execute before wiring the
+    // page so /execute/* returns 409 instead of registering handlers.
+    healthServer.setRecordingMode(Boolean(recordingMode));
+
     // Register execute endpoint on the health server
     healthServer.setPage(page);
 
@@ -217,42 +235,81 @@ async function main() {
     const credentials = await resolveCredentials(appConfig.login_config.credential_ref);
     keepaliveRunner = new KeepaliveRunner(
       page, context, dslRunner, healthRunner, artifactExtractor, db, appConfig, appId, sessionId, credentials,
+      Boolean(recordingMode),
     );
 
-    // Register header capture listeners BEFORE login (per spec section 10.8).
-    // Request-header capture must also register before login so the first authenticated
-    // outbound request (bearer JWT, tenant key) is not missed.
-    artifactExtractor.registerHeaderCapture();
-    artifactExtractor.registerRequestHeaderCapture();
+    if (recordingMode) {
+      // VNC recording session: a human drives the browser while the worker
+      // passively captures HAR + DOM interaction + URL events. No login DSL,
+      // no artifact extraction, no keepalive navigation.
+      console.log(`Starting VNC recording session (mode=${recordingMode})`);
+      recordingRunner = new RecordingRunner(page, context, sessionId, recordingMode);
+      await recordingRunner.start();
+      healthServer.setRecordingRunner(recordingRunner);
 
-    // Execute login DSL
-    console.log('Starting login DSL execution');
-    await db.updateLastLoginAt(sessionId);
-    await dslRunner.execute(appConfig.login_config.steps, credentials);
-
-    // Pass DSL variables (e.g., quote_id from store_as) to artifact extractor
-    const dslVars = dslRunner.getVariables();
-    if (dslVars.size > 0) {
-      artifactExtractor.setDslVariables(dslVars);
-      console.log(`DSL variables passed to extractor: ${[...dslVars.keys()].join(', ')}`);
-    }
-
-    // Run health predicate to confirm authentication
-    const healthResult = await healthRunner.evaluate();
-    await db.updateHealthResult(sessionId, healthResult.overall);
-
-    if (healthResult.overall === 'PASS') {
-      console.log('Login successful, extracting artifacts');
-      try {
-        await artifactExtractor.extractAndUpload();
-      } catch (err) {
-        console.error(`Initial artifact extraction failed: ${err}`);
+      // Session reuse: seed cookies captured from a prior login recording so the
+      // human starts already authenticated (no stored credentials). Provisioned
+      // via recording-provision when `--from <login-session>` is given.
+      const seedCookies = (appConfig.login_config as { seed_cookies?: unknown })?.seed_cookies;
+      if (Array.isArray(seedCookies) && seedCookies.length > 0) {
+        try {
+          await context.addCookies(seedCookies as Parameters<typeof context.addCookies>[0]);
+          console.log(`Seeded ${seedCookies.length} cookie(s) from source login recording`);
+        } catch (err) {
+          console.warn(`Failed to seed cookies: ${err}`);
+        }
       }
-    }
 
-    // Enter keepalive loop
-    console.log('Entering keepalive loop');
-    await keepaliveRunner.start();
+      const startUrl = (
+        process.env.RECORDING_START_URL || appConfig.login_config?.login_url || ''
+      ).trim();
+      if (startUrl && startUrl !== 'about:blank') {
+        try {
+          await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
+        } catch (err) {
+          console.warn(`Recording start navigation failed: ${err}`);
+        }
+      }
+
+      await db.updateHealthResult(sessionId, 'PASS');
+      console.log('Entering recording keepalive loop (actions suppressed)');
+      await keepaliveRunner.start();
+    } else {
+      // Register header capture listeners BEFORE login (per spec section 10.8).
+      // Request-header capture must also register before login so the first authenticated
+      // outbound request (bearer JWT, tenant key) is not missed.
+      artifactExtractor.registerHeaderCapture();
+      artifactExtractor.registerRequestHeaderCapture();
+
+      // Execute login DSL
+      console.log('Starting login DSL execution');
+      await db.updateLastLoginAt(sessionId);
+      await dslRunner.execute(appConfig.login_config.steps, credentials);
+
+      // Pass DSL variables (e.g., quote_id from store_as) to artifact extractor
+      const dslVars = dslRunner.getVariables();
+      if (dslVars.size > 0) {
+        artifactExtractor.setDslVariables(dslVars);
+        console.log(`DSL variables passed to extractor: ${[...dslVars.keys()].join(', ')}`);
+      }
+
+      // Run health predicate to confirm authentication
+      const healthResult = await healthRunner.evaluate();
+      await db.updateHealthResult(sessionId, healthResult.overall);
+
+      if (healthResult.overall === 'PASS') {
+        console.log('Login successful, extracting artifacts');
+        try {
+          await artifactExtractor.extractAndUpload();
+        } catch (err) {
+          console.error(`Initial artifact extraction failed: ${err}`);
+        }
+      }
+
+      // Enter keepalive loop
+      console.log('Entering keepalive loop');
+      await keepaliveRunner.start();
+    }
 
     // Start recycling monitor (FR-34)
     const maxAgeHours = parseInt(process.env.MAX_SESSION_AGE_HOURS || '24', 10);

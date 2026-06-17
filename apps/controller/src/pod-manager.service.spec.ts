@@ -49,6 +49,38 @@ describe('PodManagerService egress allowlist sync', () => {
     );
   });
 
+  it('includes extra_allowlist and allow_all in the PUT body', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = fetchMock as any;
+
+    process.env.EGRESS_PROXY_ALLOWLIST_URL = 'http://egress-proxy:8095/allowlist';
+
+    const service = new PodManagerService();
+    await service.syncEgressAllowlist('session-1', ['https://example.com/login'], ['.expedia.com'], true);
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    expect(body).toEqual({
+      session_id: 'session-1',
+      target_urls: ['https://example.com/login'],
+      extra_allowlist: ['.expedia.com'],
+      allow_all: true,
+    });
+  });
+
+  it('defaults extra_allowlist to [] and allow_all to false', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = fetchMock as any;
+
+    process.env.EGRESS_PROXY_ALLOWLIST_URL = 'http://egress-proxy:8095/allowlist';
+
+    const service = new PodManagerService();
+    await service.syncEgressAllowlist('session-1', ['https://example.com/login']);
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    expect(body.extra_allowlist).toEqual([]);
+    expect(body.allow_all).toBe(false);
+  });
+
   it('sends DELETE allowlist cleanup with encoded session id', async () => {
     const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
     global.fetch = fetchMock as any;

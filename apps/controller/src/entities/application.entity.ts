@@ -21,6 +21,10 @@ export class ApplicationEntity {
   @Column({ type: 'jsonb' })
   target_urls: string[];
 
+  /** Extra egress domains merged into the session allowlist alongside target_urls. */
+  @Column({ type: 'jsonb', default: () => `'[]'` })
+  extra_egress_allowlist: string[];
+
   @Column({ type: 'jsonb' })
   login_config: Record<string, unknown>;
 

@@ -18,6 +18,18 @@ const ALLOW_INSECURE_SESSION_ALLOWLIST = (process.env.EGRESS_PROXY_ALLOW_INSECUR
   .toLowerCase() === 'true';
 const DEFAULT_ALLOWLIST = parseAllowlist(process.env.EGRESS_PROXY_DEFAULT_ALLOWLIST || '');
 
+// Tabby-owned infrastructure — always allowed, merged into every allowlist at
+// match time. Immune to env/chart misconfiguration (cannot be removed by
+// EGRESS_PROXY_DEFAULT_ALLOWLIST being unset or truncated). Eliminates the
+// "noVNC client / CDN assets blocked" failure class (cdn.adopt.ai).
+const TABBY_INFRASTRUCTURE_ALLOWLIST = ['.adopt.ai'];
+
+// Sentinel domain that, when present in a session's allowlist, permits all
+// egress for that session. Used for recording sessions (human-driven discovery
+// of an arbitrary vendor whose domains are unknowable in advance — the recorder
+// captures them via HAR instead).
+const ALLOW_ALL_SENTINEL = '*';
+
 const sessionAllowlist = new Map();
 
 function log(message, extra) {
@@ -109,16 +121,22 @@ function isHostAllowed(hostname, sessionId) {
     return false;
   }
 
-  const allowlist = new Set(DEFAULT_ALLOWLIST);
+  const allowlist = new Set([...DEFAULT_ALLOWLIST, ...TABBY_INFRASTRUCTURE_ALLOWLIST]);
   if (sessionId) {
     const sessionDomains = sessionAllowlist.get(sessionId);
     if (sessionDomains) {
+      if (sessionDomains.has(ALLOW_ALL_SENTINEL)) {
+        return true;
+      }
       for (const domain of sessionDomains) {
         allowlist.add(domain);
       }
     }
   } else if (ALLOW_INSECURE_SESSION_ALLOWLIST) {
     for (const domains of sessionAllowlist.values()) {
+      if (domains.has(ALLOW_ALL_SENTINEL)) {
+        return true;
+      }
       for (const domain of domains) {
         allowlist.add(domain);
       }
@@ -354,6 +372,10 @@ async function handleAdmin(req, res) {
       const body = await readJsonBody(req);
       const sessionId = String(body.session_id || '').trim();
       const targetUrls = Array.isArray(body.target_urls) ? body.target_urls : [];
+      // Domain patterns (not URLs) added as-is — e.g. extra_egress_allowlist
+      // from an AppTemplate, or auth domains discovered during recording.
+      const extraAllowlist = Array.isArray(body.extra_allowlist) ? body.extra_allowlist : [];
+      const allowAll = body.allow_all === true;
 
       if (!sessionId) {
         writeJson(res, 400, { error: 'session_id_required' });
@@ -361,8 +383,17 @@ async function handleAdmin(req, res) {
       }
 
       const domains = new Set();
+      if (allowAll) {
+        domains.add(ALLOW_ALL_SENTINEL);
+      }
       for (const targetUrl of targetUrls) {
         const host = extractHostFromTarget(targetUrl);
+        if (host) {
+          domains.add(host);
+        }
+      }
+      for (const entry of extraAllowlist) {
+        const host = normalizeHost(entry);
         if (host) {
           domains.add(host);
         }
