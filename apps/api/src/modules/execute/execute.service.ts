@@ -75,6 +75,9 @@ export class ExecuteService {
       tenantId, profile.app_id, ownerUserId,
     );
 
+    // Track activity for idle shutdown (execute/fetch counts as usage)
+    this.credentialsService.touchSessionActivity(session.id).catch(() => {});
+
     if (!session.pod_name) {
       throw new ConflictException('Session has no assigned worker pod');
     }
@@ -164,6 +167,9 @@ export class ExecuteService {
     const session = await this.credentialsService.findHealthySession(
       tenantId, profile.app_id, ownerUserId,
     );
+
+    // Track activity for idle shutdown (execute/browser counts as usage)
+    this.credentialsService.touchSessionActivity(session.id).catch(() => {});
 
     if (!session.pod_name) {
       throw new ConflictException('Session has no assigned worker pod');

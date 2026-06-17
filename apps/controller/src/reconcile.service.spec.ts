@@ -1,7 +1,7 @@
 import { ReconcileService } from './reconcile.service';
 
 function buildService(overrides: Record<string, any> = {}) {
-  const appRepo = overrides.appRepo ?? { find: jest.fn(), update: jest.fn() };
+  const appRepo = overrides.appRepo ?? { find: jest.fn(), update: jest.fn(), findByIds: jest.fn().mockResolvedValue([]) };
   const sessionRepo = overrides.sessionRepo ?? { count: jest.fn(), find: jest.fn(), update: jest.fn() };
   const batonRepo = overrides.batonRepo ?? {};
   const circuitRepo = overrides.circuitRepo ?? {
@@ -27,11 +27,14 @@ function buildService(overrides: Record<string, any> = {}) {
     podExists: jest.fn().mockResolvedValue(true),
   };
 
+  const templateRepo = { findByIds: jest.fn().mockResolvedValue([]) };
+
   return new ReconcileService(
     appRepo as any,
     sessionRepo as any,
     batonRepo as any,
     circuitRepo as any,
+    templateRepo as any,
     dataSource as any,
     stateMachine as any,
     podManager as any,
@@ -196,7 +199,7 @@ describe('ReconcileService restart_requested', () => {
       count: jest.fn().mockResolvedValue(0),
       update: jest.fn().mockResolvedValue(undefined),
     };
-    const appRepo = { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
+    const appRepo = { find: jest.fn().mockResolvedValue([]), update: jest.fn(), findByIds: jest.fn().mockResolvedValue([]) };
     const stateMachine = {
       evaluateSession: jest.fn().mockResolvedValue(undefined),
       transition: jest.fn().mockResolvedValue(true),
@@ -281,7 +284,7 @@ describe('ReconcileService checkRecycling', () => {
       count: jest.fn(),
       update: jest.fn(),
     };
-    const appRepo = { update: jest.fn(), find: jest.fn() };
+    const appRepo = { update: jest.fn(), find: jest.fn(), findByIds: jest.fn().mockResolvedValue([]) };
     const stateMachine = { transition: jest.fn().mockResolvedValue(true) };
     const podManager = {
       deleteWorkerPod: jest.fn().mockResolvedValue(undefined),

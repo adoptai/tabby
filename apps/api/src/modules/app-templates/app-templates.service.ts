@@ -1,6 +1,7 @@
 import { Injectable, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { createHash } from 'crypto';
 import { ProfileVersionState } from '@browser-hitl/shared';
 import { AppTemplateEntity, ApplicationEntity, ServiceProfileEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
@@ -39,15 +40,16 @@ export class AppTemplatesService {
       payload: { template_id: saved.id, name: saved.name },
     });
 
-    return saved;
+    return this.withHash(saved);
   }
 
   async findAll(tenantId?: string) {
     const where = tenantId ? { tenant_id: tenantId } : {};
-    return this.templateRepo.find({
+    const templates = await this.templateRepo.find({
       where,
       order: { created_at: 'DESC' },
     });
+    return templates.map(t => this.withHash(t));
   }
 
   async findOne(tenantId: string | undefined, id: string) {
@@ -55,7 +57,7 @@ export class AppTemplatesService {
     if (tenantId) where.tenant_id = tenantId;
     const template = await this.templateRepo.findOne({ where });
     if (!template) throw new NotFoundException('App template not found');
-    return template;
+    return this.withHash(template);
   }
 
   async findByPattern(tenantId: string, profileNamePattern: string) {
@@ -64,13 +66,13 @@ export class AppTemplatesService {
     });
   }
 
-  async update(tenantId: string, id: string, data: Partial<AppTemplateEntity>, actorId: string) {
+  async update(tenantId: string | undefined, id: string, data: Partial<AppTemplateEntity>, actorId: string) {
     const template = await this.findOne(tenantId, id);
     Object.assign(template, data);
     const saved = await this.templateRepo.save(template);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: template.tenant_id,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'app_template.updated',
@@ -84,7 +86,7 @@ export class AppTemplatesService {
       );
     }
 
-    return saved;
+    return this.withHash(saved);
   }
 
   private static readonly PROPAGATED_FIELDS = [
@@ -98,6 +100,28 @@ export class AppTemplatesService {
     const major = parseInt(parts[0] ?? '1', 10);
     const minor = parseInt(parts[1] ?? '0', 10);
     return `${major}.${minor + 1}.0`;
+  }
+
+  static computeContentHash(template: AppTemplateEntity): string {
+    const fields = {
+      name: template.name,
+      profile_name_pattern: template.profile_name_pattern,
+      login_config: template.login_config,
+      keepalive_config: template.keepalive_config,
+      export_policy: template.export_policy,
+      browser_policy: template.browser_policy,
+      notification_config: template.notification_config,
+      credential_ref_default: template.credential_ref_default,
+      execute_enabled: template.execute_enabled,
+      idle_shutdown_seconds: template.idle_shutdown_seconds,
+    };
+    return createHash('sha256')
+      .update(AppTemplatesService.stableStringify(fields))
+      .digest('hex');
+  }
+
+  private withHash<T extends AppTemplateEntity>(template: T): T & { content_hash: string } {
+    return { ...template, content_hash: AppTemplatesService.computeContentHash(template) };
   }
 
   /** Deterministic JSON.stringify that sorts object keys recursively (JSONB key order is not stable across round-trips). */

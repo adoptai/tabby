@@ -47,7 +47,7 @@ export class CredentialsController {
   constructor(private readonly credentialsService: CredentialsService) {}
 
   @Post('request')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   @ApiOperation({ summary: 'Request credentials', description: 'Retrieves extracted credentials (cookies, headers, CSRF, localStorage) for an ACTIVE profile. Returns from cache (60s LRU), decrypted MinIO artifact, or triggers on-demand extraction. Agent tokens are scoped to allowed_profiles.' })
   @ApiResponse({ status: 200, description: 'Credential envelope', schema: { example: { freshness: 'CACHED', request_id: 'req-uuid', profile_id: 'hubspot-standard', session_id: 'cccccccc-...', credentials: { cookies: [{ name: 'hubspotutk', value: 'abc123', domain: '.hubspot.com', path: '/', secure: true, httpOnly: true, volatility: 'STABLE' }], headers: [{ name: 'x-hubspot-csrf', value: 'csrf-value', volatility: 'VOLATILE' }], csrf: { token: 'csrf-meta', header_name: 'X-CSRF-Token', volatility: 'VOLATILE' } }, usage: { ttl_seconds: 3600, refresh_before_seconds: 3300, volatile_fields: ['csrf'] }, metadata: { extracted_at: '2026-03-18T10:02:00.000Z', extraction_duration_ms: 450, profile_version: '1.0.0' } } } })
   @ApiResponse({ status: 404, description: 'No ACTIVE profile or no HEALTHY session found' })

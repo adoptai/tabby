@@ -89,4 +89,8 @@ export class SessionEntity {
   /** Timestamp of last state evaluation by any controller replica (FOR UPDATE SKIP LOCKED) */
   @Column({ type: 'timestamptz', nullable: true })
   last_evaluated_at: Date | null;
+
+  /** Timestamp of last activity (credential request or execute call) — used for idle shutdown. */
+  @Column({ type: 'timestamptz', nullable: true })
+  last_activity_at: Date | null;
 }

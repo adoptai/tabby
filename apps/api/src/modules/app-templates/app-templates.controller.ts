@@ -1,11 +1,12 @@
 import {
-  Controller, Post, Get, Put, Delete, Body, Param, Query, Req,
+  Controller, Post, Get, Put, Patch, Delete, Body, Param, Query, Req,
   UseGuards, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiProperty, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { IsString, MinLength, IsOptional, IsObject, IsInt, IsBoolean, IsArray, Min } from 'class-validator';
 import { Roles, RolesGuard, JwtAuthGuard } from '../../common/guards/roles.guard';
 import { AppTemplatesService } from './app-templates.service';
+import { resolveTenantScope } from '../../common/helpers/tenant-scope.helper';
 
 class CreateAppTemplateDto {
   @ApiProperty({ required: false, description: 'Target tenant ID. Admin-only: override to create in another tenant. Non-admin callers always use their own tenant.' })
@@ -57,6 +58,29 @@ class CreateAppTemplateDto {
   extra_egress_allowlist?: string[];
 }
 
+class UpdateAppTemplateDto {
+  @ApiProperty({ required: false })
+  @IsOptional() @IsString() @MinLength(1) name?: string;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsString() @MinLength(1) profile_name_pattern?: string;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsObject() login_config?: Record<string, unknown>;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsObject() keepalive_config?: Record<string, unknown>;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsObject() export_policy?: Record<string, unknown>;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsObject() browser_policy?: Record<string, unknown>;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsObject() notification_config?: Record<string, unknown>;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsString() credential_ref_default?: string;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsBoolean() execute_enabled?: boolean;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsInt() @Min(60) idle_shutdown_seconds?: number;
+}
+
 @ApiTags('App Templates')
 @ApiBearerAuth()
 @Controller('admin/app-templates')
@@ -76,35 +100,35 @@ export class AppTemplatesController {
   @ApiOperation({ summary: 'List app templates', description: 'Returns templates for the caller\'s tenant. Admins can pass ?tenant_id= to query another tenant, or omit to see all.' })
   @ApiQuery({ name: 'tenant_id', required: false, description: 'Filter by tenant (Admin only). Non-admins always see their own tenant.' })
   async findAll(@Req() req: any, @Query('tenant_id') queryTenantId?: string) {
-    if (req.user.role === 'Admin') {
-      return this.templateService.findAll(queryTenantId);
-    }
-    return this.templateService.findAll(req.user.tenant_id);
+    const tenantScope = resolveTenantScope(req.user);
+    return this.templateService.findAll(tenantScope ?? queryTenantId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get app template details' })
   async findOne(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
-    if (req.user.role === 'Admin') {
-      return this.templateService.findOne(undefined, id);
-    }
-    return this.templateService.findOne(req.user.tenant_id, id);
+    return this.templateService.findOne(resolveTenantScope(req.user), id);
   }
 
   @Put(':id')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @ApiOperation({ summary: 'Update app template' })
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateAppTemplateDto, @Req() req: any) {
-    const tenantScope = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
-    return this.templateService.update(tenantScope, id, dto, req.user.user_id);
+    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id);
+  }
+
+  @Patch(':id')
+  @Roles('Admin', 'Editor')
+  @ApiOperation({ summary: 'Partially update app template' })
+  async patch(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateAppTemplateDto, @Req() req: any) {
+    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id);
   }
 
   @Delete(':id')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @HttpCode(204)
   @ApiOperation({ summary: 'Delete app template' })
   async remove(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
-    const tenantScope = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
-    await this.templateService.remove(tenantScope, id, req.user.user_id);
+    await this.templateService.remove(resolveTenantScope(req.user), id, req.user.user_id);
   }
 }

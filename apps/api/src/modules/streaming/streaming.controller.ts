@@ -1460,7 +1460,7 @@ export class StreamingController {
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Session not found');
 
-    if (req.user.role !== 'Admin' && session.owner_user_id && req.user.owner_user_id !== session.owner_user_id) {
+    if (!['Admin', 'Editor'].includes(req.user.role) && session.owner_user_id && req.user.owner_user_id !== session.owner_user_id) {
       throw new ForbiddenException('You can only revoke stream access for your own sessions');
     }
 

@@ -141,8 +141,12 @@ export class CredentialsService {
       throw e;
     }
 
-    // Update last_credential_request_at for idle shutdown tracking
-    await this.sessionRepo.update(session.id, { last_credential_request_at: new Date() });
+    // Update last_credential_request_at and last_activity_at for idle shutdown tracking
+    await this.sessionRepo.update(session.id, {
+      last_credential_request_at: new Date(),
+      last_activity_at: new Date(),
+    });
+    // NOTE: execute/fetch and execute/browser also call touchSessionActivity() for the same purpose.
 
     // 3. Force-refresh coalescing (RT-11)
     let freshness: CredentialFreshness = isCanary
@@ -371,6 +375,11 @@ export class CredentialsService {
       throw new NotFoundException('No healthy session available');
     }
     return session;
+  }
+
+  /** Fire-and-forget activity touch for idle shutdown tracking. */
+  async touchSessionActivity(sessionId: string): Promise<void> {
+    await this.sessionRepo.update(sessionId, { last_activity_at: new Date() });
   }
 
   // ---------------------------------------------------------------
