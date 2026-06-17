@@ -1,4 +1,4 @@
-# Browser HITL
+# Browser HITL (HELLO WORLD)
 
 [![CI](https://github.com/adoptai/tabby/actions/workflows/ci.yaml/badge.svg)](https://github.com/adoptai/tabby/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
