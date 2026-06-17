@@ -90,12 +90,13 @@ export class ProfilesService {
   }
 
   async findAll(
-    tenantId: string,
+    tenantId: string | undefined,
     limit: number = DEFAULTS.PAGINATION_LIMIT,
     offset: number = DEFAULTS.PAGINATION_OFFSET,
   ): Promise<ServiceProfileEntity[]> {
+    const where: any = tenantId ? { tenant_id: tenantId } : {};
     return this.profileRepo.find({
-      where: { tenant_id: tenantId },
+      where,
       order: { created_at: 'DESC' },
       take: limit,
       skip: offset,

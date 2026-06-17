@@ -98,7 +98,7 @@ export class AgentController {
   @ApiResponse({ status: 201, description: 'Login session initiated' })
   @ApiResponse({ status: 400, description: 'Invalid URL or configuration' })
   @Post('run-url')
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @HttpCode(201)
   async runUrl(
     @Body() dto: RunUrlDto,

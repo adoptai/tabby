@@ -195,10 +195,9 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
       expect(ctrlSrc).toContain("@Roles('Admin', 'Editor', 'Operator', 'Viewer', 'Agent')");
     });
 
-    it('should restrict takeover to Admin, Operator', () => {
-      // Check that takeover method has the Operator role
-      const takeoverSection = ctrlSrc.split('takeover')[0].slice(-200);
-      expect(ctrlSrc).toMatch(/@Roles\('Admin', 'Operator'\)[\s\S]*?takeover/);
+    it('should restrict takeover to Admin, Editor, Operator', () => {
+      // Check that takeover method has Admin, Editor, Operator roles
+      expect(ctrlSrc).toMatch(/@Roles\('Admin', 'Editor', 'Operator'\)[\s\S]*?takeover/);
     });
 
     it('should use InputDto with input_type, value, step_index', () => {
