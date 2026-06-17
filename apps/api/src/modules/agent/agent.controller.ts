@@ -114,7 +114,7 @@ export class AgentController {
   }
 
   @Get('session-status/:profileId')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   @ApiOperation({ summary: 'Get session status for a profile', description: 'Returns the most recent session status for a service profile, including HITL state and VNC stream URL when applicable.' })
   @ApiParam({ name: 'profileId', description: 'Service profile semantic name (e.g., "salesforce-main")' })
   @ApiResponse({ status: 200, description: 'Session status' })

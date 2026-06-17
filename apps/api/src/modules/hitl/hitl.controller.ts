@@ -48,7 +48,7 @@ export class HitlController {
   ) {}
 
   @Post(':id/stream')
-  @Roles('Admin', 'Operator', 'Viewer', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer', 'Agent')
   @HttpCode(200)
   @Throttle({ default: { limit: 3, ttl: 60000 } })
   @ApiOperation({ summary: 'Generate VNC/CDP stream URL', description: 'Returns a signed, short-lived URL to view the browser session via VNC or CDP. The URL contains an embedded auth token valid for 10 minutes.' })
@@ -64,7 +64,7 @@ export class HitlController {
   }
 
   @Post(':id/short-link')
-  @Roles('Admin', 'Operator', 'Viewer', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer', 'Agent')
   @HttpCode(200)
   @ApiOperation({ summary: 'Generate a short VNC URL', description: 'Creates a short redirect URL for the VNC viewer (10 min TTL). Use for display in space-constrained UIs.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
@@ -135,7 +135,7 @@ export class HitlController {
   }
 
   @Post(':id/input')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   @HttpCode(200)
   @ApiOperation({ summary: 'Submit human input', description: 'Stores a generic human input value in Redis (key: human_input:{sessionId}:{stepIndex}, TTL: 300s). Supports OTP, passwords, URLs, confirmations, etc.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
