@@ -4,10 +4,10 @@
 # CODEOWNERS accepts GitHub usernames OR email addresses associated with a
 # verified GitHub account. Emails below map to the maintainers' GitHub accounts.
 
-* @joaomoraski-adoptai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
+* @joaomoraski-adoptai moraski@adopt.ai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
 
-/apps/api/              @joaomoraski-adoptai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
-/apps/controller/       @joaomoraski-adoptai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
-/apps/worker/           @joaomoraski-adoptai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
-/charts/                @joaomoraski-adoptai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
-/.github/workflows/     @joaomoraski-adoptai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
+/apps/api/              @joaomoraski-adoptai moraski@adopt.ai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
+/apps/controller/       @joaomoraski-adoptai moraski@adopt.ai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
+/apps/worker/           @joaomoraski-adoptai moraski@adopt.ai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
+/charts/                @joaomoraski-adoptai moraski@adopt.ai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
+/.github/workflows/     @joaomoraski-adoptai moraski@adopt.ai @rahulbh1510 @iain-adoptai anirudh@adopt.ai
