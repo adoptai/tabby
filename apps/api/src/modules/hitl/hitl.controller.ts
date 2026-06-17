@@ -93,7 +93,7 @@ export class HitlController {
   }
 
   @Post(':id/takeover')
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @HttpCode(200)
   @ApiOperation({ summary: 'Acquire baton (take browser control)', description: 'Transitions the baton from HUMAN_REQUESTED or HUMAN_RELEASED to HUMAN_CONTROL. The baton expires after 15 minutes of inactivity.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
@@ -114,7 +114,7 @@ export class HitlController {
   }
 
   @Post(':id/release')
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @HttpCode(200)
   @ApiOperation({ summary: 'Release baton (return control to automation)', description: 'Transitions baton from HUMAN_CONTROL to HUMAN_RELEASED. Only the baton owner (or Admin) can release.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
@@ -159,7 +159,7 @@ export class HitlController {
   }
 
   @Post(':id/acknowledge')
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @HttpCode(200)
   @ApiOperation({ summary: 'Acknowledge failure and retry', description: 'Transitions a FAILED session back to STARTING for retry. Increments retry_count. Rejects if session is in HITL pause (returns retry_after_seconds).' })
   @ApiParam({ name: 'id', description: 'Session UUID' })

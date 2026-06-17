@@ -94,6 +94,7 @@ function streamTokenProvesOwner(tokenUserId: string | undefined, ownerUserId: st
 async function verifyStreamTokenForOwner(
   streamTokenService: StreamTokenService,
   sessionRepo: Repository<SessionEntity>,
+  idpRepo: Repository<IdentityProviderEntity>,
   jwtService: JwtService,
   sessionId: string,
   token: string | undefined,
@@ -101,6 +102,12 @@ async function verifyStreamTokenForOwner(
 ): Promise<{ status: string }> {
   const denyMsg = 'Access denied';
   if (!token) throw new BadRequestException('token is required');
+
+  // When an OAuth IdP is configured, verify-token must not mint cookies —
+  // OAuth is the sole authentication path. This endpoint is only valid
+  // as an email-gate fallback when no IdP exists.
+  const hasIdp = !!(await idpRepo.findOne({ where: { enabled: true, auth_url: Not(IsNull()) } }));
+  if (hasIdp) throw new ForbiddenException('OAuth authentication required');
 
   const result = streamTokenService.verifyToken(token);
   if (!result.valid || result.payload.session_id !== sessionId) {
@@ -140,18 +147,27 @@ async function verifyStreamTokenForOwner(
  * Instead it is stored in the OAuth Redis state alongside the PKCE verifier and recovered in
  * handleOauthCallback, so it never appears in IdP server logs or browser Referer headers.
  */
+function extractExtraQuery(req: Request): string | undefined {
+  const params = new URLSearchParams(req.url.split('?')[1] || '');
+  params.delete('token');
+  const qs = params.toString();
+  return qs || undefined;
+}
+
 async function redirectToAuth(
   res: Response,
   sessionId: string,
   token: string | undefined,
   idpRepo: Repository<IdentityProviderEntity>,
   prefix: 'vnc' | 'cdp',
+  extraQuery?: string,
 ): Promise<void> {
   const idp = await idpRepo.findOne({ where: { enabled: true, auth_url: Not(IsNull()) } });
 
   if (idp) {
     if (token) {
-      const params = new URLSearchParams({ post_login: `/${prefix}/${sessionId}`, stream_token: token });
+      const postLogin = `/${prefix}/${sessionId}${extraQuery ? `?${extraQuery}` : ''}`;
+      const params = new URLSearchParams({ post_login: postLogin, stream_token: token });
       res.redirect(302, `${PUBLIC_BASE_URL}/auth/oauth/${idp.id}/login?${params.toString()}`);
       return;
     }
@@ -162,27 +178,20 @@ async function redirectToAuth(
     res.setHeader('cache-control', 'no-store');
     const escapedId = JSON.stringify(sessionId);
     const escapedPrefix = JSON.stringify(prefix);
-    // The fragment token (M-4: client-only) may already prove session ownership
-    // — a token minted by the owner's own authenticated short-link call. Try
-    // verify-token first: on success it mints the viewer cookie and we reload
-    // into the stream, skipping the IdP round-trip entirely (and the tenant
-    // resolution it depends on). Only fall through to OAuth when the token is
-    // absent or not owner-proving (e.g. agent:{profile} consumer tokens).
+    const escapedExtra = JSON.stringify(extraQuery || '');
+    // OAuth is the security gate — always redirect to IdP, never auto-pass.
+    // The stream token (fragment) is forwarded as stream_token so the OAuth
+    // callback can reconstruct the final URL with the token after login.
+    // verify-token auto-pass is intentionally kept only on the email-gate
+    // fallback (no IdP configured) where it replaces manual email entry.
     const bridge = `<!doctype html><html><head><meta charset="utf-8"><title>Authenticating...</title></head><body><p>Redirecting to login...</p><script nonce="${nonce}">
 var h=window.location.hash.charAt(0)==='#'?window.location.hash.slice(1):window.location.hash;
 var t=new URLSearchParams(h).get('token')||'';
-var PREFIX=${escapedPrefix};
-var SID=${escapedId};
-function toOauth(){
-  var p=new URLSearchParams({post_login:'/'+PREFIX+'/'+SID});
-  if(t)p.set('stream_token',t);
-  window.location.href='${oauthLoginUrl}?'+p.toString();
-}
-if(t){
-  fetch('/'+PREFIX+'/'+SID+'/verify-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t}),credentials:'same-origin'})
-    .then(function(r){ if(r.ok){ window.location.href='/'+PREFIX+'/'+SID+(t?'?token='+encodeURIComponent(t):''); } else { toOauth(); } })
-    .catch(toOauth);
-}else{ toOauth(); }
+var EXTRA=${escapedExtra};
+var postLogin='/'+${escapedPrefix}+'/'+${escapedId}+(EXTRA?'?'+EXTRA:'');
+var p=new URLSearchParams({post_login:postLogin});
+if(t)p.set('stream_token',t);
+window.location.href='${oauthLoginUrl}?'+p.toString();
 </script></body></html>`;
     res.status(200).send(bridge);
     return;
@@ -465,7 +474,7 @@ export class CdpStreamingController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ status: string }> {
     return verifyStreamTokenForOwner(
-      this.streamTokenService, this.sessionRepo, this.jwtService, sessionId, body?.token, res,
+      this.streamTokenService, this.sessionRepo, this.idpRepo, this.jwtService, sessionId, body?.token, res,
     );
   }
 
@@ -489,30 +498,12 @@ export class CdpStreamingController {
     if (!session) throw new NotFoundException('Session not found');
     if (session.state === 'TERMINATED') throw new BadRequestException('Cannot open stream for TERMINATED session');
 
-    // ── Auth gate (same pattern as VNC) ─────────────────────────────────────
-    if (session.owner_user_id && streamTokenProvesOwner(tokenUserId, session.owner_user_id)) {
-      // Token already proves the owner's identity — mint the viewer cookie
-      // directly (the /cdp-ws upgrade requires it) and skip the gate.
-      const vncToken = this.jwtService.sign({
-        sub: session.owner_user_id,
-        tenant_id: session.tenant_id,
-        type: 'vnc_access',
-        owner_user_id: session.owner_user_id,
-        jti: randomUUID(),
-      }, { expiresIn: 3600 });
-      const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
-      res.cookie('tabby_vnc', vncToken, {
-        httpOnly: true,
-        secure: isHttps,
-        sameSite: 'lax',
-        maxAge: 3600 * 1000,
-        path: '/',
-      });
-    } else if (session.owner_user_id) {
+    // ── Auth gate (same pattern as VNC): cookie is the sole identity proof. ──
+    if (session.owner_user_id) {
       const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
 
       if (!cookieToken) {
-        return redirectToAuth(res, sessionId, token, this.idpRepo, 'cdp');
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'cdp', extractExtraQuery(req));
       }
 
       let cookieValid = false;
@@ -536,7 +527,7 @@ export class CdpStreamingController {
       }
 
       if (!cookieValid) {
-        return redirectToAuth(res, sessionId, token, this.idpRepo, 'cdp');
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'cdp', extractExtraQuery(req));
       }
     }
     // ── End auth gate ────────────────────────────────────────────────────────
@@ -1534,7 +1525,7 @@ export class StreamingController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ status: string }> {
     return verifyStreamTokenForOwner(
-      this.streamTokenService, this.sessionRepo, this.jwtService, sessionId, body?.token, res,
+      this.streamTokenService, this.sessionRepo, this.idpRepo, this.jwtService, sessionId, body?.token, res,
     );
   }
 
@@ -1567,30 +1558,12 @@ export class StreamingController {
     }
 
     // ── Auth gate ──────────────────────────────────────────────────────────
-    if (session.owner_user_id && streamTokenProvesOwner(tokenUserId, session.owner_user_id)) {
-      // Token already proves the owner's identity — mint the viewer cookie
-      // directly (the /vnc-ws upgrade requires it) and skip the gate.
-      const vncToken = this.jwtService.sign({
-        sub: session.owner_user_id,
-        tenant_id: session.tenant_id,
-        type: 'vnc_access',
-        owner_user_id: session.owner_user_id,
-        jti: randomUUID(),
-      }, { expiresIn: 3600 });
-      const isHttps = PUBLIC_BASE_URL.startsWith('https://') || process.env.NODE_ENV === 'production';
-      res.cookie('tabby_vnc', vncToken, {
-        httpOnly: true,
-        secure: isHttps,
-        sameSite: 'lax',
-        maxAge: 3600 * 1000,
-        path: '/',
-      });
-    } else if (session.owner_user_id) {
+    // ── Auth gate: cookie is the sole identity proof. No token auto-pass. ──
+    if (session.owner_user_id) {
       const cookieToken = parseCookie(req.headers.cookie, 'tabby_vnc');
 
       if (!cookieToken) {
-        // No cookie — go through OAuth / email gate.
-        return redirectToAuth(res, sessionId, token, this.idpRepo, 'vnc');
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'vnc', extractExtraQuery(req));
       }
 
       let cookieValid = false;
@@ -1616,7 +1589,7 @@ export class StreamingController {
       }
 
       if (!cookieValid) {
-        return redirectToAuth(res, sessionId, token, this.idpRepo, 'vnc');
+        return redirectToAuth(res, sessionId, token, this.idpRepo, 'vnc', extractExtraQuery(req));
       }
     }
     // ── End auth gate ──────────────────────────────────────────────────────

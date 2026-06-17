@@ -24,7 +24,7 @@ export class AppsController {
   }
 
   @Post()
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @ApiOperation({ summary: 'Create application', description: 'Creates a new application with login DSL config, health checks, export policy, and notification channels. A worker session starts automatically if desired_session_count > 0.' })
   @ApiResponse({ status: 201, description: 'App created', schema: { example: { app_id: 'ffffffff-gggg-hhhh-iiii-jjjjjjjjjjjj' } } })
   @ApiResponse({ status: 400, description: 'Invalid config (login_config, keepalive_config, export_policy, or notification_config validation failed)' })
@@ -35,7 +35,7 @@ export class AppsController {
   }
 
   @Get()
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'List applications' })
   @ApiResponse({ status: 200, description: 'Paginated app list' })
   @ApiResponse({ status: 400, description: 'Invalid field name in fields param' })
@@ -43,7 +43,14 @@ export class AppsController {
     @Query() query: ListAppsQueryDto,
     @Req() req: any,
   ) {
-    const tenantId = this.resolveTenantId(req, (query as any).tenant_id);
+    // Admin with no tenant_id filter sees all apps across tenants
+    const queryTenantId = (query as any).tenant_id;
+    let tenantId: string | undefined;
+    if (req.user.role === 'Admin') {
+      tenantId = queryTenantId; // may be undefined (all tenants) or a specific tenant
+    } else {
+      tenantId = req.user.tenant_id;
+    }
     return this.appsService.findAll(tenantId, query.limit, query.offset, query.fields);
   }
 
@@ -59,7 +66,7 @@ export class AppsController {
   }
 
   @Put(':id')
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @ApiOperation({ summary: 'Update application', description: 'Partial update — only provided fields are changed. Re-validates all config objects.' })
   @ApiParam({ name: 'id', description: 'Application UUID' })
   @ApiResponse({ status: 200, description: 'Updated app' })

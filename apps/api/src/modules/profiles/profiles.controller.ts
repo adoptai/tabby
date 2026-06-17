@@ -87,16 +87,23 @@ export class ProfilesController {
   }
 
   @Get()
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'List profiles' })
   @ApiResponse({ status: 200 })
   async findAll(@Query() query: PaginationQueryDto, @Req() req: any) {
-    const tenantId = this.resolveTenantId(req, (query as any).tenant_id);
+    // Admin with no tenant_id filter sees all profiles across tenants
+    const queryTenantId = (query as any).tenant_id;
+    let tenantId: string | undefined;
+    if (req.user.role === 'Admin') {
+      tenantId = queryTenantId; // may be undefined (all tenants) or a specific tenant
+    } else {
+      tenantId = req.user.tenant_id;
+    }
     return this.profilesService.findAll(tenantId, query.limit, query.offset);
   }
 
   @Get(':id')
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'Get profile details' })
   @ApiParam({ name: 'id', description: 'Profile UUID' })
   async findOne(@Param('id') id: string, @Req() req: any) {

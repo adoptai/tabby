@@ -25,15 +25,17 @@ export class SessionsService {
   async scale(
     appId: string,
     desiredSessions: number,
-    tenantId: string,
+    tenantId: string | undefined,
     actorId: string,
   ): Promise<{ desired_sessions: number; app_id: string }> {
-    const app = await this.appRepo.findOne({ where: { id: appId, tenant_id: tenantId } });
+    const where: any = tenantId ? { id: appId, tenant_id: tenantId } : { id: appId };
+    const app = await this.appRepo.findOne({ where });
     if (!app) {
       throw new NotFoundException('Application not found');
     }
 
-    const tenant = await this.tenantRepo.findOne({ where: { id: tenantId } });
+    const effectiveTenantId = tenantId ?? app.tenant_id;
+    const tenant = await this.tenantRepo.findOne({ where: { id: effectiveTenantId } });
     if (!tenant) {
       throw new NotFoundException('Tenant not found');
     }
@@ -45,7 +47,7 @@ export class SessionsService {
     if (desiredSessions > tenant.max_sessions) {
       throw new BadRequestException(
         `desired_sessions (${desiredSessions}) exceeds tenant max_sessions (${tenant.max_sessions}). `
-        + `To increase the limit, call PATCH /tenants/${tenantId} with { "max_sessions": <new_limit> }.`,
+        + `To increase the limit, call PATCH /tenants/${effectiveTenantId} with { "max_sessions": <new_limit> }.`,
       );
     }
 
@@ -53,7 +55,7 @@ export class SessionsService {
     await this.appRepo.save(app);
 
     await this.auditService.log({
-      tenant_id: tenantId,
+      tenant_id: effectiveTenantId,
       actor_type: 'human',
       actor_id: actorId,
       event_type: 'sessions.scaled',
@@ -64,15 +66,14 @@ export class SessionsService {
   }
 
   async findAll(
-    tenantId: string,
+    tenantId: string | undefined,
     limit: number,
     offset: number,
     ownerUserId?: string | null,
   ): Promise<{ data: SessionEntity[]; total: number; limit: number; offset: number }> {
-    // Admins see all sessions in the tenant; non-Admins see only their own
-    const where: any = ownerUserId
-      ? { tenant_id: tenantId, owner_user_id: ownerUserId }
-      : { tenant_id: tenantId };
+    const where: any = {};
+    if (tenantId) where.tenant_id = tenantId;
+    if (ownerUserId) where.owner_user_id = ownerUserId;
 
     const [data, total] = await this.sessionRepo.findAndCount({
       where,
@@ -85,10 +86,10 @@ export class SessionsService {
     return { data, total, limit, offset };
   }
 
-  async findOne(id: string, tenantId: string): Promise<SessionEntity> {
-    const session = await this.sessionRepo.findOne({
-      where: { id, tenant_id: tenantId },
-    });
+  async findOne(id: string, tenantId?: string): Promise<SessionEntity> {
+    const where: any = { id };
+    if (tenantId) where.tenant_id = tenantId;
+    const session = await this.sessionRepo.findOne({ where });
     if (!session) {
       throw new NotFoundException('Session not found');
     }
@@ -97,15 +98,18 @@ export class SessionsService {
 
   async findInterventions(
     sessionId: string,
-    tenantId: string,
+    tenantId: string | undefined,
     limit: number,
     offset: number,
   ): Promise<{ data: InterventionEntity[]; total: number; limit: number; offset: number }> {
-    // Verify session belongs to tenant
+    // Verify session exists (and belongs to tenant when scoped)
     await this.findOne(sessionId, tenantId);
 
+    const interventionWhere: any = { session_id: sessionId };
+    if (tenantId) interventionWhere.tenant_id = tenantId;
+
     const [data, total] = await this.interventionRepo.findAndCount({
-      where: { session_id: sessionId, tenant_id: tenantId },
+      where: interventionWhere,
       take: limit,
       skip: offset,
       order: { started_at: 'DESC' },
