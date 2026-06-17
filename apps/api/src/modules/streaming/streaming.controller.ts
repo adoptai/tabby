@@ -94,6 +94,7 @@ function streamTokenProvesOwner(tokenUserId: string | undefined, ownerUserId: st
 async function verifyStreamTokenForOwner(
   streamTokenService: StreamTokenService,
   sessionRepo: Repository<SessionEntity>,
+  idpRepo: Repository<IdentityProviderEntity>,
   jwtService: JwtService,
   sessionId: string,
   token: string | undefined,
@@ -101,6 +102,12 @@ async function verifyStreamTokenForOwner(
 ): Promise<{ status: string }> {
   const denyMsg = 'Access denied';
   if (!token) throw new BadRequestException('token is required');
+
+  // When an OAuth IdP is configured, verify-token must not mint cookies —
+  // OAuth is the sole authentication path. This endpoint is only valid
+  // as an email-gate fallback when no IdP exists.
+  const hasIdp = !!(await idpRepo.findOne({ where: { enabled: true, auth_url: Not(IsNull()) } }));
+  if (hasIdp) throw new ForbiddenException('OAuth authentication required');
 
   const result = streamTokenService.verifyToken(token);
   if (!result.valid || result.payload.session_id !== sessionId) {
@@ -467,7 +474,7 @@ export class CdpStreamingController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ status: string }> {
     return verifyStreamTokenForOwner(
-      this.streamTokenService, this.sessionRepo, this.jwtService, sessionId, body?.token, res,
+      this.streamTokenService, this.sessionRepo, this.idpRepo, this.jwtService, sessionId, body?.token, res,
     );
   }
 
@@ -1518,7 +1525,7 @@ export class StreamingController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ status: string }> {
     return verifyStreamTokenForOwner(
-      this.streamTokenService, this.sessionRepo, this.jwtService, sessionId, body?.token, res,
+      this.streamTokenService, this.sessionRepo, this.idpRepo, this.jwtService, sessionId, body?.token, res,
     );
   }
 
