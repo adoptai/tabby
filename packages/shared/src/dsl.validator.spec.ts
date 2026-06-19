@@ -57,6 +57,45 @@ describe('validateLoginConfig', () => {
     expect(result.errors.filter(e => e.path === 'credential_ref')).toHaveLength(0);
   });
 
+  it('accepts goto with url_expression instead of url', () => {
+    const result = validateLoginConfig({
+      ...validConfig,
+      steps: [
+        { action: 'goto', url_expression: "window.location.origin + '/home'" } as any,
+      ],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects goto with neither url nor url_expression', () => {
+    const result = validateLoginConfig({
+      ...validConfig,
+      steps: [{ action: 'goto' } as any],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.message.includes('url or url_expression'))).toBe(true);
+  });
+
+  it('rejects goto with non-string url_expression', () => {
+    const result = validateLoginConfig({
+      ...validConfig,
+      steps: [{ action: 'goto', url_expression: 123 } as any],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.message.includes('url_expression must be a string'))).toBe(true);
+  });
+
+  it('accepts click with first: true', () => {
+    const result = validateLoginConfig({
+      ...validConfig,
+      steps: [
+        { action: 'goto', url: 'https://x.com' },
+        { action: 'click', selector: 'a:has-text("Q-")', first: true } as any,
+      ],
+    });
+    expect(result.valid).toBe(true);
+  });
+
   it('rejects invalid action type', () => {
     const result = validateLoginConfig({
       ...validConfig,

@@ -103,6 +103,9 @@ pr51-security-review.md
 platform-integration-setup.md
 
 
+# --- Playwright MCP ---
+.playwright-mcp/
+
 # --- Claude ---
 .claude
 
