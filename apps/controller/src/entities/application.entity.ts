@@ -67,6 +67,9 @@ export class ApplicationEntity {
   @Column({ type: 'timestamptz', nullable: true })
   last_reconciled_at: Date | null;
 
+  @Column({ type: 'varchar', nullable: true })
+  pending_traceparent: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

@@ -34,6 +34,33 @@ import type { RecordingMode } from '@browser-hitl/shared';
  * 4. Begin login DSL execution
  * 5. Enter keepalive loop
  */
+// Run the browser-automation work inside a New Relic background transaction
+// that CONTINUES the upstream distributed trace (api -> controller -> worker)
+// when the controller injected a spawn-time TRACEPARENT into the pod env.
+//
+// We scope the transaction to the DSL execution ONLY — never the whole process.
+// A process-wide background transaction stays perpetually active, so the agent
+// rejects every inbound health-check transaction with "Active transaction when
+// creating non-nested transaction" and reports the worker as an uninstrumented
+// HTTP service (the regression a prior change hit). Inbound HTTP requests keep
+// their own per-request transactions; this only owns the actual browser work.
+function runInUpstreamTrace<T>(fn: () => Promise<T>): Promise<T> {
+  const tp = process.env.TRACEPARENT;
+  if (!__nr_agent || !tp) {
+    return fn();
+  }
+  return __nr_agent.startBackgroundTransaction('worker/login-dsl', () => {
+    const txn = __nr_agent.getTransaction();
+    try {
+      // Continue the W3C trace propagated via the pod's TRACEPARENT env.
+      txn.acceptDistributedTraceHeaders('HTTP', { traceparent: tp });
+    } catch (err) {
+      console.error(`[NR] acceptDistributedTraceHeaders failed: ${err}`);
+    }
+    return fn();
+  });
+}
+
 async function main() {
   const sessionId = process.env.SESSION_ID;
   const appId = process.env.APP_ID;
@@ -292,7 +319,7 @@ async function main() {
       // Execute login DSL
       console.log('Starting login DSL execution');
       await db.updateLastLoginAt(sessionId);
-      await dslRunner.execute(appConfig.login_config.steps, credentials);
+      await runInUpstreamTrace(() => dslRunner.execute(appConfig.login_config.steps, credentials));
 
       // Pass DSL variables (e.g., quote_id from store_as) to artifact extractor
       const dslVars = dslRunner.getVariables();

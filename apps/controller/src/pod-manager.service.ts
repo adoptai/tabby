@@ -400,6 +400,15 @@ export class PodManagerService {
       { name: 'NEW_RELIC_LICENSE_KEY', value: process.env.NEW_RELIC_LICENSE_KEY || '' },
       { name: 'NEW_RELIC_APP_NAME', value: process.env.WORKER_NEW_RELIC_APP_NAME || 'Adopt Tabby Worker' },
       { name: 'NEW_RELIC_ENVIRONMENT', value: process.env.NEW_RELIC_ENVIRONMENT || 'production' },
+      // Propagate the originating W3C trace context into the worker pod so the
+      // browser worker continues the same distributed trace (api -> controller
+      // -> worker) rather than starting an isolated one. apps/worker/src/main.ts
+      // reads process.env.TRACEPARENT at boot. No-op when the session carries no
+      // trace context. Mirrors how OpenSandbox propagates trace context via the
+      // BatchSandbox CR annotation + pod env.
+      ...(session.traceparent
+        ? [{ name: 'TRACEPARENT', value: session.traceparent }]
+        : []),
     ];
 
     // VNC mode needs DISPLAY for Xvfb; CDP mode does not
