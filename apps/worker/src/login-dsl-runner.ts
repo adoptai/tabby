@@ -125,17 +125,21 @@ export class LoginDslRunner {
         break;
       }
 
-      case 'click':
-        await this.currentFrame.locator(step.selector).click({ timeout });
+      case 'click': {
+        const loc = this.currentFrame.locator(step.selector);
+        await (step.first ? loc.first() : loc).click({ timeout });
         break;
+      }
 
       case 'select':
         await this.currentFrame.locator(step.selector).selectOption(step.value, { timeout });
         break;
 
-      case 'wait_for':
-        await this.currentFrame.locator(step.selector).waitFor({ timeout: step.timeout_ms || timeout });
+      case 'wait_for': {
+        const wfLoc = this.currentFrame.locator(step.selector);
+        await ((step as any).first ? wfLoc.first() : wfLoc).waitFor({ timeout: step.timeout_ms || timeout });
         break;
+      }
 
       case 'wait_for_url':
         await this.page.waitForURL(step.pattern, { timeout: step.timeout_ms || timeout });
@@ -243,8 +247,8 @@ export class LoginDslRunner {
           }
         }
 
-        // Poll for human response
-        const timeoutMs = step.timeout_ms || 120000;
+        // Poll for human response — on_failure has its own timeout, independent of the step's action timeout
+        const timeoutMs = handler.timeout_ms || 600000;
         const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
 
         if (!response) {

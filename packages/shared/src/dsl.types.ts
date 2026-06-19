@@ -23,7 +23,7 @@ export type DslActionType =
   | 'request_human_input';
 
 export type FailureHandler =
-  | { action: 'request_help'; message: string; input_type?: HumanInputType; field_selector?: string; screenshot?: boolean }
+  | { action: 'request_help'; message: string; input_type?: HumanInputType; field_selector?: string; screenshot?: boolean; timeout_ms?: number }
   | { action: 'skip' }
   | { action: 'abort' };
 
@@ -59,6 +59,7 @@ export interface TypeStep extends BaseDslStep {
 export interface ClickStep extends BaseDslStep {
   action: 'click';
   selector: string;
+  first?: boolean;  // When true, clicks the first match (locator.first()) instead of requiring a unique match
 }
 
 export interface SelectStep extends BaseDslStep {
@@ -71,6 +72,7 @@ export interface WaitForStep extends BaseDslStep {
   action: 'wait_for';
   selector: string;
   timeout_ms?: number;
+  first?: boolean;  // When true, waits for the first match (locator.first()) instead of requiring a unique match
 }
 
 export interface WaitForUrlStep extends BaseDslStep {
