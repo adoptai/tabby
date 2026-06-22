@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import { REDIS_KEYS, requireEnv } from '@browser-hitl/shared';
+import { REDIS_KEYS, REDIS_TTL, requireEnv } from '@browser-hitl/shared';
 
 /**
  * Generic Human Input Relay.
@@ -25,10 +25,13 @@ export class InputRelay {
   /**
    * Poll for human input value from Redis.
    * Returns the parsed input when available, null on timeout.
+   * When autoResolveCheck is provided, also evaluates it each cycle —
+   * if it returns true the wait is resolved as a synthetic confirm.
    */
   async waitForInput(
     stepIndex: number,
     timeoutMs: number = 120000,
+    autoResolveCheck?: () => boolean,
   ): Promise<{ input_type: string; value: string } | null> {
     const redis = this.getRedis();
     const key = REDIS_KEYS.humanInput(this.sessionId, stepIndex);
@@ -47,11 +50,32 @@ export class InputRelay {
         }
       }
 
+      if (autoResolveCheck) {
+        try {
+          if (autoResolveCheck()) {
+            console.log(`[InputRelay] Auto-resolved: login detected for step ${stepIndex}`);
+            return { input_type: 'confirm', value: 'auto-resolved' };
+          }
+        } catch {
+          // Page might not be ready — ignore and retry next cycle
+        }
+      }
+
       // Poll at 1-second interval
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     return null; // Timeout
+  }
+
+  async markAutoResolved(): Promise<void> {
+    const redis = this.getRedis();
+    await redis.set(
+      REDIS_KEYS.hitlAutoResolved(this.sessionId),
+      '1',
+      'EX',
+      REDIS_TTL.HUMAN_INPUT_SECONDS,
+    );
   }
 
   async disconnect(): Promise<void> {
