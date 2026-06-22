@@ -104,6 +104,66 @@ export class SessionDb {
     });
   }
 
+  async loadLatestBrowserState(
+    appId: string,
+    tenantId: string,
+    ownerUserId: string | null,
+  ): Promise<{
+    encrypted_payload_ref: string;
+    nonce: Buffer;
+    key_version: string;
+    expires_at: string;
+  } | null> {
+    if (!this.pool) return null;
+    return this.withSession(async (client) => {
+      const result = await client.query(
+        `SELECT encrypted_payload_ref, nonce, key_version, expires_at
+         FROM browser_state_snapshots
+         WHERE app_id = $1 AND tenant_id = $2
+           AND (($3::varchar IS NULL AND owner_user_id IS NULL) OR owner_user_id = $3)
+           AND expires_at > now()
+         ORDER BY saved_at DESC LIMIT 1`,
+        [appId, tenantId, ownerUserId],
+      );
+      return result.rows[0] || null;
+    });
+  }
+
+  async upsertBrowserState(
+    appId: string,
+    tenantId: string,
+    ownerUserId: string | null,
+    encryptedPayloadRef: string,
+    nonce: Buffer,
+    keyVersion: string,
+    expiresAt: string,
+    sourceSessionId: string,
+    healthResult: string,
+  ): Promise<void> {
+    if (!this.pool) return;
+    await this.withSession(async (client) => {
+      await client.query(
+        `INSERT INTO browser_state_snapshots
+           (app_id, tenant_id, owner_user_id, encrypted_payload_ref, nonce, key_version,
+            expires_at, source_session_id, health_result)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (app_id, tenant_id, COALESCE(owner_user_id, '__shared__'))
+         DO UPDATE SET
+           encrypted_payload_ref = EXCLUDED.encrypted_payload_ref,
+           nonce = EXCLUDED.nonce,
+           key_version = EXCLUDED.key_version,
+           saved_at = now(),
+           expires_at = EXCLUDED.expires_at,
+           source_session_id = EXCLUDED.source_session_id,
+           health_result = EXCLUDED.health_result`,
+        [
+          appId, tenantId, ownerUserId, encryptedPayloadRef,
+          nonce, keyVersion, expiresAt, sourceSessionId, healthResult,
+        ],
+      );
+    });
+  }
+
   async insertArtifactBundle(input: {
     sessionId: string;
     appId: string;

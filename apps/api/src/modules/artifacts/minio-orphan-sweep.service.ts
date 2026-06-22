@@ -3,7 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as Minio from 'minio';
-import { ArtifactBundleEntity, TenantEntity } from '../../entities';
+import { ArtifactBundleEntity, BrowserStateSnapshotEntity, TenantEntity } from '../../entities';
 import { MinioProvisionerService } from '../tenants/minio-provisioner.service';
 
 @Injectable()
@@ -15,6 +15,8 @@ export class MinioOrphanSweepService {
     private readonly minioProvisioner: MinioProvisionerService,
     @InjectRepository(ArtifactBundleEntity)
     private readonly artifactRepo: Repository<ArtifactBundleEntity>,
+    @InjectRepository(BrowserStateSnapshotEntity)
+    private readonly browserStateRepo: Repository<BrowserStateSnapshotEntity>,
     @InjectRepository(TenantEntity)
     private readonly tenantRepo: Repository<TenantEntity>,
   ) {
@@ -43,6 +45,35 @@ export class MinioOrphanSweepService {
           // Check if DB row exists
           const dbRow = await this.artifactRepo.findOne({
             where: { encrypted_payload_ref: obj.name, tenant_id: tenant.id },
+            select: ['id'],
+          });
+          if (!dbRow) orphans.push(obj.name as string);
+        }
+
+        if (orphans.length > 0) {
+          await this.client.removeObjects(bucket, orphans);
+          totalRemoved += orphans.length;
+          this.logger.log(`Removed ${orphans.length} orphan(s) from ${bucket}`);
+        }
+      } catch (err) {
+        this.logger.error(`Orphan sweep failed for ${bucket}: ${(err as Error).message}`);
+      }
+    }
+
+    // Sweep browser-state-* buckets
+    for (const tenant of tenants) {
+      const bucket = this.minioProvisioner.browserStateBucketName(tenant.id);
+      try {
+        const exists = await this.client.bucketExists(bucket);
+        if (!exists) continue;
+
+        const orphans: string[] = [];
+        const stream = this.client.listObjects(bucket, '', true);
+
+        for await (const obj of stream) {
+          if (!obj.lastModified || obj.lastModified >= cutoff) continue;
+          const dbRow = await this.browserStateRepo.findOne({
+            where: { encrypted_payload_ref: obj.name as string, tenant_id: tenant.id },
             select: ['id'],
           });
           if (!dbRow) orphans.push(obj.name as string);

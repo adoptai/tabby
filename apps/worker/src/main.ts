@@ -230,7 +230,8 @@ async function main() {
       },
     );
     const healthRunner = new HealthPredicateRunner(page, context, appConfig.keepalive_config);
-    const artifactExtractor = new ArtifactExtractor(page, context, appConfig, tenantId, sessionId, appId, db);
+    const ownerUserId: string | null = appConfig.owner_user_id || null;
+    const artifactExtractor = new ArtifactExtractor(page, context, appConfig, tenantId, sessionId, appId, db, ownerUserId);
     // Resolve credentials from K8s Secret
     const credentials = await resolveCredentials(appConfig.login_config.credential_ref);
     keepaliveRunner = new KeepaliveRunner(
@@ -281,6 +282,80 @@ async function main() {
       artifactExtractor.registerHeaderCapture();
       artifactExtractor.registerRequestHeaderCapture();
 
+      // Attempt to restore a prior browser storageState and skip the DSL if cookies are still valid.
+      let browserStateSkippedDsl = false;
+      if (process.env.BROWSER_STATE_ENABLED === 'true') {
+        try {
+          const snapshot = await db.loadLatestBrowserState(appId, tenantId, ownerUserId);
+          if (snapshot) {
+            console.log('[BrowserState] Found snapshot, attempting restore...');
+            const encryptedBlob = await artifactExtractor.downloadFromMinio(
+              `browser-state-${tenantId}`,
+              snapshot.encrypted_payload_ref,
+            );
+            const plaintext = artifactExtractor.decrypt(encryptedBlob, snapshot.nonce);
+            const storageState: {
+              cookies: Parameters<typeof context.addCookies>[0];
+              origins: { origin: string; localStorage: { name: string; value: string }[] }[];
+            } = JSON.parse(plaintext.toString('utf-8'));
+
+            await context.addCookies(storageState.cookies);
+
+            // Inject localStorage per origin using a temporary page to avoid polluting
+            // the main page's header capture listeners and navigation history.
+            for (const { origin, localStorage: entries } of storageState.origins) {
+              if (!entries || entries.length === 0) continue;
+              let tempPage;
+              try {
+                tempPage = await context.newPage();
+                await tempPage.goto(origin, { waitUntil: 'domcontentloaded', timeout: 10000 });
+                await tempPage.evaluate((items) => {
+                  for (const { name, value } of items) {
+                    window.localStorage.setItem(name, value);
+                  }
+                }, entries);
+              } catch (originErr) {
+                console.warn(`[BrowserState] localStorage injection failed for ${origin}: ${originErr}`);
+              } finally {
+                if (tempPage) await tempPage.close().catch(() => {});
+              }
+            }
+
+            // Navigate to login URL and run health check
+            const loginUrl = appConfig.login_config.login_url as string;
+            await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            const restoreHealthResult = await healthRunner.evaluate();
+            await db.updateHealthResult(sessionId, restoreHealthResult.overall);
+
+            if (restoreHealthResult.overall === 'PASS') {
+              console.log('[BrowserState] Health check passed — skipping DSL');
+              browserStateSkippedDsl = true;
+              try {
+                await artifactExtractor.extractAndUpload();
+              } catch (extractErr) {
+                console.error(`[BrowserState] Initial artifact extraction failed: ${extractErr}`);
+              }
+              console.log('Entering keepalive loop (DSL skipped via storageState restore)');
+              await keepaliveRunner.start();
+            } else {
+              console.warn('[BrowserState] Health check failed after restore — clearing state and falling back to DSL');
+              await context.clearCookies();
+              await page.evaluate(() => window.localStorage.clear()).catch(() => {});
+            }
+          }
+        } catch (restoreErr) {
+          console.warn(`[BrowserState] Restore failed (non-fatal), falling back to DSL: ${restoreErr}`);
+          try {
+            await context.clearCookies();
+          } catch {
+            // Best effort clear
+          }
+        }
+      }
+
+      if (browserStateSkippedDsl) {
+        // DSL was skipped and keepalive already ran — nothing more to do.
+      } else {
       // Execute login DSL
       console.log('Starting login DSL execution');
       await db.updateLastLoginAt(sessionId);
@@ -309,6 +384,7 @@ async function main() {
       // Enter keepalive loop
       console.log('Entering keepalive loop');
       await keepaliveRunner.start();
+      } // end else (browserStateSkippedDsl)
     }
 
     // Start recycling monitor (FR-34)

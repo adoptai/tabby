@@ -43,9 +43,16 @@ function makeMockMinioClient(opts: {
   };
 }
 
+function makeMockBrowserStateRepo(dbRow: { id: string } | null) {
+  return {
+    findOne: jest.fn().mockResolvedValue(dbRow),
+  };
+}
+
 function makeMockProvisioner(client: any) {
   return {
     bucketName: (tenantId: string) => `artifact-bundles-${tenantId}`,
+    browserStateBucketName: (tenantId: string) => `browser-state-${tenantId}`,
     getClient: () => client,
   };
 }
@@ -55,11 +62,13 @@ describe('MinioOrphanSweepService', () => {
     const minioClient = makeMockMinioClient({ bucketExists: false });
     const tenantRepo = makeMockTenantRepo([{ id: 'tenant-1' }]);
     const artifactRepo = makeMockArtifactRepo(null);
+    const browserStateRepo = makeMockBrowserStateRepo(null);
     const provisioner = makeMockProvisioner(minioClient);
 
     const service = new MinioOrphanSweepService(
       provisioner as any,
       artifactRepo as any,
+      browserStateRepo as any,
       tenantRepo as any,
     );
 
@@ -77,11 +86,13 @@ describe('MinioOrphanSweepService', () => {
     const tenantRepo = makeMockTenantRepo([{ id: 'tenant-1' }]);
     // No DB row found → orphan
     const artifactRepo = makeMockArtifactRepo(null);
+    const browserStateRepo = makeMockBrowserStateRepo(null);
     const provisioner = makeMockProvisioner(minioClient);
 
     const service = new MinioOrphanSweepService(
       provisioner as any,
       artifactRepo as any,
+      browserStateRepo as any,
       tenantRepo as any,
     );
 
@@ -100,13 +111,15 @@ describe('MinioOrphanSweepService', () => {
     ];
     const minioClient = makeMockMinioClient({ objects });
     const tenantRepo = makeMockTenantRepo([{ id: 'tenant-1' }]);
-    // DB row exists → not an orphan
+    // DB row exists → not an orphan (for both artifact and browser-state repos)
     const artifactRepo = makeMockArtifactRepo({ id: 'some-artifact-id' });
+    const browserStateRepo = makeMockBrowserStateRepo({ id: 'some-snapshot-id' });
     const provisioner = makeMockProvisioner(minioClient);
 
     const service = new MinioOrphanSweepService(
       provisioner as any,
       artifactRepo as any,
+      browserStateRepo as any,
       tenantRepo as any,
     );
 
@@ -123,11 +136,13 @@ describe('MinioOrphanSweepService', () => {
     const minioClient = makeMockMinioClient({ objects });
     const tenantRepo = makeMockTenantRepo([{ id: 'tenant-1' }]);
     const artifactRepo = makeMockArtifactRepo(null);
+    const browserStateRepo = makeMockBrowserStateRepo(null);
     const provisioner = makeMockProvisioner(minioClient);
 
     const service = new MinioOrphanSweepService(
       provisioner as any,
       artifactRepo as any,
+      browserStateRepo as any,
       tenantRepo as any,
     );
 
@@ -139,35 +154,41 @@ describe('MinioOrphanSweepService', () => {
   it('continues to next tenant if one bucket throws', async () => {
     const minioClient = {
       bucketExists: jest.fn()
-        .mockResolvedValueOnce(true)   // tenant-1: exists
-        .mockRejectedValueOnce(new Error('MinIO unreachable')), // tenant-2: error
+        .mockResolvedValueOnce(true)   // tenant-1 artifact: exists
+        .mockResolvedValueOnce(true)   // tenant-1 browser-state: exists
+        .mockRejectedValueOnce(new Error('MinIO unreachable')) // tenant-2 artifact: error
+        .mockRejectedValueOnce(new Error('MinIO unreachable')), // tenant-2 browser-state: error
       listObjects: jest.fn().mockReturnValue(makeAsyncIterator([])),
       removeObjects: jest.fn(),
     };
     const tenantRepo = makeMockTenantRepo([{ id: 'tenant-1' }, { id: 'tenant-2' }]);
     const artifactRepo = makeMockArtifactRepo(null);
+    const browserStateRepo = makeMockBrowserStateRepo(null);
     const provisioner = makeMockProvisioner(minioClient);
 
     const service = new MinioOrphanSweepService(
       provisioner as any,
       artifactRepo as any,
+      browserStateRepo as any,
       tenantRepo as any,
     );
 
     // Should not throw
     await expect(service.sweepOrphans()).resolves.toBeUndefined();
-    expect(minioClient.bucketExists).toHaveBeenCalledTimes(2);
+    expect(minioClient.bucketExists).toHaveBeenCalledTimes(4);
   });
 
   it('handles empty tenant list gracefully', async () => {
     const minioClient = makeMockMinioClient({});
     const tenantRepo = makeMockTenantRepo([]);
     const artifactRepo = makeMockArtifactRepo(null);
+    const browserStateRepo = makeMockBrowserStateRepo(null);
     const provisioner = makeMockProvisioner(minioClient);
 
     const service = new MinioOrphanSweepService(
       provisioner as any,
       artifactRepo as any,
+      browserStateRepo as any,
       tenantRepo as any,
     );
 

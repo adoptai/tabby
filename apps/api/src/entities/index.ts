@@ -15,3 +15,4 @@ export { LoginQueueEntity } from './login-queue.entity';
 export { ServiceProfileEntity } from './service-profile.entity';
 export { IdentityProviderEntity } from './identity-provider.entity';
 export { AppTemplateEntity } from './app-template.entity';
+export { BrowserStateSnapshotEntity } from './browser-state-snapshot.entity';

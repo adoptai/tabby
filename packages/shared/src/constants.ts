@@ -137,6 +137,7 @@ export const DEFAULTS = {
   CANARY_ERROR_RATE_THRESHOLD: 0.20,   // Max error rate for canary promotion (ADR-014)
   CANARY_MIN_SAMPLE_SIZE: 3,           // Minimum sample size for canary evaluation (ADR-014)
   PROFILE_RETENTION_DAYS: 30,          // Retired profile retention (ADR-014)
+  BROWSER_STATE_TTL_SECONDS: 604800,   // 7 days — storageState snapshot validity window
 } as const;
 
 /**

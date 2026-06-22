@@ -1,5 +1,5 @@
 import { Page, BrowserContext, Request, Response } from 'playwright';
-import { createCipheriv, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { StringCodec } from 'nats';
 import { NATS_SUBJECTS, requireEnv, connectNats } from '@browser-hitl/shared';
 import { SessionDb } from './session-db';
@@ -44,6 +44,7 @@ export class ArtifactExtractor {
     private readonly sessionId: string,
     private readonly appId: string,
     private readonly db: SessionDb,
+    private readonly ownerUserId: string | null = null,
   ) {}
 
   setDslVariables(vars: Map<string, string>): void {
@@ -238,6 +239,8 @@ export class ArtifactExtractor {
     await this.publishExportEvent(objectKey, nonce, keyVersion, expiresAt);
 
     console.log(`Artifacts exported: ${objectKey}`);
+
+    await this.saveBrowserState();
   }
 
   /**
@@ -500,6 +503,104 @@ export class ArtifactExtractor {
       await minioClient.makeBucket(bucket);
     }
     await minioClient.putObject(bucket, objectKey, data);
+  }
+
+  /**
+   * Capture browser storageState (cookies + localStorage) and save it encrypted to MinIO.
+   * Gated behind BROWSER_STATE_ENABLED. Non-fatal — failures are logged and swallowed.
+   */
+  async saveBrowserState(): Promise<void> {
+    if (process.env.BROWSER_STATE_ENABLED !== 'true') return;
+
+    try {
+      const state = await this.context.storageState();
+      const plaintext = Buffer.from(JSON.stringify(state), 'utf-8');
+
+      const { encrypted, nonce, keyVersion } = await this.encrypt(plaintext);
+
+      const bucketName = `browser-state-${this.tenantId}`;
+      const nonceHex = nonce.toString('hex');
+      const objectKey = `${this.appId}/${this.ownerUserId || 'shared'}/${nonceHex}.enc`;
+
+      const ttlSeconds = parseInt(process.env.BROWSER_STATE_TTL_SECONDS || '604800', 10);
+      const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+
+      // DB upsert first so the row always points to a nonce we're about to upload.
+      // If upload fails, the DB row references a missing object — next restore attempt
+      // will get a MinIO 404, log a warning, and fall back to DSL. The stale row is
+      // overwritten on the next successful save.
+      await this.db.upsertBrowserState(
+        this.appId,
+        this.tenantId,
+        this.ownerUserId,
+        objectKey,
+        nonce,
+        keyVersion,
+        expiresAt,
+        this.sessionId,
+        'PASS',
+      );
+
+      await this.uploadToMinio(bucketName, objectKey, encrypted);
+
+      console.log('[BrowserState] Saved successfully');
+    } catch (error) {
+      console.warn(`[BrowserState] Failed to save browser state (non-fatal): ${error}`);
+    }
+  }
+
+  /**
+   * Download an encrypted blob from MinIO.
+   */
+  async downloadFromMinio(bucket: string, objectKey: string): Promise<Buffer> {
+    const { Client } = await import('minio');
+    const minioEndpoint = requireEnv('MINIO_ENDPOINT', {
+      testDefault: 'localhost',
+    });
+    const minioAccessKey = requireEnv('MINIO_ACCESS_KEY', {
+      testDefault: 'minioadmin',
+    });
+    const minioSecretKey = requireEnv('MINIO_SECRET_KEY', {
+      testDefault: 'minioadmin',
+    });
+    const minioClient = new Client({
+      endPoint: minioEndpoint,
+      port: parseInt(process.env.MINIO_PORT || '9000', 10),
+      useSSL: process.env.MINIO_USE_SSL === 'true',
+      accessKey: minioAccessKey,
+      secretKey: minioSecretKey,
+    });
+
+    const stream = await minioClient.getObject(bucket, objectKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Decrypt an AES-256-GCM encrypted blob.
+   * Blob format: [nonce (12 bytes)] [ciphertext] [GCM auth tag (16 bytes)]
+   */
+  decrypt(encryptedBlob: Buffer, nonce: Buffer): Buffer {
+    const keyHex = (process.env.TENANT_ENCRYPTION_KEY || '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(keyHex)) {
+      throw new Error('TENANT_ENCRYPTION_KEY must be a 64-character hex string');
+    }
+    const key = Buffer.from(keyHex, 'hex');
+
+    // Blob layout: [nonce 12B][ciphertext][authTag 16B]
+    // The nonce is stored separately in the DB, but the blob also starts with it.
+    // Skip the leading 12-byte nonce prefix in the blob.
+    const AUTH_TAG_LENGTH = 16;
+    const NONCE_LENGTH = 12;
+    const ciphertext = encryptedBlob.subarray(NONCE_LENGTH, encryptedBlob.length - AUTH_TAG_LENGTH);
+    const authTag = encryptedBlob.subarray(encryptedBlob.length - AUTH_TAG_LENGTH);
+
+    const decipher = createDecipheriv('aes-256-gcm', key, nonce);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   }
 
   /**

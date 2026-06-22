@@ -6,6 +6,7 @@ import {
   ApplicationEntity,
   ArtifactBundleEntity,
   ArtifactConsumptionEntity,
+  BrowserStateSnapshotEntity,
   InterventionEntity,
   SessionBatonEntity,
   SessionEntity,
@@ -28,6 +29,8 @@ export class LifecycleRetentionService {
     private readonly artifactRepo: Repository<ArtifactBundleEntity>,
     @InjectRepository(ArtifactConsumptionEntity)
     private readonly consumptionRepo: Repository<ArtifactConsumptionEntity>,
+    @InjectRepository(BrowserStateSnapshotEntity)
+    private readonly browserStateRepo: Repository<BrowserStateSnapshotEntity>,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -51,11 +54,13 @@ export class LifecycleRetentionService {
     batonsDeleted: number;
     sessionsDeleted: number;
     appsDeleted: number;
+    browserStateSnapshotsDeleted: number;
   }> {
     const artifactCutoff = this.computeCutoffDate(this.getRetentionDays('LIFECYCLE_ARTIFACT_RETENTION_DAYS', 7));
     const interventionCutoff = this.computeCutoffDate(this.getRetentionDays('LIFECYCLE_INTERVENTION_RETENTION_DAYS', 30));
     const sessionCutoff = this.computeCutoffDate(this.getRetentionDays('LIFECYCLE_SESSION_RETENTION_DAYS', 14));
     const appCutoff = this.computeCutoffDate(this.getRetentionDays('LIFECYCLE_APP_RETENTION_DAYS', 30));
+    const browserStateCutoff = this.computeCutoffDate(this.getRetentionDays('LIFECYCLE_BROWSER_STATE_RETENTION_DAYS', 7));
 
     return this.dataSource.transaction(async (manager) => {
       const consumptionsDeleted = (
@@ -151,6 +156,15 @@ export class LifecycleRetentionService {
           .execute()
       ).affected || 0;
 
+      const browserStateSnapshotsDeleted = (
+        await manager
+          .createQueryBuilder()
+          .delete()
+          .from(BrowserStateSnapshotEntity)
+          .where('saved_at < :browserStateCutoff', { browserStateCutoff })
+          .execute()
+      ).affected || 0;
+
       return {
         consumptionsDeleted,
         artifactsDeleted,
@@ -158,6 +172,7 @@ export class LifecycleRetentionService {
         batonsDeleted,
         sessionsDeleted,
         appsDeleted,
+        browserStateSnapshotsDeleted,
       };
     });
   }

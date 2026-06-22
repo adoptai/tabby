@@ -53,6 +53,9 @@ data:
   LIFECYCLE_INTERVENTION_RETENTION_DAYS: {{ .Values.config.lifecycleInterventionRetentionDays | quote }}
   LIFECYCLE_SESSION_RETENTION_DAYS: {{ .Values.config.lifecycleSessionRetentionDays | quote }}
   LIFECYCLE_APP_RETENTION_DAYS: {{ .Values.config.lifecycleAppRetentionDays | quote }}
+  BROWSER_STATE_ENABLED: {{ .Values.config.browserStateEnabled | default "false" | quote }}
+  BROWSER_STATE_TTL_SECONDS: {{ .Values.config.browserStateTtlSeconds | default "604800" | quote }}
+  LIFECYCLE_BROWSER_STATE_RETENTION_DAYS: {{ .Values.config.lifecycleBrowserStateRetentionDays | default "7" | quote }}
   WORKER_ALLOW_ENV_CREDENTIAL_FALLBACK: {{ .Values.config.workerAllowEnvCredentialFallback | quote }}
   WORKER_IMAGE: {{ $workerImage | quote }}
   NOVNC_IMAGE: {{ $novncImage | quote }}

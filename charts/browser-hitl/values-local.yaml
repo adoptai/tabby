@@ -152,6 +152,8 @@ config:
   reconcileBatchSize: "50"
   extractTabTimeoutMs: "15000"
   extractTabPollIntervalMs: "3000"
+  browserStateEnabled: "true"
+  browserStateTtlSeconds: "604800"
 
 
 # Development secrets (NEVER use in production)

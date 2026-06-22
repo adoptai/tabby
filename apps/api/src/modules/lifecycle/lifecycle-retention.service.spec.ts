@@ -15,6 +15,7 @@ describe('LifecycleRetentionService helpers', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any, // browserStateRepo
       {} as any, // DataSource
     );
   }
