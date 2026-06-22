@@ -434,7 +434,7 @@ describe('LoginDslRunner', () => {
           step_index: 0,
         }),
       );
-      expect(inputRelay.waitForInput).toHaveBeenCalledWith(0, expect.any(Number));
+      expect(inputRelay.waitForInput).toHaveBeenCalledWith(0, expect.any(Number), undefined);
     });
 
     it('skips step on on_failure: skip and continues to next step', async () => {

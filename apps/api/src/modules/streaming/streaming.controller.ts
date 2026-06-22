@@ -1165,13 +1165,19 @@ export class StreamingController {
     // Redis key. Fall back to the latest intervention's input_request_metadata
     // so the resolve button can POST the correct step_index — same pattern
     // used by AgentService.getSessionStatus.
+    // Skip the fallback when the worker auto-resolved the HITL (login detected
+    // via URL pattern match) — the DSL is still running but human input is no
+    // longer needed.
     let pendingInput = session.pending_input_request as Record<string, unknown> | null;
     if (!pendingInput && (session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED')) {
-      const latestIntervention = await this.interventionRepo.findOne({
-        where: { session_id: sessionId },
-        order: { started_at: 'DESC' },
-      });
-      pendingInput = latestIntervention?.input_request_metadata ?? null;
+      const autoResolved = await this.streamTokenService.isHitlAutoResolved(sessionId);
+      if (!autoResolved) {
+        const latestIntervention = await this.interventionRepo.findOne({
+          where: { session_id: sessionId },
+          order: { started_at: 'DESC' },
+        });
+        pendingInput = latestIntervention?.input_request_metadata ?? null;
+      }
     }
 
     return {
@@ -1394,11 +1400,14 @@ export class StreamingController {
 
     let pendingInput = session.pending_input_request as Record<string, unknown> | null;
     if (!pendingInput && (session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED')) {
-      const latestIntervention = await this.interventionRepo.findOne({
-        where: { session_id: sessionId },
-        order: { started_at: 'DESC' },
-      });
-      pendingInput = latestIntervention?.input_request_metadata ?? null;
+      const autoResolved = await this.streamTokenService.isHitlAutoResolved(sessionId);
+      if (!autoResolved) {
+        const latestIntervention = await this.interventionRepo.findOne({
+          where: { session_id: sessionId },
+          order: { started_at: 'DESC' },
+        });
+        pendingInput = latestIntervention?.input_request_metadata ?? null;
+      }
     }
 
     return {
