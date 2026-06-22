@@ -76,6 +76,7 @@ export const REDIS_KEYS = {
   tokenRevoked: (jti: string) => `token:revoked:${jti}`,
   agentIdempotency: (tenantId: string, key: string) => `idempotency:agent:run-url:${tenantId}:${key}`,
   streamRevoked: (sessionId: string) => `stream_revoked:${sessionId}`,
+  hitlAutoResolved: (sessionId: string) => `hitl_auto_resolved:${sessionId}`,
 } as const;
 
 export const REDIS_TTL = {

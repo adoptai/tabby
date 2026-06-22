@@ -92,6 +92,7 @@ describe('StreamingController — panel-state', () => {
       }),
       generateToken: jest.fn().mockResolvedValue('new-token'),
       isStreamRevoked: jest.fn().mockResolvedValue(false),
+      isHitlAutoResolved: jest.fn().mockResolvedValue(false),
     };
 
     const module: TestingModule = await buildModule({ sessionRepo, interventionRepo, streamTokenService });
