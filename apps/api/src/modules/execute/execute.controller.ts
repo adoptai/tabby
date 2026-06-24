@@ -68,7 +68,7 @@ export class ExecuteController {
   constructor(private readonly executeService: ExecuteService) {}
 
   @Post('fetch')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   @ApiOperation({
     summary: 'Execute fetch inside browser',
     description: 'Runs fetch() inside the authenticated Tabby browser session via page.evaluate(). Inherits the browser TLS fingerprint, cookies, and session state. Caller-supplied headers are forwarded as-is (including Cookie/Authorization overrides) — this is intentional since callers can only target sessions they own via profile authorization.',
@@ -101,7 +101,7 @@ export class ExecuteController {
   }
 
   @Post('browser')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   @ApiOperation({
     summary: 'Execute browser command',
     description: 'Runs Playwright browser commands (navigate, click, type, screenshot, HAR capture, etc.) inside the authenticated Tabby browser session. One active consumer per session is enforced.',
