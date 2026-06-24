@@ -182,4 +182,9 @@ export class StreamTokenService implements OnModuleDestroy {
     const payload = JSON.stringify({ input_type: inputType, value });
     await this.redis.set(redisKey, payload, 'EX', REDIS_TTL.HUMAN_INPUT_SECONDS);
   }
+
+  async isHitlAutoResolved(sessionId: string): Promise<boolean> {
+    const val = await this.redis.get(REDIS_KEYS.hitlAutoResolved(sessionId));
+    return val !== null;
+  }
 }

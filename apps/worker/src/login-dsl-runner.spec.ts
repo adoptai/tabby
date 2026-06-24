@@ -6,7 +6,7 @@ import { DslStep } from '@browser-hitl/shared';
 // ---------------------------------------------------------------------------
 
 function createMockLocator(overrides: Record<string, jest.Mock> = {}) {
-  return {
+  const locator: any = {
     fill: jest.fn().mockResolvedValue(undefined),
     click: jest.fn().mockResolvedValue(undefined),
     selectOption: jest.fn().mockResolvedValue(undefined),
@@ -14,6 +14,8 @@ function createMockLocator(overrides: Record<string, jest.Mock> = {}) {
     pressSequentially: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
+  locator.first = jest.fn().mockReturnValue(locator);
+  return locator;
 }
 
 function createMockFrameLocator() {
@@ -315,6 +317,59 @@ describe('LoginDslRunner', () => {
       ).rejects.toThrow('Unknown DSL action: fly_to_moon');
     });
 
+    it('executes click with first: true using locator.first()', async () => {
+      const page = createMockPage();
+      const { runner } = buildRunner({ page });
+
+      await runner.execute(
+        [{ action: 'click', selector: 'a:has-text("Q-")', first: true }],
+        { username: '', password: '' },
+      );
+
+      expect(page.locator).toHaveBeenCalledWith('a:has-text("Q-")');
+      expect(page._locator.first).toHaveBeenCalled();
+      expect(page._locator.click).toHaveBeenCalled();
+    });
+
+    it('does not call first() when first is not set on click', async () => {
+      const page = createMockPage();
+      const { runner } = buildRunner({ page });
+
+      await runner.execute(
+        [{ action: 'click', selector: '#unique-btn' }],
+        { username: '', password: '' },
+      );
+
+      expect(page._locator.first).not.toHaveBeenCalled();
+      expect(page._locator.click).toHaveBeenCalled();
+    });
+
+    it('executes goto with url_expression', async () => {
+      const page = createMockPage();
+      page.evaluate.mockResolvedValueOnce('https://example.com/dynamic-page');
+      const { runner } = buildRunner({ page, options: { allowEvaluate: true } });
+
+      await runner.execute(
+        [{ action: 'goto', url_expression: "window.location.origin + '/dynamic-page'" } as any],
+        { username: '', password: '' },
+      );
+
+      expect(page.evaluate).toHaveBeenCalledWith("window.location.origin + '/dynamic-page'");
+      expect(page.goto).toHaveBeenCalledWith('https://example.com/dynamic-page', expect.any(Object));
+    });
+
+    it('rejects goto url_expression when allow_evaluate is disabled', async () => {
+      const page = createMockPage();
+      const { runner } = buildRunner({ page });
+
+      await expect(
+        runner.execute(
+          [{ action: 'goto', url_expression: "window.location.origin + '/page'" } as any],
+          { username: '', password: '' },
+        ),
+      ).rejects.toThrow('allow_evaluate');
+    });
+
     it('retries failed steps up to retry_count', async () => {
       const page = createMockPage();
       let callCount = 0;
@@ -336,6 +391,175 @@ describe('LoginDslRunner', () => {
       await runner.execute(steps, { username: '', password: '' });
 
       expect(callCount).toBe(2);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // on_failure: request_help (HITL fallback)
+  // -----------------------------------------------------------------------
+  describe('on_failure: request_help', () => {
+    it('calls onInputRequested and waits for input when step fails with request_help', async () => {
+      const page = createMockPage();
+      page._locator.click.mockRejectedValue(new Error('element not found'));
+      const inputRelay = createMockInputRelay();
+      inputRelay.waitForInput.mockResolvedValue({ input_type: 'confirm', value: 'resolved' });
+
+      const onInputRequested = jest.fn().mockResolvedValue(undefined);
+      const { runner } = buildRunner({
+        page,
+        inputRelay,
+        options: { onInputRequested },
+      });
+
+      const steps: DslStep[] = [
+        {
+          action: 'click',
+          selector: '#missing-btn',
+          retry_count: 0,
+          on_failure: {
+            action: 'request_help',
+            message: 'Click failed. Please resolve via VNC.',
+            input_type: 'confirm',
+            screenshot: true,
+          },
+        },
+      ];
+
+      await runner.execute(steps, { username: '', password: '' });
+
+      expect(onInputRequested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input_type: 'confirm',
+          label: 'Click failed. Please resolve via VNC.',
+          step_index: 0,
+        }),
+      );
+      expect(inputRelay.waitForInput).toHaveBeenCalledWith(0, expect.any(Number), undefined);
+    });
+
+    it('skips step on on_failure: skip and continues to next step', async () => {
+      const page = createMockPage();
+      let callCount = 0;
+      page._locator.click.mockImplementation(() => {
+        callCount++;
+        if (callCount <= 1) return Promise.reject(new Error('not found'));
+        return Promise.resolve();
+      });
+
+      const { runner } = buildRunner({ page });
+
+      const steps: DslStep[] = [
+        {
+          action: 'click',
+          selector: '#optional',
+          retry_count: 0,
+          on_failure: { action: 'skip' },
+        },
+        { action: 'click', selector: '#next-btn' },
+      ];
+
+      await runner.execute(steps, { username: '', password: '' });
+
+      expect(page.locator).toHaveBeenCalledWith('#optional');
+      expect(page.locator).toHaveBeenCalledWith('#next-btn');
+      expect(callCount).toBe(2);
+    });
+
+    it('aborts on on_failure: abort', async () => {
+      const page = createMockPage();
+      page._locator.click.mockRejectedValue(new Error('not found'));
+
+      const { runner } = buildRunner({ page });
+
+      const steps: DslStep[] = [
+        {
+          action: 'click',
+          selector: '#critical',
+          retry_count: 0,
+          on_failure: { action: 'abort' },
+        },
+      ];
+
+      await expect(
+        runner.execute(steps, { username: '', password: '' }),
+      ).rejects.toThrow('DSL step 0 (click) failed');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Login validation pattern (wait_for_url + on_failure loop)
+  // -----------------------------------------------------------------------
+  describe('login validation pattern', () => {
+    it('continues when wait_for_url matches (login validated)', async () => {
+      const page = createMockPage();
+      page.waitForURL.mockResolvedValue(undefined);
+
+      const { runner } = buildRunner({ page });
+
+      const steps: DslStep[] = [
+        { action: 'wait_for_url', pattern: '**/lightning/**', timeout_ms: 15000 },
+      ];
+
+      await runner.execute(steps, { username: '', password: '' });
+
+      expect(page.waitForURL).toHaveBeenCalledWith('**/lightning/**', { timeout: 15000 });
+    });
+
+    it('triggers HITL when wait_for_url fails (login not validated)', async () => {
+      const page = createMockPage();
+      page.waitForURL.mockRejectedValue(new Error('timeout waiting for URL'));
+      const inputRelay = createMockInputRelay();
+      inputRelay.waitForInput.mockResolvedValue({ input_type: 'confirm', value: 'resolved' });
+
+      const onInputRequested = jest.fn().mockResolvedValue(undefined);
+      const { runner } = buildRunner({
+        page,
+        inputRelay,
+        options: { onInputRequested },
+      });
+
+      const steps: DslStep[] = [
+        {
+          action: 'wait_for_url',
+          pattern: '**/lightning/**',
+          timeout_ms: 5000,
+          retry_count: 0,
+          on_failure: {
+            action: 'request_help',
+            message: 'Login not detected. Please complete login and click Mark as Resolved.',
+            input_type: 'confirm',
+          },
+        },
+      ];
+
+      await runner.execute(steps, { username: '', password: '' });
+
+      expect(onInputRequested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input_type: 'confirm',
+          label: 'Login not detected. Please complete login and click Mark as Resolved.',
+        }),
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Variable interpolation in goto
+  // -----------------------------------------------------------------------
+  describe('variable interpolation', () => {
+    it('interpolates {{varname}} in goto url from store_as variables', async () => {
+      const page = createMockPage();
+      page.evaluate.mockResolvedValueOnce('abc123');
+      const { runner } = buildRunner({ page, options: { allowEvaluate: true } });
+
+      const steps: DslStep[] = [
+        { action: 'evaluate', expression: "'abc123'", store_as: 'quote_id' } as any,
+        { action: 'goto', url: 'https://example.com/quote/{{quote_id}}' },
+      ];
+
+      await runner.execute(steps, { username: '', password: '' });
+
+      expect(page.goto).toHaveBeenCalledWith('https://example.com/quote/abc123', expect.any(Object));
     });
   });
 });

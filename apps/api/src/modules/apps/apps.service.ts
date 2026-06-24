@@ -116,7 +116,7 @@ export class AppsService {
   }
 
   async findAll(
-    tenantId: string,
+    tenantId: string | undefined,
     limit: number,
     offset: number,
     fields?: string,
@@ -134,8 +134,10 @@ export class AppsService {
       select = requested;
     }
 
+    const where: any = tenantId ? { tenant_id: tenantId } : {};
+
     const [data, total] = await this.appRepo.findAndCount({
-      where: { tenant_id: tenantId },
+      where,
       select: select as any,
       take: limit,
       skip: offset,

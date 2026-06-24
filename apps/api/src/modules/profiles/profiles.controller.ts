@@ -78,7 +78,7 @@ export class ProfilesController {
   }
 
   @Post()
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @ApiOperation({ summary: 'Create service profile', description: 'Creates a new profile version in STAGING state. Profiles define what credentials to extract and how to validate them.' })
   @ApiResponse({ status: 201, description: 'Profile created' })
   async create(@Body() dto: CreateProfileDto, @Req() req: any) {
@@ -87,16 +87,23 @@ export class ProfilesController {
   }
 
   @Get()
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'List profiles' })
   @ApiResponse({ status: 200 })
   async findAll(@Query() query: PaginationQueryDto, @Req() req: any) {
-    const tenantId = this.resolveTenantId(req, (query as any).tenant_id);
+    // Admin with no tenant_id filter sees all profiles across tenants
+    const queryTenantId = (query as any).tenant_id;
+    let tenantId: string | undefined;
+    if (req.user.role === 'Admin') {
+      tenantId = queryTenantId; // may be undefined (all tenants) or a specific tenant
+    } else {
+      tenantId = req.user.tenant_id;
+    }
     return this.profilesService.findAll(tenantId, query.limit, query.offset);
   }
 
   @Get(':id')
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'Get profile details' })
   @ApiParam({ name: 'id', description: 'Profile UUID' })
   async findOne(@Param('id') id: string, @Req() req: any) {
@@ -105,7 +112,7 @@ export class ProfilesController {
   }
 
   @Post(':id/promote')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @ApiOperation({ summary: 'Promote profile version', description: 'STAGING → CANARY (direct). CANARY → ACTIVE (requires canary_request_count ≥ 5 and error rate ≤ 20%).' })
   @ApiParam({ name: 'id' })
   @ApiResponse({ status: 200, description: 'Profile promoted' })
@@ -117,7 +124,7 @@ export class ProfilesController {
   }
 
   @Post(':id/rollback')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @ApiOperation({ summary: 'Rollback profile version', description: 'CANARY → STAGING (resets counters). ACTIVE → RETIRED (reactivates parent).' })
   @ApiParam({ name: 'id' })
   @ApiResponse({ status: 200 })
@@ -128,9 +135,9 @@ export class ProfilesController {
   }
 
   @Delete(':id')
-  @Roles('Admin')
+  @Roles('Admin', 'Editor')
   @HttpCode(204)
-  @ApiOperation({ summary: 'Delete service profile', description: 'Permanently deletes a profile version. Child versions that reference this profile as parent are detached (parent_version_id set to null). Admin role required.' })
+  @ApiOperation({ summary: 'Delete service profile', description: 'Permanently deletes a profile version. Child versions that reference this profile as parent are detached (parent_version_id set to null). Admin or Editor role required.' })
   @ApiParam({ name: 'id', description: 'Profile UUID' })
   @ApiResponse({ status: 204, description: 'Profile deleted' })
   @ApiResponse({ status: 404, description: 'Profile not found' })

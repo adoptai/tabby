@@ -24,7 +24,7 @@ export class SessionsController {
   constructor(private readonly sessionsService: SessionsService) {}
 
   @Post('apps/:id/sessions/scale')
-  @Roles('Admin', 'Operator')
+  @Roles('Admin', 'Editor', 'Operator')
   @HttpCode(200)
   @ApiOperation({ summary: 'Scale session count', description: 'Set the desired number of worker sessions for an app. The controller reconcile loop (every 15s) will create or terminate sessions to match.' })
   @ApiParam({ name: 'id', description: 'Application UUID', example: 'ffffffff-gggg-hhhh-iiii-jjjjjjjjjjjj' })
@@ -36,25 +36,29 @@ export class SessionsController {
     @Body() dto: ScaleSessionsDto,
     @Req() req: any,
   ) {
+    // Admin bypasses tenant scope — can scale any app
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
     return this.sessionsService.scale(
       appId,
       dto.desired_sessions,
-      req.user.tenant_id,
+      tenantId,
       req.user.user_id,
     );
   }
 
   @Get('sessions')
-  @Roles('Admin', 'Operator', 'Viewer')
-  @ApiOperation({ summary: 'List sessions', description: 'Returns paginated list of sessions for the authenticated tenant.' })
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
+  @ApiOperation({ summary: 'List sessions', description: 'Returns paginated list of sessions for the authenticated tenant. Admin sees all sessions across tenants.' })
   @ApiResponse({ status: 200, description: 'Paginated session list', schema: { example: { data: [{ id: 'cccccccc-...', state: 'HEALTHY', health_result_type: 'PASS', pod_name: 'worker-cccccccc-...' }], total: 1, limit: 50, offset: 0 } } })
   async findAll(
     @Query() query: PaginationQueryDto,
     @Req() req: any,
   ) {
-    // Admins see all; Operators and Viewers see only their own sessions
-    const ownerFilter = req.user.role === 'Admin' ? null : req.user.owner_user_id;
-    return this.sessionsService.findAll(req.user.tenant_id, query.limit, query.offset, ownerFilter);
+    // Admin sees all sessions across tenants; Editor sees all in own tenant;
+    // Operators and Viewers see only their own sessions
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    const ownerFilter = ['Admin', 'Editor'].includes(req.user.role) ? null : req.user.owner_user_id;
+    return this.sessionsService.findAll(tenantId, query.limit, query.offset, ownerFilter);
   }
 
   @Get('sessions/:id')
@@ -64,11 +68,12 @@ export class SessionsController {
   @ApiResponse({ status: 200, description: 'Session details' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   async findOne(@Param('id') id: string, @Req() req: any) {
-    return this.sessionsService.findOne(id, req.user.tenant_id);
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    return this.sessionsService.findOne(id, tenantId);
   }
 
   @Get('sessions/:id/interventions')
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'List interventions for session', description: 'Returns paginated list of HITL interventions (OTP, CAPTCHA, MANUAL) for a session.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
   @ApiResponse({ status: 200, description: 'Paginated intervention list' })
@@ -77,9 +82,10 @@ export class SessionsController {
     @Query() query: PaginationQueryDto,
     @Req() req: any,
   ) {
+    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
     return this.sessionsService.findInterventions(
       sessionId,
-      req.user.tenant_id,
+      tenantId,
       query.limit,
       query.offset,
     );

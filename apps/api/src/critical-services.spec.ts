@@ -191,14 +191,13 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
       expect(ctrlSrc).toContain('@UseGuards(JwtAuthGuard, RolesGuard)');
     });
 
-    it('should restrict stream to Admin, Operator, Viewer, Agent', () => {
-      expect(ctrlSrc).toContain("@Roles('Admin', 'Operator', 'Viewer', 'Agent')");
+    it('should restrict stream to Admin, Editor, Operator, Viewer, Agent', () => {
+      expect(ctrlSrc).toContain("@Roles('Admin', 'Editor', 'Operator', 'Viewer', 'Agent')");
     });
 
-    it('should restrict takeover to Admin, Operator', () => {
-      // Check that takeover method has the Operator role
-      const takeoverSection = ctrlSrc.split('takeover')[0].slice(-200);
-      expect(ctrlSrc).toMatch(/@Roles\('Admin', 'Operator'\)[\s\S]*?takeover/);
+    it('should restrict takeover to Admin, Editor, Operator', () => {
+      // Check that takeover method has Admin, Editor, Operator roles
+      expect(ctrlSrc).toMatch(/@Roles\('Admin', 'Editor', 'Operator'\)[\s\S]*?takeover/);
     });
 
     it('should use InputDto with input_type, value, step_index', () => {

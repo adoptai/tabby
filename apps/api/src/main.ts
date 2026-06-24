@@ -38,9 +38,19 @@ async function bootstrap() {
       )
       .setVersion(process.env.CHART_VERSION || '0.1.0')
       .addBearerAuth(
-        { type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'JWT token from /login, /auth/service-token, or /auth/agent-token' },
+        { type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'Paste a JWT token directly' },
         'bearer',
       )
+      .addOAuth2({
+        type: 'oauth2',
+        description: 'Login with email and password',
+        flows: {
+          password: {
+            tokenUrl: '/auth/swagger-login',
+            scopes: {},
+          },
+        },
+      }, 'oauth2-login')
       .addTag('Authentication', 'Login, service tokens, agent tokens, and client management')
       .addTag('Sessions', 'Session lifecycle, scaling, and intervention history')
       .addTag('HITL', 'Human-in-the-loop: VNC streaming, baton takeover/release, OTP submission')
@@ -57,7 +67,11 @@ async function bootstrap() {
       .addTag('Streaming - CDP', 'Chrome DevTools Protocol streaming viewer')
       .build();
     const document = SwaggerModule.createDocument(app, config);
-    SwaggerModule.setup('api/docs', app, document);
+    // Accept either auth scheme globally — login via OAuth2 OR paste a bearer token
+    document.security = [{ 'bearer': [] }, { 'oauth2-login': [] }];
+    SwaggerModule.setup('api/docs', app, document, {
+      swaggerOptions: { persistAuthorization: true },
+    });
   }
 
   // Security headers (H2 remediation)

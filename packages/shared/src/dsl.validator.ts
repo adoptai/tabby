@@ -74,8 +74,12 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
 
   switch (step.action) {
     case 'goto':
-      if (!step.url || typeof step.url !== 'string') {
-        errors.push({ path: `${path}.url`, message: 'goto requires a url string' });
+      if (step.url_expression) {
+        if (typeof step.url_expression !== 'string') {
+          errors.push({ path: `${path}.url_expression`, message: 'goto url_expression must be a string' });
+        }
+      } else if (!step.url || typeof step.url !== 'string') {
+        errors.push({ path: `${path}.url`, message: 'goto requires a url or url_expression string' });
       }
       break;
 

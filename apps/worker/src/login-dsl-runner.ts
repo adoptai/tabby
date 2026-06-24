@@ -3,6 +3,20 @@ import { DslStep, RequestHumanInputStep, InputRequest } from '@browser-hitl/shar
 import { InputRelay } from './input-relay';
 
 /**
+ * Convert a URL glob (as used by wait_for_url) to a RegExp.
+ * Handles ** (any path segment), * (single segment), and ? (single char).
+ */
+function urlGlobToRegex(pattern: string): RegExp {
+  const re = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\0/g, '.*')
+    .replace(/\?/g, '[^/]');
+  return new RegExp(re);
+}
+
+/**
  * Login DSL Runner - executes all DSL actions per spec section 10.3.
  * Steps execute sequentially and are blocking.
  * Frame context persists across steps until explicitly changed.
@@ -12,6 +26,7 @@ export class LoginDslRunner {
   private readonly allowEvaluate: boolean;
   private readonly onInputRequested: ((request: InputRequest) => Promise<void> | void) | undefined;
   private readonly variables: Map<string, string> = new Map();
+  private allSteps: DslStep[] = [];
 
   constructor(
     private readonly page: Page,
@@ -41,6 +56,7 @@ export class LoginDslRunner {
     steps: DslStep[],
     credentials: { username: string; password: string },
   ): Promise<void> {
+    this.allSteps = steps;
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const timeout = step.timeout_ms || 30000;
@@ -125,17 +141,21 @@ export class LoginDslRunner {
         break;
       }
 
-      case 'click':
-        await this.currentFrame.locator(step.selector).click({ timeout });
+      case 'click': {
+        const loc = this.currentFrame.locator(step.selector);
+        await (step.first ? loc.first() : loc).click({ timeout });
         break;
+      }
 
       case 'select':
         await this.currentFrame.locator(step.selector).selectOption(step.value, { timeout });
         break;
 
-      case 'wait_for':
-        await this.currentFrame.locator(step.selector).waitFor({ timeout: step.timeout_ms || timeout });
+      case 'wait_for': {
+        const wfLoc = this.currentFrame.locator(step.selector);
+        await ((step as any).first ? wfLoc.first() : wfLoc).waitFor({ timeout: step.timeout_ms || timeout });
         break;
+      }
 
       case 'wait_for_url':
         await this.page.waitForURL(step.pattern, { timeout: step.timeout_ms || timeout });
@@ -243,9 +263,16 @@ export class LoginDslRunner {
           }
         }
 
-        // Poll for human response
-        const timeoutMs = step.timeout_ms || 120000;
-        const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
+        // Poll for human response — on_failure has its own timeout, independent of the step's action timeout
+        const timeoutMs = handler.timeout_ms || 600000;
+        const autoResolve = inputType === 'confirm'
+          ? this.buildAutoResolveCheck(stepIndex)
+          : undefined;
+        const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs, autoResolve);
+
+        if (response?.value === 'auto-resolved') {
+          await this.inputRelay.markAutoResolved();
+        }
 
         if (!response) {
           console.warn(`Help request timeout for step ${stepIndex}`);
@@ -277,8 +304,29 @@ export class LoginDslRunner {
   }
 
   /**
+   * Build a synchronous auto-resolve checker for "confirm" HITL steps.
+   * Scans forward from fromStepIndex for the nearest wait_for_url step and
+   * returns a function that checks page.url() against its glob pattern.
+   * Stops scanning at goto / request_human_input steps (those change context).
+   */
+  private buildAutoResolveCheck(fromStepIndex: number): (() => boolean) | undefined {
+    for (let i = fromStepIndex + 1; i < this.allSteps.length; i++) {
+      const next = this.allSteps[i];
+      if (next.action === 'wait_for_url' && next.pattern) {
+        const regex = urlGlobToRegex(next.pattern);
+        console.log(`[DSL] Auto-resolve enabled for step ${fromStepIndex}: URL pattern "${next.pattern}"`);
+        return () => regex.test(this.page.url());
+      }
+      if (next.action === 'goto' || next.action === 'request_human_input') break;
+    }
+    return undefined;
+  }
+
+  /**
    * Handle a generic human input request step.
    * Signals controller, polls Redis for the response, then acts on it.
+   * For "confirm" type, also enables auto-resolve when the next wait_for_url
+   * pattern already matches (user finished login before clicking resolve).
    */
   private async handleHumanInputRequest(
     step: RequestHumanInputStep,
@@ -303,9 +351,16 @@ export class LoginDslRunner {
       }
     }
 
-    // Poll for human input
+    // Poll for human input (with auto-resolve for confirm steps)
     const timeoutMs = step.timeout_ms || 120000;
-    const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs);
+    const autoResolve = step.input_type === 'confirm'
+      ? this.buildAutoResolveCheck(stepIndex)
+      : undefined;
+    const response = await this.inputRelay.waitForInput(stepIndex, timeoutMs, autoResolve);
+
+    if (response?.value === 'auto-resolved') {
+      await this.inputRelay.markAutoResolved();
+    }
 
     if (!response) {
       throw new Error(`Human input timeout - no value received for "${step.label}"`);
@@ -317,7 +372,7 @@ export class LoginDslRunner {
         await this.page.goto(response.value);
         break;
       case 'confirm':
-        // Human resolved via VNC, nothing to do
+        // Human resolved via VNC (or auto-resolved), nothing to do
         break;
       default:
         // Fill the value into the field
@@ -330,7 +385,7 @@ export class LoginDslRunner {
         break;
     }
 
-    console.log(`Human input received and processed: type=${response.input_type}`);
+    console.log(`Human input received and processed: type=${response.input_type}${response.value === 'auto-resolved' ? ' (auto-resolved)' : ''}`);
   }
 
   /**
