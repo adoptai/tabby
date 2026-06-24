@@ -4,6 +4,7 @@ import {
 import { StreamTokenService } from '../streaming/stream-token.service';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiHeader, ApiProperty } from '@nestjs/swagger';
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -20,6 +21,14 @@ class AcknowledgeDto {
   @IsString()
   @MaxLength(2000)
   note?: string;
+}
+
+class ShortLinkDto {
+  @ApiProperty({ description: 'Viewer mode injected into the short URL. Omit for default MCP resolve panel.', example: 'recording', required: false })
+  @IsOptional()
+  @IsString()
+  @IsIn(['recording'])
+  mode?: 'recording';
 }
 
 class InputDto {
@@ -71,6 +80,7 @@ export class HitlController {
   @ApiResponse({ status: 200, description: 'Short URL generated', schema: { example: { short_url: 'https://api.example.com/s/abc12345' } } })
   async shortLink(
     @Param('id') sessionId: string,
+    @Body() body: ShortLinkDto,
     @Req() req: any,
   ): Promise<{ short_url: string }> {
     const streamResult = await this.hitlService.generateStreamUrl(
@@ -78,15 +88,14 @@ export class HitlController {
       req.user.tenant_id,
       req.user.user_id,
     );
-    // Append ?from=mcp so the noVNC viewer shows the "Mark as Resolved" panel.
-    // This endpoint is only called from MCP flows. The token lives in the URL
-    // FRAGMENT (#token=...), so the query param must be inserted BEFORE the
-    // fragment — naive concatenation would corrupt the token.
+    // Insert the appropriate query param BEFORE the URL fragment (#token=...).
+    // Default: ?from=mcp (MCP resolve panel). With mode=recording: ?mode=recording (export panel).
+    const queryParam = body.mode === 'recording' ? 'mode=recording' : 'from=mcp';
     const [urlBase, fragment] = streamResult.url.split('#', 2);
     const sep = urlBase.includes('?') ? '&' : '?';
     const urlWithParam = fragment !== undefined
-      ? `${urlBase}${sep}from=mcp#${fragment}`
-      : `${urlBase}${sep}from=mcp`;
+      ? `${urlBase}${sep}${queryParam}#${fragment}`
+      : `${urlBase}${sep}${queryParam}`;
     const shortId = await this.streamTokenService.createShortLink(urlWithParam);
     const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
     return { short_url: `${base}/s/${shortId}` };
