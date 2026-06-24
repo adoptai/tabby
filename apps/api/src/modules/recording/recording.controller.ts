@@ -31,7 +31,7 @@ export class RecordingController {
   ) {}
 
   @Get('sessions/:sessionId/bundle')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   async getBundle(@Param('sessionId') sessionId: string, @Req() req: any) {
     const tenantId: string = req.user.tenant_id;
     const ownerUserId: string | null = req.user.owner_user_id ?? null;

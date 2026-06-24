@@ -59,7 +59,7 @@ export class RecordingProvisionController {
   ) {}
 
   @Post('sessions')
-  @Roles('Admin', 'Operator', 'Agent')
+  @Roles('Admin', 'Editor', 'Operator', 'Agent')
   async createRecordingSession(@Body() body: CreateRecordingSessionBody, @Req() req: any) {
     const mode: RecordingMode = body?.recording_mode === 'workflow' ? 'workflow' : 'login';
     const startUrl = (body?.start_url || '').trim() || 'about:blank';
