@@ -39,6 +39,9 @@ values:
   api:
     replicas: ${API_REPLICAS}
     port: 8000
+    newrelic:
+      enabled: ${NEWRELIC_ENABLED}
+      environment: "${NEW_RELIC_ENVIRONMENT}"
     resources:
       requests:
         cpu: "${API_CPU_REQUEST}"
@@ -55,6 +58,9 @@ values:
 
   controller:
     replicas: ${CONTROLLER_REPLICAS}
+    newrelic:
+      enabled: ${NEWRELIC_ENABLED}
+      environment: "${NEW_RELIC_ENVIRONMENT}"
     resources:
       requests:
         cpu: "${CONTROLLER_CPU_REQUEST}"
@@ -80,6 +86,9 @@ values:
                   operator: In
 
   worker:
+    newrelic:
+      enabled: ${NEWRELIC_ENABLED}
+      environment: "${NEW_RELIC_ENVIRONMENT}"
     resources:
       requests:
         cpu: "${WORKER_CPU_REQUEST}"
@@ -91,13 +100,22 @@ values:
   slackBot:
     enabled: ${SLACK_BOT_ENABLED}
     slackDefaultChannel: "${SLACK_DEFAULT_CHANNEL}"
+    newrelic:
+      enabled: ${NEWRELIC_ENABLED}
+      environment: "${NEW_RELIC_ENVIRONMENT}"
 
   teamsBot:
     enabled: false
+    newrelic:
+      enabled: ${NEWRELIC_ENABLED}
+      environment: "${NEW_RELIC_ENVIRONMENT}"
 
   adminUi:
     enabled: ${ADMIN_UI_ENABLED}
     port: 8000
+    newrelic:
+      enabled: ${NEWRELIC_ENABLED}
+      environment: "${NEW_RELIC_ENVIRONMENT}"
 
   config:
     publicBaseUrl: "https://${API_HOST}"
@@ -355,6 +373,7 @@ values:
     agentSecretHmacKey: "${AGENT_SECRET_HMAC_KEY}"
     idpClientId: "${IDP_CLIENT_ID}"
     idpClientSecret: "${IDP_CLIENT_SECRET}"
+    newrelicLicenseKey: "${NEW_RELIC_LICENSE_KEY}"
 
   virtualServices:
     api:
