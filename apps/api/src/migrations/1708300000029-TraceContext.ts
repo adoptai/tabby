@@ -10,7 +10,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *
  * Together these wire the api -> controller -> worker distributed trace.
  */
-export class TraceContext1708300000019 implements MigrationInterface {
+export class TraceContext1708300000029 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS traceparent varchar`);
     await queryRunner.query(`ALTER TABLE applications ADD COLUMN IF NOT EXISTS pending_traceparent varchar`);
