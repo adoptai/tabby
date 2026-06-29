@@ -11,8 +11,8 @@
   },
   "dependencies": {
     "@browser-hitl/shared": "workspace:*",
-    "@sentry/node": "^10.51.0",
-    "@slack/bolt": "^4.7.2",
+    "@sentry/node": "^10.62.0",
+    "@slack/bolt": "^4.7.3",
     "nats": "^2.28.3"
   },
   "devDependencies": {
