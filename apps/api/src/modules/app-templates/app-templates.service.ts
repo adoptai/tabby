@@ -92,6 +92,7 @@ export class AppTemplatesService {
   private static readonly PROPAGATED_FIELDS = [
     'browser_policy', 'login_config', 'keepalive_config',
     'export_policy', 'notification_config', 'execute_enabled',
+    'extra_egress_allowlist',
   ] as const;
 
   /** Bump minor version, reset patch. e.g. "1.0.0" → "1.1.0", "2.5.3" → "2.6.0" */
@@ -114,6 +115,7 @@ export class AppTemplatesService {
       credential_ref_default: template.credential_ref_default,
       execute_enabled: template.execute_enabled,
       idle_shutdown_seconds: template.idle_shutdown_seconds,
+      extra_egress_allowlist: template.extra_egress_allowlist,
     };
     return createHash('sha256')
       .update(AppTemplatesService.stableStringify(fields))

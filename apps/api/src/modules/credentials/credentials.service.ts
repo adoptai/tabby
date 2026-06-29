@@ -1,4 +1,9 @@
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  NoHealthySessionException,
+  ProfileNotFoundException,
+  CredentialDecryptException,
+} from '../../common/exceptions/domain.exceptions';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, MoreThan, Repository } from 'typeorm';
 import {
@@ -129,7 +134,7 @@ export class CredentialsService {
     try {
       session = await this.findHealthySession(tenantId, profile.app_id, ownerUserId);
     } catch (e) {
-      if (e instanceof NotFoundException && profile.app_id) {
+      if (e instanceof NoHealthySessionException && profile.app_id) {
         // No healthy session — check if app was idle-shutdown (desired_session_count=0)
         // If so, scale it back up so the controller creates a new session
         const app = await this.appRepo.findOne({ where: { id: profile.app_id } });
@@ -270,7 +275,7 @@ export class CredentialsService {
           throw err;
         }
       }
-      throw new NotFoundException(`No active profile found for "${profileId}"`);
+      throw new ProfileNotFoundException(`No active profile found for "${profileId}"`, { profile_id: profileId });
     }
 
     // Prefer ACTIVE over CANARY
@@ -372,7 +377,7 @@ export class CredentialsService {
 
     const session = await this.sessionRepo.findOne({ where });
     if (!session) {
-      throw new NotFoundException('No healthy session available');
+      throw new NoHealthySessionException('No healthy session available', { tenant_id: tenantId, app_id: appId });
     }
     return session;
   }
@@ -448,8 +453,8 @@ export class CredentialsService {
     try {
       decryptedJson = this.decryptBundle(encryptedBuf, nonceBuf);
     } catch (err) {
-      this.logger.warn(`Failed to decrypt artifact ${bundle.id}: ${(err as Error).message} (nonce type=${typeof bundle.nonce}, isBuffer=${Buffer.isBuffer(bundle.nonce)}, len=${nonceBuf.length})`);
-      return null;
+      this.logger.error(`Failed to decrypt artifact ${bundle.id}: ${(err as Error).message} (nonce type=${typeof bundle.nonce}, isBuffer=${Buffer.isBuffer(bundle.nonce)}, len=${nonceBuf.length})`);
+      throw new CredentialDecryptException({ artifact_id: bundle.id });
     } finally {
       // Zero the encrypted buffer
       encryptedBuf.fill(0);
