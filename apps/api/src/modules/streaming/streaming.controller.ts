@@ -905,7 +905,7 @@ export class CdpStreamingController {
                 stUptime.textContent = Math.round((Date.now() - new Date(data.started_at).getTime()) / 60000) + 'm';
               }
               if (data.state === 'TERMINATED') { sessionTerminated = true; handleTerminated(); return; }
-              if (fromMcp && data.state === 'HEALTHY') { window.close(); }
+              if (!recordingMode && data.state === 'HEALTHY') { window.close(); }
               if (!fromMcp) return;
               var pending = data.pending_input_request;
               if (pending && pending.step_index != null) {
@@ -1787,7 +1787,7 @@ export class StreamingController {
                 stUptime.textContent = Math.round((Date.now() - new Date(data.started_at).getTime()) / 60000) + 'm';
               }
               if (data.state === 'TERMINATED') { sessionTerminated = true; handleTerminated(); return; }
-              if (fromMcp && data.state === 'HEALTHY') { window.close(); }
+              if (!recordingMode && data.state === 'HEALTHY') { window.close(); }
               if (!fromMcp) return;
               var pending = data.pending_input_request;
               if (pending && pending.step_index != null) {

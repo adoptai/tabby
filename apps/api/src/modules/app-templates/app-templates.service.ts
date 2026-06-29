@@ -162,6 +162,7 @@ export class AppTemplatesService {
       const apps = await this.appRepo.find({
         where: { template_id: template.id },
         select: ['id'],
+        order: { id: 'ASC' },
         take: CHUNK_SIZE,
         skip: offset,
       });
