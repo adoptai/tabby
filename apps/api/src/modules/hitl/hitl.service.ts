@@ -3,10 +3,11 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
-  UnauthorizedException,
+  InternalServerErrorException,
   Logger,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { BatonConflictException } from '../../common/exceptions/domain.exceptions';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { SessionEntity, SessionBatonEntity, InterventionEntity } from '../../entities';
@@ -123,12 +124,15 @@ export class HitlService implements OnModuleDestroy {
       await this.applyBatonTimeoutState(manager, baton);
 
       if (baton.baton_state === 'HUMAN_CONTROL' && baton.owner_user_id !== actorId) {
-        throw new ConflictException('Baton is held by another user');
+        throw new BatonConflictException('Baton is held by another user', {
+          baton_state: baton.baton_state,
+        });
       }
       const takeoverReady = baton.baton_state === 'HUMAN_REQUESTED' || baton.baton_state === 'HUMAN_RELEASED';
       if (!takeoverReady && baton.owner_user_id !== actorId) {
-        throw new ConflictException(
+        throw new BatonConflictException(
           `Baton must be HUMAN_REQUESTED or HUMAN_RELEASED for takeover. Current state: ${baton.baton_state}`,
+          { baton_state: baton.baton_state },
         );
       }
 
@@ -189,11 +193,15 @@ export class HitlService implements OnModuleDestroy {
       await this.applyBatonTimeoutState(manager, baton);
 
       if (baton.baton_state !== 'HUMAN_CONTROL') {
-        throw new ConflictException('Baton is not in HUMAN_CONTROL state');
+        throw new BatonConflictException('Baton is not in HUMAN_CONTROL state', {
+          baton_state: baton.baton_state,
+        });
       }
 
       if (baton.owner_user_id !== actorId && actorRole !== 'Admin') {
-        throw new ConflictException('Only the baton holder can release it');
+        throw new BatonConflictException('Only the baton holder can release it', {
+          baton_state: baton.baton_state,
+        });
       }
 
       baton.baton_state = 'HUMAN_RELEASED';
@@ -414,7 +422,7 @@ export class HitlService implements OnModuleDestroy {
     try {
       return JSON.parse(raw) as T;
     } catch {
-      throw new UnauthorizedException('Corrupt idempotency cache entry');
+      throw new InternalServerErrorException('Corrupt idempotency cache entry');
     }
   }
 

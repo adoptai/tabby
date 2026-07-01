@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -15,8 +15,10 @@ import { StreamingModule } from './modules/streaming/streaming.module';
 import { ObservabilityModule } from './modules/observability/observability.module';
 import { NatsAclModule } from './modules/nats/nats-acl.module';
 import { BootstrapModule } from './modules/auth/bootstrap.module';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
+import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { EventsModule } from './modules/events/events.module';
 import { AgentModule } from './modules/agent/agent.module';
 import { LifecycleModule } from './modules/lifecycle/lifecycle.module';
@@ -68,9 +70,17 @@ import { RecordingProvisionModule } from './modules/recording/recording-provisio
   ],
   providers: [
     {
+      provide: APP_FILTER,
+      useClass: GlobalExceptionFilter,
+    },
+    {
       provide: APP_GUARD,
       useClass: UserThrottlerGuard,
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+  }
+}

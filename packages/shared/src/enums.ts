@@ -31,6 +31,7 @@ export enum HealthResultType {
 
 export enum UserRole {
   ADMIN = 'Admin',
+  EDITOR = 'Editor',
   OPERATOR = 'Operator',
   VIEWER = 'Viewer',
   AGENT = 'Agent',

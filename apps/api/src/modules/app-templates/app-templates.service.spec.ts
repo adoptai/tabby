@@ -144,6 +144,7 @@ describe('AppTemplatesService — propagation', () => {
         export_policy: template.export_policy,
         notification_config: template.notification_config,
         execute_enabled: template.execute_enabled,
+        extra_egress_allowlist: template.extra_egress_allowlist,
       };
 
       expect(appRepo.update).toHaveBeenCalledWith('app-1', expectedPayload);
