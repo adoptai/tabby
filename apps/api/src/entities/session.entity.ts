@@ -93,4 +93,7 @@ export class SessionEntity {
   /** Timestamp of last activity (credential request or execute call) — used for idle shutdown. */
   @Column({ type: 'timestamptz', nullable: true })
   last_activity_at: Date | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  traceparent: string | null;
 }
