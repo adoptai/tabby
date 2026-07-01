@@ -41,7 +41,21 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "browser-hitl.configmapName" . }}
+            # New Relic license key — optional. Mount as
+            # NEW_RELIC_LICENSE_KEY when the cluster operator has created
+            # the `newrelic-license` Secret. When absent the agent stays
+            # disabled because the entry file checks for the key.
+            - secretRef:
+                name: newrelic-license
+                optional: true
           env:
+            # New Relic APM toggle (see apps/api/newrelic.js).
+            - name: NEWRELIC_ENABLED
+              value: {{ .Values.api.newrelic.enabled | default false | quote }}
+            - name: NEW_RELIC_APP_NAME
+              value: "Adopt Tabby API"
+            - name: NEW_RELIC_ENVIRONMENT
+              value: {{ .Values.api.newrelic.environment | default "production" | quote }}
             # Secrets injected individually from Secret resource
             - name: JWT_SIGNING_KEY
               valueFrom:

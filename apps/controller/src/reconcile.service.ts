@@ -250,6 +250,21 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // Provision runtime for sessions created out-of-band — e.g. by the API in
+    // the scale request path, each already carrying its own originating
+    // `traceparent`. They exist in STARTING with no pod yet; give them a pod so
+    // the distributed trace stays bound per-session instead of flowing through
+    // the racy shared `pending_traceparent` slot (which fragments the trace).
+    for (const session of activeSessions) {
+      if (session.state === SessionState.STARTING && !session.pod_name) {
+        try {
+          await this.provisionSessionRuntime(session, app);
+        } catch (err) {
+          this.logger.error(`Failed to provision runtime for pre-created session ${session.id}: ${err}`);
+        }
+      }
+    }
+
     // Step 4: Terminate excess sessions (oldest first)
     if (actual > desired) {
       const toTerminate = actual - desired;
@@ -289,8 +304,23 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       intervention_count: 0,
       hitl_attempt_count: 0,
       owner_user_id: app.owner_user_id ?? null,
+      // Continue the distributed trace originated by the API scale request.
+      // pod-manager stamps this onto the worker pod's TRACEPARENT env so the
+      // browser worker joins the same trace (api -> controller -> worker).
+      traceparent: app.pending_traceparent ?? null,
     });
     const savedSession = await this.sessionRepo.save(session);
+
+    // Consume the parked trace context once so subsequent sessions don't reuse a
+    // stale traceparent. Best-effort: a failure here must not block provisioning.
+    if (app.pending_traceparent) {
+      try {
+        await this.appRepo.update(app.id, { pending_traceparent: null });
+        app.pending_traceparent = null;
+      } catch (err) {
+        this.logger.warn(`Failed to clear pending_traceparent for app ${app.id}: ${err}`);
+      }
+    }
 
     // Create baton record
     const baton = this.batonRepo.create({
@@ -300,6 +330,19 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     });
     await this.batonRepo.save(baton);
 
+    await this.provisionSessionRuntime(savedSession, app);
+  }
+
+  /**
+   * Provision the K8s runtime (worker pod + streaming service + NetworkPolicy)
+   * for an already-created STARTING session. Split out of createSession so that
+   * sessions created out-of-band — e.g. by the API directly in the scale
+   * request path, carrying their own originating `traceparent` — also get a pod.
+   * Binding the trace per-session at creation avoids routing it through a single
+   * shared `pending_traceparent` slot, which races under concurrent scale-ups
+   * and fragments the distributed trace (worker lands on the wrong trace).
+   */
+  private async provisionSessionRuntime(savedSession: SessionEntity, app: ApplicationEntity): Promise<void> {
     const streamingMode = this.podManager.resolveStreamingMode(app);
     let podName: string | null = null;
     try {
