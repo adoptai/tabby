@@ -239,9 +239,13 @@ export class CredentialsService {
 
     // Optionally trigger an immediate re-extraction for volatile bearers (silent-refresh
     // tokens rotate faster than refresh_interval_seconds). Coalesced across concurrent callers.
+    // Only the coalesce leader actually triggers an extraction, so only the leader should
+    // bypass the cache — followers would just do a redundant MinIO round-trip for identical data.
+    let bypassCache = false;
     if (forceRefresh) {
       const coalesceResult = await this.acquireExtractLock(tenantId, profile.profile_id, 'default');
       if (coalesceResult.isLeader) {
+        bypassCache = true;
         await this.signalWorkerExtract(session.id);
         if (waitSeconds > 0) {
           await this.redis.blpop(REDIS_KEYS.extractDone(session.id), waitSeconds);
@@ -249,7 +253,7 @@ export class CredentialsService {
       }
     }
 
-    const bundle = await this.fetchAndDecryptLatestBundle(session, tenantId, consumerId, forceRefresh);
+    const bundle = await this.fetchAndDecryptLatestBundle(session, tenantId, consumerId, bypassCache);
     return this.buildCredentialSet(profile, includeVolatile, bundle?.decrypted);
   }
 

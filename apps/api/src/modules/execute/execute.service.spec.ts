@@ -139,6 +139,24 @@ describe('ExecuteService.executeFetch — attach_captured_credentials', () => {
     expect(forwardedHeaders(fetchMock)).toEqual({ 'content-type': 'application/json' });
   });
 
+  it('rejects when merging captured headers exceeds MAX_HEADER_COUNT', async () => {
+    mockWorkerFetch();
+    const { service } = makeService({
+      getCredentialsForSession: jest.fn().mockResolvedValue(
+        makeCredSet([{ name: 'authorization', value: 'x' }, { name: 'x-extra', value: 'y' }]),
+      ),
+    });
+    // 50 caller headers passes validateRequest (limit is 50); +2 captured pushes it over.
+    const callerHeaders: Record<string, string> = {};
+    for (let i = 0; i < 50; i++) callerHeaders[`h${i}`] = String(i);
+
+    await expect(service.executeFetch({
+      ...baseParams,
+      request: { url: 'https://sandbox.qbo.intuit.com/api/v4/graphql', method: 'POST', headers: callerHeaders },
+      attachCaptured: true,
+    })).rejects.toThrow(/Too many headers/);
+  });
+
   it('passes forceRefresh through when refreshCredentials is set', async () => {
     mockWorkerFetch();
     const { service, credentialsService } = makeService({

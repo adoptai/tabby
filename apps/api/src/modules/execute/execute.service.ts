@@ -99,9 +99,18 @@ export class ExecuteService {
         );
         outgoingHeaders = this.mergeCapturedHeaders(request.headers, credSet);
         if (!this.hasCapturedHeaders(credSet)) {
+          // Name the most common misconfig: a profile can capture bearers at the worker
+          // level (export_policy.request_header_allowlist) yet never surface them because
+          // credential_types.headers is unset — the call returns 200 but the target 401s.
+          const declaresHeaders = Boolean((profile.credential_types as any)?.headers);
+          const hint = declaresHeaders
+            ? 'the latest artifact bundle carries none yet — check export_policy.request_header_allowlist + '
+              + 'target_urls (needs the /** glob), and that a request bearing the header has been made'
+            : 'the profile does not declare credential_types.headers, so captured headers are never '
+              + 'surfaced — add it (e.g. ["authorization"])';
           this.logger.warn(
-            `attach_captured_credentials: no captured headers available for profile "${profileId}" `
-            + `(session ${session.id}) — forwarding caller headers only`,
+            `attach_captured_credentials: no captured headers for profile "${profileId}" `
+            + `(session ${session.id}): ${hint}. Forwarding caller headers only.`,
           );
         }
       } catch (err) {
@@ -110,6 +119,15 @@ export class ExecuteService {
         this.logger.warn(
           `attach_captured_credentials failed for profile "${profileId}": `
           + `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Keep MAX_HEADER_COUNT authoritative: validateRequest checked the caller's headers,
+      // but merging captured headers can push the total over the limit.
+      if (outgoingHeaders && Object.keys(outgoingHeaders).length > EXECUTE_LIMITS.MAX_HEADER_COUNT) {
+        throw new BadRequestException(
+          `Too many headers after attaching captured credentials `
+          + `(${Object.keys(outgoingHeaders).length} > ${EXECUTE_LIMITS.MAX_HEADER_COUNT})`,
         );
       }
     }

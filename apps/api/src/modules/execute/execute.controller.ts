@@ -39,7 +39,7 @@ class ExecuteFetchDto {
 
   @ApiProperty({
     required: false,
-    description: 'Attach the profile\'s captured request headers (e.g. a client-minted bearer harvested via request_header_allowlist) to the fetch, server-side. The credential is pulled from the session the fetch runs in and never has to be supplied by the caller.',
+    description: 'Attach the profile\'s captured request headers (e.g. a client-minted bearer harvested via request_header_allowlist) to the fetch, server-side. The credential is pulled from the session the fetch runs in and never has to be supplied by the caller. Requires the profile to declare credential_types.headers (e.g. ["authorization"]) — otherwise captured headers are never surfaced and this is a no-op (the call returns 200 but the target may 401).',
   })
   @IsOptional()
   @IsBoolean()
