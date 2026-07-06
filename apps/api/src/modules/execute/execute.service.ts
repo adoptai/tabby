@@ -12,6 +12,7 @@ import { EXECUTE_LIMITS, PORTS, REDIS_KEYS, REDIS_TTL, BROWSER_COMMANDS } from '
 import type {
   ExecuteFetchRequest, ExecuteFetchResponse,
   ExecuteBrowserRequest, ExecuteBrowserResponse,
+  CredentialSet,
 } from '@browser-hitl/shared';
 import { CredentialsService } from '../credentials/credentials.service';
 import { JwtService } from '@nestjs/jwt';
@@ -51,10 +52,13 @@ export class ExecuteService {
     allowedProfiles?: string[];
     unrestrictedProfiles?: boolean;
     ownerUserId?: string | null;
+    attachCaptured?: boolean;
+    refreshCredentials?: boolean;
   }): Promise<ExecuteFetchResponse> {
     const {
       tenantId, profileId, request,
       role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
+      attachCaptured = false, refreshCredentials = false,
     } = params;
 
     // Agent profile authorization
@@ -82,6 +86,34 @@ export class ExecuteService {
       throw new ConflictException('Session has no assigned worker pod');
     }
 
+    // Optionally attach the profile's captured request headers (e.g. a client-minted
+    // bearer harvested via request_header_allowlist) to the outgoing fetch, server-side.
+    // Pulled from the SAME session the fetch runs in, so the credential matches the
+    // session; the bearer never has to be supplied by, or exposed to, the caller.
+    let outgoingHeaders = request.headers;
+    if (attachCaptured) {
+      try {
+        const credSet = await this.credentialsService.getCredentialsForSession(
+          profile, session, tenantId, `execute-fetch:${profileId}`,
+          { forceRefresh: refreshCredentials },
+        );
+        outgoingHeaders = this.mergeCapturedHeaders(request.headers, credSet);
+        if (!this.hasCapturedHeaders(credSet)) {
+          this.logger.warn(
+            `attach_captured_credentials: no captured headers available for profile "${profileId}" `
+            + `(session ${session.id}) — forwarding caller headers only`,
+          );
+        }
+      } catch (err) {
+        // Fail soft: forward caller headers only. A downstream auth failure will surface
+        // the real problem rather than masking it behind a credential-lookup error.
+        this.logger.warn(
+          `attach_captured_credentials failed for profile "${profileId}": `
+          + `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/fetch');
 
     // Forward to worker
@@ -103,7 +135,7 @@ export class ExecuteService {
         body: JSON.stringify({
           url: request.url,
           method: request.method,
-          headers: request.headers,
+          headers: outgoingHeaders,
           body: request.body,
           timeout_ms: timeoutMs,
         } satisfies ExecuteFetchRequest),
@@ -231,6 +263,44 @@ export class ExecuteService {
       clearTimeout(timer);
       await this.releaseSessionLock(lockKey);
     }
+  }
+
+  /** True if the captured set carries at least one non-empty header or CSRF token. */
+  private hasCapturedHeaders(credSet: CredentialSet): boolean {
+    if (credSet.headers?.some((h) => h?.name && h.value)) return true;
+    return Boolean(credSet.csrf?.token && credSet.csrf.header_name);
+  }
+
+  /**
+   * Merge a session's captured request headers into the caller's headers for the
+   * outgoing in-page fetch. Cookies are intentionally excluded — the in-page fetch
+   * inherits them via credentials:'include', and browsers forbid setting a Cookie
+   * header on fetch. Caller-supplied headers win on a case-insensitive name collision,
+   * preserving the "caller headers forwarded as-is" contract; captured headers fill
+   * in what the caller omits (typically the client-minted Authorization bearer).
+   */
+  private mergeCapturedHeaders(
+    callerHeaders: Record<string, string> | undefined,
+    credSet: CredentialSet,
+  ): Record<string, string> {
+    const captured: Record<string, string> = {};
+    for (const h of credSet.headers || []) {
+      if (h?.name && h.value) captured[h.name] = h.value;
+    }
+    if (credSet.csrf?.token && credSet.csrf.header_name) {
+      captured[credSet.csrf.header_name] = credSet.csrf.token;
+    }
+
+    if (!callerHeaders || Object.keys(callerHeaders).length === 0) {
+      return captured;
+    }
+
+    const merged: Record<string, string> = { ...captured };
+    const callerNamesLower = new Set(Object.keys(callerHeaders).map((k) => k.toLowerCase()));
+    for (const key of Object.keys(merged)) {
+      if (callerNamesLower.has(key.toLowerCase())) delete merged[key];
+    }
+    return { ...merged, ...callerHeaders };
   }
 
   private buildWorkerUrl(podName: string, path: string): string {
