@@ -87,11 +87,34 @@ describe('ExecuteService.executeFetch — attach_captured_credentials', () => {
       expect.objectContaining({ id: 'sess-1' }),
       'tenant-1',
       expect.any(String),
-      { forceRefresh: false },
+      { forceRefresh: false, waitSeconds: 0 },
     );
     const headers = forwardedHeaders(fetchMock);
     expect(headers.authorization).toBe('Intuit_live_bearer_xyz');
     expect(headers['content-type']).toBe('application/json');
+  });
+
+  it('filters out captured Cookie headers (forbidden on an in-page fetch)', async () => {
+    const fetchMock = mockWorkerFetch();
+    const { service } = makeService({
+      getCredentialsForSession: jest.fn().mockResolvedValue(
+        makeCredSet([
+          { name: 'authorization', value: 'bearer-x' },
+          { name: 'Cookie', value: 'session=leak' },
+        ]),
+      ),
+    });
+
+    await service.executeFetch({
+      ...baseParams,
+      request: { url: 'https://sandbox.qbo.intuit.com/api/v4/graphql', method: 'POST' },
+      attachCaptured: true,
+    });
+
+    const headers = forwardedHeaders(fetchMock);
+    expect(headers.authorization).toBe('bearer-x');
+    expect(headers.Cookie).toBeUndefined();
+    expect(headers.cookie).toBeUndefined();
   });
 
   it('lets a caller-supplied header win over a captured one (case-insensitive)', async () => {
@@ -197,7 +220,7 @@ describe('ExecuteService.executeFetch — attach_captured_credentials', () => {
 
     expect(credentialsService.getCredentialsForSession).toHaveBeenCalledWith(
       expect.anything(), expect.anything(), 'tenant-1', expect.any(String),
-      { forceRefresh: true },
+      { forceRefresh: true, waitSeconds: 5 },
     );
   });
 });

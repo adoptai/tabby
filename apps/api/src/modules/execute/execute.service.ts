@@ -106,7 +106,10 @@ export class ExecuteService {
       try {
         const credSet = await this.credentialsService.getCredentialsForSession(
           profile, session, tenantId, `execute-fetch:${profileId}`,
-          { forceRefresh: refreshCredentials },
+          // refresh_credentials must actually block for the freshly-exported bundle
+          // (a volatile bearer rotated seconds ago is the whole reason to refresh);
+          // without a wait it could read the previous cached bundle.
+          { forceRefresh: refreshCredentials, waitSeconds: refreshCredentials ? 5 : 0 },
         );
         outgoingHeaders = this.mergeCapturedHeaders(request.headers, credSet);
         if (!this.hasCapturedHeaders(credSet)) {
@@ -332,12 +335,19 @@ export class ExecuteService {
     callerHeaders: Record<string, string> | undefined,
     credSet: CredentialSet,
   ): Record<string, string> {
+    // Cookie/Cookie2 are forbidden header names for an in-page fetch() — attaching one
+    // would make page.evaluate throw. request_header_allowlist already rejects Cookie, but
+    // filter defensively so a misconfigured capture can't break every /execute/fetch.
+    const forbidden = new Set(['cookie', 'cookie2']);
     const captured: Record<string, string> = {};
     for (const h of credSet.headers || []) {
-      if (h?.name && h.value) captured[h.name] = h.value;
+      const name = h?.name?.trim();
+      if (!name || !h.value || forbidden.has(name.toLowerCase())) continue;
+      captured[name] = h.value;
     }
-    if (credSet.csrf?.token && credSet.csrf.header_name) {
-      captured[credSet.csrf.header_name] = credSet.csrf.token;
+    if (credSet.csrf?.token && credSet.csrf.header_name?.trim()) {
+      const csrfName = credSet.csrf.header_name.trim();
+      if (!forbidden.has(csrfName.toLowerCase())) captured[csrfName] = credSet.csrf.token;
     }
 
     if (!callerHeaders || Object.keys(callerHeaders).length === 0) {
