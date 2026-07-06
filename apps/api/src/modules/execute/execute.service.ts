@@ -91,7 +91,18 @@ export class ExecuteService {
     // Pulled from the SAME session the fetch runs in, so the credential matches the
     // session; the bearer never has to be supplied by, or exposed to, the caller.
     let outgoingHeaders = request.headers;
-    if (attachCaptured) {
+    if (attachCaptured && !this.isRequestInCaptureScope(request.url, profile.target_domains)) {
+      // Origin-scope the injection: only ever send the profile's captured bearer to a host
+      // within its declared capture scope (target_domains) — the hosts the credential was
+      // captured from. This stops a prompt-injected / attacker-influenced URL (e.g.
+      // https://evil.com) from receiving the captured Authorization header, independent of
+      // the worker egress allowlist. Out of scope → forward the caller's headers only.
+      this.logger.warn(
+        `attach_captured_credentials: target host for profile "${profileId}" is outside its `
+        + `capture scope (target_domains=${JSON.stringify(profile.target_domains || [])}) — `
+        + `NOT attaching captured credentials`,
+      );
+    } else if (attachCaptured) {
       try {
         const credSet = await this.credentialsService.getCredentialsForSession(
           profile, session, tenantId, `execute-fetch:${profileId}`,
@@ -281,6 +292,26 @@ export class ExecuteService {
       clearTimeout(timer);
       await this.releaseSessionLock(lockKey);
     }
+  }
+
+  /**
+   * True if the request URL's host is within the profile's declared capture scope
+   * (`target_domains`) — i.e. a host the captured credential was harvested from. Used to
+   * origin-scope credential injection so a captured bearer is never attached to an
+   * out-of-scope host. Fails closed: no declared scope (empty) → not in scope.
+   */
+  private isRequestInCaptureScope(url: string, targetDomains?: string[] | null): boolean {
+    if (!targetDomains || targetDomains.length === 0) return false;
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    return targetDomains.some((d) => {
+      const dom = String(d).toLowerCase().replace(/^\.+/, '').replace(/^https?:\/\//, '');
+      return dom.length > 0 && (host === dom || host.endsWith(`.${dom}`));
+    });
   }
 
   /** True if the captured set carries at least one non-empty header or CSRF token. */

