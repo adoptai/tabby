@@ -1,0 +1,101 @@
+name: Sync branches after production deploy
+
+on:
+  workflow_run:
+    workflows: ["Deploy to Production"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-branches
+  cancel-in-progress: false
+
+jobs:
+  sync-main-to-dev:
+    name: Sync main → dev
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          ref: dev
+          fetch-depth: 0
+
+      - name: Merge main into dev
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          if git merge origin/main --no-edit; then
+            echo "Merge clean"
+          else
+            # Only Chart.yaml should conflict (version bump). Keep dev's version.
+            git checkout HEAD -- charts/browser-hitl/Chart.yaml
+            git add charts/browser-hitl/Chart.yaml
+            git commit --no-edit
+            echo "Resolved Chart.yaml conflict (kept dev version)"
+          fi
+          git push origin dev
+
+  sync-main-to-noui:
+    name: Sync main → tabby-noui
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          ref: tabby-noui
+          fetch-depth: 0
+
+      - name: Merge main into tabby-noui
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          if git merge origin/main --no-edit; then
+            echo "Merge clean"
+          else
+            # Chart.yaml version conflict: keep the higher version
+            if git diff --name-only --diff-filter=U | grep -q 'Chart.yaml'; then
+              HEAD_VER=$(git show HEAD:charts/browser-hitl/Chart.yaml | grep '^version:' | awk '{print $2}')
+              MAIN_VER=$(git show origin/main:charts/browser-hitl/Chart.yaml | grep '^version:' | awk '{print $2}')
+              if [ "$(printf '%s\n%s' "$HEAD_VER" "$MAIN_VER" | sort -V | tail -1)" = "$HEAD_VER" ]; then
+                git checkout HEAD -- charts/browser-hitl/Chart.yaml
+              else
+                git checkout origin/main -- charts/browser-hitl/Chart.yaml
+              fi
+              git add charts/browser-hitl/Chart.yaml
+            fi
+            # If other conflicts remain, abort
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "::error::Unresolvable conflicts in tabby-noui sync — resolve manually"
+              git merge --abort
+              exit 1
+            fi
+            git commit --no-edit
+            echo "Resolved Chart.yaml conflict (kept higher version)"
+          fi
+          git push origin tabby-noui
+
+  notify:
+    name: Sync Summary
+    runs-on: ubuntu-latest
+    needs: [sync-main-to-dev, sync-main-to-noui]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## Branch sync after production deploy" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.sync-main-to-dev.result }}" = "success" ]; then
+            echo "- main → dev: ✓" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- main → dev: **FAILED** (run manually)" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ needs.sync-main-to-noui.result }}" = "success" ]; then
+            echo "- main → tabby-noui: ✓" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- main → tabby-noui: **FAILED** (run manually)" >> $GITHUB_STEP_SUMMARY
+          fi
