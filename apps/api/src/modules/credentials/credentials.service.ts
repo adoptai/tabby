@@ -217,6 +217,50 @@ export class CredentialsService {
     };
   }
 
+  /**
+   * Resolve the captured credential set for an ALREADY-resolved session.
+   *
+   * Used by execute/fetch to attach a profile's captured request headers (e.g. a
+   * client-minted bearer harvested via request_header_allowlist) to the outgoing
+   * in-page fetch, server-side. The bearer is pulled from the SAME session the fetch
+   * runs in, so it matches that session's cookies/state, and it never has to be
+   * supplied by — or exposed to — the caller. Caller resolves profile + session once
+   * (execute/fetch already does) and passes them in, avoiding a second resolution that
+   * could pick a different session with a mismatched bearer.
+   */
+  async getCredentialsForSession(
+    profile: ServiceProfileEntity,
+    session: SessionEntity,
+    tenantId: string,
+    consumerId: string,
+    opts?: { forceRefresh?: boolean; includeVolatile?: boolean; waitSeconds?: number },
+  ): Promise<CredentialSet> {
+    const { forceRefresh = false, includeVolatile = true, waitSeconds = 0 } = opts || {};
+
+    // Optionally trigger an immediate re-extraction for volatile bearers (silent-refresh
+    // tokens rotate faster than refresh_interval_seconds). Coalesced across concurrent callers.
+    let bypassCache = false;
+    if (forceRefresh) {
+      const coalesceResult = await this.acquireExtractLock(tenantId, profile.profile_id, 'default');
+      if (coalesceResult.isLeader) {
+        // Only the leader actually triggers the extraction; it reads past the cache.
+        bypassCache = true;
+        await this.signalWorkerExtract(session.id);
+      }
+      if (waitSeconds > 0) {
+        // Caller wants fresh data: every caller (leader OR a concurrent follower) waits for
+        // the extraction to land and then bypasses the cache, so nobody gets a stale bundle.
+        await this.redis.blpop(REDIS_KEYS.extractDone(session.id), waitSeconds);
+        bypassCache = true;
+      }
+      // waitSeconds == 0 is fire-and-forget: a follower keeps bypassCache=false and reuses
+      // the cache rather than doing a redundant MinIO round-trip for identical data.
+    }
+
+    const bundle = await this.fetchAndDecryptLatestBundle(session, tenantId, consumerId, bypassCache);
+    return this.buildCredentialSet(profile, includeVolatile, bundle?.decrypted);
+  }
+
   // ---------------------------------------------------------------
   // Profile Resolution
   // ---------------------------------------------------------------
