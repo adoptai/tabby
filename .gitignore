@@ -143,3 +143,11 @@ docs/zero-to-hero-test-workflow.md
 docs/zero-to-hero-tabby-platform-setup.md
 docs/adopt-org-templates-backup.json
 docs/tabby-platform-setup-consolidation.md
+.omc/
+docs/residential-proxy-plan.md
+docs/customer/
+docs/tabby-admin-ui-design-brief.md
+docs/admin-ui-testing-guide.md
+apps/admin-ui/public/env.js
+screenshots/
+adminui-bonito/
