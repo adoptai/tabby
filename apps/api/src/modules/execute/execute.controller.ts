@@ -2,7 +2,7 @@ import {
   Controller, Post, Body, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsInt, Min, Max, IsObject } from 'class-validator';
+import { IsString, IsOptional, IsInt, Min, Max, IsObject, IsBoolean } from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { ExecuteService } from './execute.service';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
@@ -36,6 +36,22 @@ class ExecuteFetchDto {
   @Min(1000)
   @Max(EXECUTE_LIMITS.MAX_TIMEOUT_MS)
   timeout_ms?: number;
+
+  @ApiProperty({
+    required: false,
+    description: 'Attach the profile\'s captured request headers (e.g. a client-minted bearer harvested via request_header_allowlist) to the fetch, server-side. The credential is pulled from the session the fetch runs in and never has to be supplied by the caller. Requires the profile to declare credential_types.headers (e.g. ["authorization"]) — otherwise captured headers are never surfaced and this is a no-op (the call returns 200 but the target may 401).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  attach_captured_credentials?: boolean;
+
+  @ApiProperty({
+    required: false,
+    description: 'When attaching captured credentials, force an immediate re-extraction first (for volatile silent-refresh bearers that rotate faster than refresh_interval_seconds).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  refresh_credentials?: boolean;
 }
 
 class ExecuteBrowserDto {
@@ -97,6 +113,8 @@ export class ExecuteController {
       allowedProfiles: req.user.allowed_profiles,
       unrestrictedProfiles: req.user.unrestricted_profiles,
       ownerUserId: req.user.owner_user_id ?? null,
+      attachCaptured: dto.attach_captured_credentials,
+      refreshCredentials: dto.refresh_credentials,
     });
   }
 
