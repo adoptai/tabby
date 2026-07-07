@@ -32,6 +32,9 @@ data:
   NATS_STREAM_MAX_AGE_HOURS: {{ .Values.config.natsStreamMaxAgeHours | default "8" | quote }}
   MINIO_ORPHAN_MAX_AGE_HOURS: {{ .Values.config.minioOrphanMaxAgeHours | default "2" | quote }}
   PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
+  {{- if .Values.config.adminUiBaseUrl }}
+  ADMIN_UI_BASE_URL: {{ .Values.config.adminUiBaseUrl | quote }}
+  {{- end }}
   STREAM_HOST: {{ .Values.config.streamHost | quote }}
   STREAM_PROTOCOL: {{ .Values.config.streamProtocol | quote }}
   SERVICE_AUTH_ALLOWED_TENANT_IDS: {{ .Values.config.serviceAuthAllowedTenantIds | quote }}

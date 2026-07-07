@@ -7,8 +7,10 @@ export function resolveRoleFromIdp(
 ): string {
   // 1. Check source JWT role claim mapping
   if (idp.role_claim) {
-    const sourceRoles: string[] = Array.isArray(verifiedPayload[idp.role_claim])
-      ? (verifiedPayload[idp.role_claim] as string[])
+    const raw = verifiedPayload[idp.role_claim];
+    const sourceRoles: string[] = Array.isArray(raw)
+      ? raw.map((r: unknown) => typeof r === 'object' && r !== null && 'key' in r ? String((r as Record<string, unknown>).key) : String(r))
+      : typeof raw === 'string' ? [raw]
       : [];
     if (idp.admin_role_values?.some(v => sourceRoles.includes(v))) {
       return 'Admin';

@@ -154,6 +154,7 @@ class TokenExchangeDto {
 
 /** Module-level constant — avoids repeating the env-read inline everywhere. */
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:18080';
+const ADMIN_UI_BASE_URL = process.env.ADMIN_UI_BASE_URL || '';
 
 // OAuth state payload stored in Redis under oauth:state:{hex} (5-min TTL)
 interface OAuthStatePayload {
@@ -586,6 +587,7 @@ export class AuthController implements OnModuleDestroy {
 
     // Fetch user info
     const claims = await this.oauthProvider.fetchUserInfo(idp, tokens.access_token);
+    this.logger.log(`OAuth userinfo claims keys: ${Object.keys(claims).join(', ')} | roles raw: ${JSON.stringify(claims['roles'])} | type: ${typeof claims['roles']}`);
     const { userId, email, name, tenantIdClaimValue } = this.oauthProvider.extractIdentity(idp, claims);
 
     if (!userId) throw new UnauthorizedException('Could not extract user identity from userinfo');
@@ -702,13 +704,14 @@ export class AuthController implements OnModuleDestroy {
       postLoginRedirectUri = `${postLoginRedirectUri}${sep}token=${encodeURIComponent(stored.streamToken)}`;
     }
 
-    // Only allow relative paths or same-origin URLs (prevent open redirect + JWT leak)
+    // Only allow relative paths, same-origin, or admin-UI origin (prevent open redirect + JWT leak)
     const isRelative = postLoginRedirectUri.startsWith('/');
     if (!isRelative) {
       try {
         const parsed = new URL(postLoginRedirectUri);
-        const allowed = new URL(PUBLIC_BASE_URL);
-        if (parsed.origin !== allowed.origin) {
+        const allowedOrigins = [new URL(PUBLIC_BASE_URL).origin];
+        if (ADMIN_UI_BASE_URL) allowedOrigins.push(new URL(ADMIN_UI_BASE_URL).origin);
+        if (!allowedOrigins.includes(parsed.origin)) {
           throw new UnauthorizedException('post_login must be a relative path or same-origin URL');
         }
       } catch (e) {

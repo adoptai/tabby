@@ -140,6 +140,7 @@ networkPolicies:
 # Local config overrides
 config:
   publicBaseUrl: "http://localhost:18080"
+  adminUiBaseUrl: "http://localhost:13000"
   streamHost: "localhost:18080"
   streamProtocol: "ws"
   serviceAuthAllowedTenantIds: "*"

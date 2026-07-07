@@ -55,7 +55,7 @@ export class AppsController {
   }
 
   @Get(':id')
-  @Roles('Admin', 'Operator', 'Viewer')
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer')
   @ApiOperation({ summary: 'Get application details' })
   @ApiParam({ name: 'id', description: 'Application UUID' })
   @ApiResponse({ status: 200 })

@@ -1,12 +1,29 @@
-# Admin UI Dockerfile (Phase 2 placeholder runtime)
-FROM node:20-slim@sha256:f93745c153377ee2fbbdd6e24efcd03cd2e86d6ab1d8aa9916a3790c40313a55
-
+# Stage 1: Build
+FROM node:20-slim AS builder
+RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/admin-ui/package.json apps/admin-ui/
+COPY packages/shared/package.json packages/shared/
+RUN pnpm install --frozen-lockfile --filter @browser-hitl/admin-ui...
+COPY packages/shared/ packages/shared/
+COPY apps/admin-ui/ apps/admin-ui/
+RUN cd apps/admin-ui && pnpm run build
 
-COPY apps/admin-ui/server.js ./server.js
-
+# Stage 2: Serve (non-root compatible)
+FROM nginx:1.27-alpine
+RUN mkdir -p /var/cache/nginx/client_temp \
+             /var/cache/nginx/proxy_temp \
+             /var/cache/nginx/fastcgi_temp \
+             /var/cache/nginx/uwsgi_temp \
+             /var/cache/nginx/scgi_temp \
+             /var/run \
+    && chown -R 1000:1000 /var/cache/nginx /var/log/nginx \
+    && sed -i 's|/run/nginx.pid|/tmp/nginx.pid|' /etc/nginx/nginx.conf \
+    && chmod -R g+w /usr/share/nginx/html
+COPY --from=builder --chown=1000:1000 /app/apps/admin-ui/dist /usr/share/nginx/html
+COPY --chown=1000:1000 infra/docker/nginx-admin-ui.conf /etc/nginx/conf.d/default.conf
+COPY --chown=1000:1000 infra/docker/entrypoint-admin-ui.sh /docker-entrypoint.d/40-inject-env.sh
+RUN chmod +x /docker-entrypoint.d/40-inject-env.sh
+USER 1000
 EXPOSE 8000
-
-USER node
-
-CMD ["node", "server.js"]
