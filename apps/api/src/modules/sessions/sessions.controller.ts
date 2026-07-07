@@ -43,6 +43,9 @@ export class SessionsController {
       dto.desired_sessions,
       tenantId,
       req.user.user_id,
+      // Prefer the non-standard header (NR agents don't consume/strip it) so the
+      // session's distributed trace binds to the caller's trace deterministically.
+      req.headers?.['x-adopt-traceparent'] || req.headers?.traceparent,
     );
   }
 

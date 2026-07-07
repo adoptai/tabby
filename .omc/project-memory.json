@@ -1,0 +1,179 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1783429538820,
+  "projectRoot": "/home/moraski/work/tabby",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=20.0.0",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "C/C++",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Makefile"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pnpm",
+    "runtime": "Node.js 20.0.0"
+  },
+  "build": {
+    "buildCommand": "pnpm build",
+    "testCommand": "pnpm test",
+    "lintCommand": "pnpm lint",
+    "devCommand": null,
+    "scripts": {
+      "build": "nx run-many --target=build --all",
+      "test": "nx run-many --target=test --all",
+      "lint": "nx run-many --target=lint --all",
+      "build:affected": "nx affected --target=build",
+      "test:affected": "nx affected --target=test",
+      "lint:affected": "nx affected --target=lint",
+      "prepare": "husky"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": true,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "apps": {
+      "path": "apps",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1783429538813,
+      "keyFiles": []
+    },
+    "charts": {
+      "path": "charts",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1783429538813,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 46,
+      "lastAccessed": 1783429538816,
+      "keyFiles": [
+        "ARCHITECTURE_DECISIONS.md",
+        "FUNCTIONAL_OVERVIEW.md",
+        "HEADLESS_AUTH_PROVIDER_SPEC.md",
+        "LOCAL_DEV_KNOWN_ISSUES.md",
+        "SALESFORCE_TEMPLATE_PAYLOAD.md"
+      ]
+    },
+    "e2e_smoke_test": {
+      "path": "e2e_smoke_test",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1783429538816,
+      "keyFiles": [
+        "README.md",
+        "cdp_proof_of_life.py",
+        "orchestrator.py"
+      ]
+    },
+    "infra": {
+      "path": "infra",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1783429538817,
+      "keyFiles": []
+    },
+    "packages": {
+      "path": "packages",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1783429538817,
+      "keyFiles": []
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 28,
+      "lastAccessed": 1783429538817,
+      "keyFiles": [
+        "batch-a-force-hitl-state.js",
+        "batch-a-seed-session.js",
+        "create-tenant.ts",
+        "dotenv-to-helm-sets.sh",
+        "e2e-batch-a.sh"
+      ]
+    },
+    "specification_docs": {
+      "path": "specification_docs",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1783429538818,
+      "keyFiles": [
+        "AGENT_INTEGRATION_CONTRACT.md",
+        "MVP_BROWSER_SPEC_CODEX.md",
+        "MVP_TASK_PLAN.md",
+        "README_FIRST__TASK_AGENT_IMPLEMENTATION_GUIDANCE.md"
+      ]
+    },
+    "test-harness": {
+      "path": "test-harness",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1783429538818,
+      "keyFiles": [
+        "Dockerfile",
+        "app.py",
+        "requirements.txt"
+      ]
+    },
+    "apps/api": {
+      "path": "apps/api",
+      "purpose": "API routes",
+      "fileCount": 5,
+      "lastAccessed": 1783429538818,
+      "keyFiles": [
+        "jest.config.ts",
+        "nest-cli.json",
+        "newrelic.js"
+      ]
+    },
+    "e2e_smoke_test/helpers": {
+      "path": "e2e_smoke_test/helpers",
+      "purpose": "Helper functions",
+      "fileCount": 2,
+      "lastAccessed": 1783429538818,
+      "keyFiles": [
+        "canary-bypass.js",
+        "http_client.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "charts/browser-hitl/Chart.yaml",
+      "accessCount": 2,
+      "lastAccessed": 1783429689863,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

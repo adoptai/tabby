@@ -12,6 +12,7 @@ import { EXECUTE_LIMITS, PORTS, REDIS_KEYS, REDIS_TTL, BROWSER_COMMANDS } from '
 import type {
   ExecuteFetchRequest, ExecuteFetchResponse,
   ExecuteBrowserRequest, ExecuteBrowserResponse,
+  CredentialSet,
 } from '@browser-hitl/shared';
 import { CredentialsService } from '../credentials/credentials.service';
 import { JwtService } from '@nestjs/jwt';
@@ -51,10 +52,13 @@ export class ExecuteService {
     allowedProfiles?: string[];
     unrestrictedProfiles?: boolean;
     ownerUserId?: string | null;
+    attachCaptured?: boolean;
+    refreshCredentials?: boolean;
   }): Promise<ExecuteFetchResponse> {
     const {
       tenantId, profileId, request,
       role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
+      attachCaptured = false, refreshCredentials = false,
     } = params;
 
     // Agent profile authorization
@@ -82,6 +86,66 @@ export class ExecuteService {
       throw new ConflictException('Session has no assigned worker pod');
     }
 
+    // Optionally attach the profile's captured request headers (e.g. a client-minted
+    // bearer harvested via request_header_allowlist) to the outgoing fetch, server-side.
+    // Pulled from the SAME session the fetch runs in, so the credential matches the
+    // session; the bearer never has to be supplied by, or exposed to, the caller.
+    let outgoingHeaders = request.headers;
+    if (attachCaptured && !this.isRequestInCaptureScope(request.url, profile.target_domains)) {
+      // Origin-scope the injection: only ever send the profile's captured bearer to a host
+      // within its declared capture scope (target_domains) — the hosts the credential was
+      // captured from. This stops a prompt-injected / attacker-influenced URL (e.g.
+      // https://evil.com) from receiving the captured Authorization header, independent of
+      // the worker egress allowlist. Out of scope → forward the caller's headers only.
+      this.logger.warn(
+        `attach_captured_credentials: target host for profile "${profileId}" is outside its `
+        + `capture scope (target_domains=${JSON.stringify(profile.target_domains || [])}) — `
+        + `NOT attaching captured credentials`,
+      );
+    } else if (attachCaptured) {
+      try {
+        const credSet = await this.credentialsService.getCredentialsForSession(
+          profile, session, tenantId, `execute-fetch:${profileId}`,
+          // refresh_credentials must actually block for the freshly-exported bundle
+          // (a volatile bearer rotated seconds ago is the whole reason to refresh);
+          // without a wait it could read the previous cached bundle.
+          { forceRefresh: refreshCredentials, waitSeconds: refreshCredentials ? 5 : 0 },
+        );
+        outgoingHeaders = this.mergeCapturedHeaders(request.headers, credSet);
+        if (!this.hasCapturedHeaders(credSet)) {
+          // Name the most common misconfig: a profile can capture bearers at the worker
+          // level (export_policy.request_header_allowlist) yet never surface them because
+          // credential_types.headers is unset — the call returns 200 but the target 401s.
+          const declaresHeaders = Boolean((profile.credential_types as any)?.headers);
+          const hint = declaresHeaders
+            ? 'the latest artifact bundle carries none yet — check export_policy.request_header_allowlist + '
+              + 'target_urls (needs the /** glob), and that a request bearing the header has been made'
+            : 'the profile does not declare credential_types.headers, so captured headers are never '
+              + 'surfaced — add it (e.g. ["authorization"])';
+          this.logger.warn(
+            `attach_captured_credentials: no captured headers for profile "${profileId}" `
+            + `(session ${session.id}): ${hint}. Forwarding caller headers only.`,
+          );
+        }
+      } catch (err) {
+        // Fail soft: forward caller headers only. A downstream auth failure will surface
+        // the real problem rather than masking it behind a credential-lookup error.
+        this.logger.warn(
+          `attach_captured_credentials failed for profile "${profileId}": `
+          + `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Keep MAX_HEADER_COUNT authoritative: validateRequest checked the caller's headers,
+      // but merging captured headers can push the total over the limit.
+      if (outgoingHeaders && Object.keys(outgoingHeaders).length > EXECUTE_LIMITS.MAX_HEADER_COUNT) {
+        throw new BadRequestException(
+          `Too many headers after attaching captured credentials `
+          + `(${Object.keys(outgoingHeaders).length} > ${EXECUTE_LIMITS.MAX_HEADER_COUNT})`,
+        );
+      }
+    }
+
     const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/fetch');
 
     // Forward to worker
@@ -103,7 +167,7 @@ export class ExecuteService {
         body: JSON.stringify({
           url: request.url,
           method: request.method,
-          headers: request.headers,
+          headers: outgoingHeaders,
           body: request.body,
           timeout_ms: timeoutMs,
         } satisfies ExecuteFetchRequest),
@@ -231,6 +295,71 @@ export class ExecuteService {
       clearTimeout(timer);
       await this.releaseSessionLock(lockKey);
     }
+  }
+
+  /**
+   * True if the request URL's host is within the profile's declared capture scope
+   * (`target_domains`) — i.e. a host the captured credential was harvested from. Used to
+   * origin-scope credential injection so a captured bearer is never attached to an
+   * out-of-scope host. Fails closed: no declared scope (empty) → not in scope.
+   */
+  private isRequestInCaptureScope(url: string, targetDomains?: string[] | null): boolean {
+    if (!targetDomains || targetDomains.length === 0) return false;
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    return targetDomains.some((d) => {
+      const dom = String(d).toLowerCase().replace(/^\.+/, '').replace(/^https?:\/\//, '');
+      return dom.length > 0 && (host === dom || host.endsWith(`.${dom}`));
+    });
+  }
+
+  /** True if the captured set carries at least one non-empty header or CSRF token. */
+  private hasCapturedHeaders(credSet: CredentialSet): boolean {
+    if (credSet.headers?.some((h) => h?.name && h.value)) return true;
+    return Boolean(credSet.csrf?.token && credSet.csrf.header_name);
+  }
+
+  /**
+   * Merge a session's captured request headers into the caller's headers for the
+   * outgoing in-page fetch. Cookies are intentionally excluded — the in-page fetch
+   * inherits them via credentials:'include', and browsers forbid setting a Cookie
+   * header on fetch. Caller-supplied headers win on a case-insensitive name collision,
+   * preserving the "caller headers forwarded as-is" contract; captured headers fill
+   * in what the caller omits (typically the client-minted Authorization bearer).
+   */
+  private mergeCapturedHeaders(
+    callerHeaders: Record<string, string> | undefined,
+    credSet: CredentialSet,
+  ): Record<string, string> {
+    // Cookie/Cookie2 are forbidden header names for an in-page fetch() — attaching one
+    // would make page.evaluate throw. request_header_allowlist already rejects Cookie, but
+    // filter defensively so a misconfigured capture can't break every /execute/fetch.
+    const forbidden = new Set(['cookie', 'cookie2']);
+    const captured: Record<string, string> = {};
+    for (const h of credSet.headers || []) {
+      const name = h?.name?.trim();
+      if (!name || !h.value || forbidden.has(name.toLowerCase())) continue;
+      captured[name] = h.value;
+    }
+    if (credSet.csrf?.token && credSet.csrf.header_name?.trim()) {
+      const csrfName = credSet.csrf.header_name.trim();
+      if (!forbidden.has(csrfName.toLowerCase())) captured[csrfName] = credSet.csrf.token;
+    }
+
+    if (!callerHeaders || Object.keys(callerHeaders).length === 0) {
+      return captured;
+    }
+
+    const merged: Record<string, string> = { ...captured };
+    const callerNamesLower = new Set(Object.keys(callerHeaders).map((k) => k.toLowerCase()));
+    for (const key of Object.keys(merged)) {
+      if (callerNamesLower.has(key.toLowerCase())) delete merged[key];
+    }
+    return { ...merged, ...callerHeaders };
   }
 
   private buildWorkerUrl(podName: string, path: string): string {

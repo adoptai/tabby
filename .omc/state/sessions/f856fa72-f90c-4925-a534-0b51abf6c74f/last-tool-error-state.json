@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk git add -A && rtk git commit --no-edit && rtk git push origin tabby-noui\",\"description\":\"Complete merge commit and push\"}",
+  "error": "Exit code 1\nok 61 files changed, 2309 insertions(+), 99 deletions(-)\n[STARTED] Backing up original state...\n[COMPLETED] Backed up original state in git stash (13c4873)\n[STARTED] Hiding unstaged changes to partially staged files...\n[COMPLETED] Hiding unstaged changes to partially staged files...\n[STARTED] Running tasks for staged files...\n[STARTED] package.json — 61 files\n[STARTED] *.ts — 20 files\n[STARTED] bash -c 'pnpm -r run lint'\n[COMPLETED] bash -c 'pnpm -r run lint'\n[COMPLETED] *.ts — 20 fi...",
+  "timestamp": "2026-07-07T13:08:18.820Z",
+  "retry_count": 2
+}

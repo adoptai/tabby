@@ -332,6 +332,10 @@ jobs:
       EGRESS_MEM_REQUEST: ${{ secrets.EGRESS_MEM_REQUEST || '128Mi' }}
       EGRESS_MEM_LIMIT: ${{ secrets.EGRESS_MEM_LIMIT || '512Mi' }}
       RECONCILE_BATCH_SIZE: ${{ secrets.RECONCILE_BATCH_SIZE || '50' }}
+      # New Relic APM
+      NEWRELIC_ENABLED: ${{ secrets.NEWRELIC_ENABLED || 'false' }}
+      NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY || '' }}
+      NEW_RELIC_ENVIRONMENT: ${{ secrets.NEW_RELIC_ENVIRONMENT || 'production' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
