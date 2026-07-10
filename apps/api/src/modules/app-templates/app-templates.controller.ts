@@ -79,6 +79,9 @@ class UpdateAppTemplateDto {
   @IsOptional() @IsBoolean() execute_enabled?: boolean;
   @ApiProperty({ required: false })
   @IsOptional() @IsInt() @Min(60) idle_shutdown_seconds?: number;
+  @ApiProperty({ required: false, description: 'Extra egress domains propagated to linked apps' })
+  @IsOptional() @IsArray() @IsString({ each: true })
+  extra_egress_allowlist?: string[];
 }
 
 @ApiTags('App Templates')

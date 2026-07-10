@@ -289,6 +289,9 @@ egressProxy:
     # --- Automation Anywhere ---
     - ".automationanywhere.digital"
     - ".automationanywhere.com"
+    - ".goskope.com"
+    - ".okta.com"
+    - ".oktacdn.com"
     # --- Salesforce analytics (Pendo) ---
     - ".pendo.io"
     - ".pendo-static-5673999629942784.storage.googleapis.com"

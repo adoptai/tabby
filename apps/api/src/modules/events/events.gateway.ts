@@ -8,6 +8,7 @@ import {
 import { IncomingMessage } from 'http';
 import { NatsConnection, StringCodec, Subscription } from 'nats';
 import { requireEnv, connectNats } from '@browser-hitl/shared';
+import * as Sentry from '@sentry/node';
 import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
 import { ObservabilityService } from '../observability/observability.service';
@@ -148,6 +149,7 @@ export class EventsGateway
         }
       } catch (error) {
         this.logger.error(`Error processing NATS message on ${sub.getSubject()}: ${error}`);
+        Sentry.captureException(error instanceof Error ? error : new Error(String(error)));
       }
     }
   }

@@ -2,6 +2,7 @@ import { Injectable, ConflictException, NotFoundException, Logger } from '@nestj
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import * as crypto from 'crypto';
+import * as Sentry from '@sentry/node';
 import { TenantEntity } from '../../entities';
 import { AuditService } from '../audit/audit.service';
 import { MinioProvisionerService } from './minio-provisioner.service';
@@ -46,7 +47,11 @@ export class TenantsService {
       this.logger.error(
         `Failed to provision MinIO bucket for tenant ${saved.id}: ${(err as Error).message}`,
       );
-      // Non-fatal: tenant is created, bucket can be provisioned later
+      Sentry.withScope((scope) => {
+        scope.setTag('tenant_id', saved.id);
+        scope.setTag('warn_context', 'minio_provision_failed');
+        Sentry.captureException(err instanceof Error ? err : new Error(String(err)));
+      });
     }
 
     await this.auditService.log({
