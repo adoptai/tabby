@@ -20,6 +20,7 @@ function makeTemplate(overrides: Partial<AppTemplateEntity> = {}): AppTemplateEn
     notification_config: {},
     credential_ref_default: 'manual:',
     execute_enabled: false,
+    is_active: true,
     extra_egress_allowlist: [],
     idle_shutdown_seconds: null,
     created_at: new Date(),

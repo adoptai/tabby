@@ -56,6 +56,10 @@ class CreateAppTemplateDto {
   @ApiProperty({ required: false, description: 'Extra egress domains cloned onto every auto-provisioned app (suffix patterns like ".expedia.com" or exact hosts). Typically populated from recorded HAR.', example: ['.expedia.com', '.trvl-media.com'] })
   @IsOptional() @IsArray() @IsString({ each: true })
   extra_egress_allowlist?: string[];
+
+  @ApiProperty({ required: false, default: true, description: 'Whether this template is active. Inactive templates are skipped by auto-provisioning (no new per-user apps are cloned). Defaults to true.' })
+  @IsOptional() @IsBoolean()
+  is_active?: boolean;
 }
 
 class UpdateAppTemplateDto {
@@ -79,6 +83,8 @@ class UpdateAppTemplateDto {
   @IsOptional() @IsBoolean() execute_enabled?: boolean;
   @ApiProperty({ required: false })
   @IsOptional() @IsInt() @Min(60) idle_shutdown_seconds?: number;
+  @ApiProperty({ required: false, description: 'Toggle the template active/inactive. Inactive templates are skipped by auto-provisioning.' })
+  @IsOptional() @IsBoolean() is_active?: boolean;
 }
 
 @ApiTags('App Templates')
