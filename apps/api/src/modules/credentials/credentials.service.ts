@@ -340,6 +340,11 @@ export class CredentialsService {
       return null;
     }
 
+    if (template.is_active === false) {
+      this.logger.warn(`App template "${template.name}" (profile_name_pattern="${profileId}") is inactive in tenant ${tenantId} — skipping auto-provision`);
+      return null;
+    }
+
     this.logger.log(`Auto-provisioning from template "${template.name}" for user ${ownerUserId}`);
 
     const actorId = `federated:${ownerUserId}`;
