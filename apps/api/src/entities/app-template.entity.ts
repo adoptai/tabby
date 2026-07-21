@@ -52,6 +52,17 @@ export class AppTemplateEntity {
   execute_enabled: boolean;
 
   /**
+   * Whether this template is active. Inactive templates are skipped by
+   * auto-provisioning (autoProvisionFromTemplate treats is_active=false like a
+   * missing template), so no new per-user apps are cloned from them. Existing
+   * provisioned apps/profiles/sessions are unaffected — this is a soft on/off
+   * switch, not a teardown. Not propagated to linked apps and not part of the
+   * content hash, so toggling it never version-bumps downstream profiles.
+   */
+  @Column({ type: 'boolean', default: true })
+  is_active: boolean;
+
+  /**
    * Extra egress domains cloned onto every app auto-provisioned from this
    * template. Mirrors applications.extra_egress_allowlist. NoUI populates this
    * from recorded HAR so per-user sessions inherit the full domain set.
