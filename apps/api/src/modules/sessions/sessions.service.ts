@@ -68,6 +68,7 @@ export class SessionsService {
     tenantId: string | undefined,
     actorId: string,
     inboundTraceparent?: string,
+    options?: { residentialProxy?: boolean },
   ): Promise<{ desired_sessions: number; app_id: string }> {
     const where: any = tenantId ? { id: appId, tenant_id: tenantId } : { id: appId };
     const app = await this.appRepo.findOne({ where });
@@ -132,6 +133,8 @@ export class SessionsService {
           hitl_attempt_count: 0,
           owner_user_id: app.owner_user_id ?? null,
           traceparent,
+          // Per-session override; unset → null → inherit the app-level default.
+          residential_proxy_enabled: options?.residentialProxy ?? null,
         }));
         await this.batonRepo.save(this.batonRepo.create({
           session_id: created.id,

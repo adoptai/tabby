@@ -58,6 +58,13 @@ spec:
                   name: {{ include "browser-hitl.secretName" . }}
                   key: EGRESS_PROXY_SESSION_KEY
             {{- end }}
+            {{- if .Values.secrets.egressUpstreamProxyUrl }}
+            - name: EGRESS_UPSTREAM_PROXY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "browser-hitl.secretName" . }}
+                  key: EGRESS_UPSTREAM_PROXY_URL
+            {{- end }}
           ports:
             - name: proxy
               containerPort: {{ .Values.egressProxy.port }}
