@@ -54,4 +54,4 @@ export const COMMON_OPTION_KEYS = [
 export const ON_FAILURE_KEY = 'on_failure';
 
 /** Keys that are serialized from StepData directly (not unknown extra keys). */
-export const INTERNAL_KEYS = new Set(['action', '_rest']);
+export const INTERNAL_KEYS = new Set(['_rest']);

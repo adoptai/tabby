@@ -23,7 +23,8 @@ function decodeJwt(token: string): User | null {
   try {
     const payload = token.split('.')[1];
     if (!payload) return null;
-    return JSON.parse(atob(payload)) as User;
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(base64)) as User;
   } catch {
     return null;
   }

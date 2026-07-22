@@ -19,7 +19,7 @@ graph TB
         WORKER["Worker Pods<br/>Playwright + Chromium"]
         SLACK["Slack Bot"]
         TEAMS["Teams Bot"]
-        ADMIN["Admin UI<br/>Next.js"]
+        ADMIN["Admin UI<br/>React + Vite"]
     end
 
     subgraph Infrastructure

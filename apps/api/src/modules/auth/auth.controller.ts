@@ -587,7 +587,7 @@ export class AuthController implements OnModuleDestroy {
 
     // Fetch user info
     const claims = await this.oauthProvider.fetchUserInfo(idp, tokens.access_token);
-    this.logger.log(`OAuth userinfo claims keys: ${Object.keys(claims).join(', ')} | roles raw: ${JSON.stringify(claims['roles'])} | type: ${typeof claims['roles']}`);
+    this.logger.debug(`OAuth userinfo keys: ${Object.keys(claims).join(', ')} | roles type: ${typeof claims['roles']}, isArray: ${Array.isArray(claims['roles'])}`);
     const { userId, email, name, tenantIdClaimValue } = this.oauthProvider.extractIdentity(idp, claims);
 
     if (!userId) throw new UnauthorizedException('Could not extract user identity from userinfo');
