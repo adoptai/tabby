@@ -223,7 +223,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll);
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll, this.resolveResidential(session, app));
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -291,6 +291,15 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     const extraAllowlist = Array.isArray(app.extra_egress_allowlist) ? app.extra_egress_allowlist : [];
     const allowAll = Boolean((app.browser_policy as Record<string, unknown> | undefined)?.recording_mode);
     return { extraAllowlist, allowAll };
+  }
+
+  /**
+   * Resolve whether a session's egress should chain through the residential proxy.
+   * Precedence: per-session override → app-level default → off. The egress proxy
+   * uses this to decide per session whether to tunnel via Oxylabs.
+   */
+  private resolveResidential(session: SessionEntity, app: ApplicationEntity): boolean {
+    return session.residential_proxy_enabled ?? app.residential_proxy_enabled ?? false;
   }
 
   private async createSession(app: ApplicationEntity): Promise<void> {
@@ -368,7 +377,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
 
       // Generate NetworkPolicy — open the 8091 ingress when the worker health
       // Service exists (execute or recording drain).
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll);
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll, this.resolveResidential(savedSession, app));
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {

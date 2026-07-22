@@ -368,6 +368,9 @@ export class CredentialsService {
       // controller never provisions the worker Service + JWT_SIGNING_KEY, so the
       // per-user connection could never run /execute/fetch | /execute/browser.
       execute_enabled: template.execute_enabled,
+      // Carry the template's residential-proxy default onto the cloned app so the
+      // controller resolves the per-session egress route (session ?? app ?? false).
+      residential_proxy_enabled: template.residential_proxy_enabled,
       desired_session_count: 0, // Start with 0, scale up after profile is created
     }, tenantId, actorId);
 

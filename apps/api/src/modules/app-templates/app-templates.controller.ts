@@ -49,6 +49,10 @@ class CreateAppTemplateDto {
   @IsOptional() @IsBoolean()
   execute_enabled?: boolean;
 
+  @ApiProperty({ required: false, default: false, description: 'Whether apps auto-provisioned from this template route session egress through the residential proxy (Oxylabs). App-level default; a session may override.' })
+  @IsOptional() @IsBoolean()
+  residential_proxy_enabled?: boolean;
+
   @ApiProperty({ required: false, description: 'Auto-shutdown session after N seconds idle' })
   @IsOptional() @IsInt() @Min(60)
   idle_shutdown_seconds?: number;
@@ -81,6 +85,8 @@ class UpdateAppTemplateDto {
   @IsOptional() @IsString() credential_ref_default?: string;
   @ApiProperty({ required: false })
   @IsOptional() @IsBoolean() execute_enabled?: boolean;
+  @ApiProperty({ required: false })
+  @IsOptional() @IsBoolean() residential_proxy_enabled?: boolean;
   @ApiProperty({ required: false })
   @IsOptional() @IsInt() @Min(60) idle_shutdown_seconds?: number;
   @ApiProperty({ required: false, description: 'Toggle the template active/inactive. Inactive templates are skipped by auto-provisioning.' })

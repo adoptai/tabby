@@ -363,6 +363,7 @@ values:
     adminBootstrapPassword: "${ADMIN_BOOTSTRAP_PASSWORD}"
     egressProxyAdminToken: "${EGRESS_PROXY_ADMIN_TOKEN}"
     egressProxySessionKey: "${EGRESS_PROXY_SESSION_KEY}"
+    egressUpstreamProxyUrl: "${EGRESS_UPSTREAM_PROXY_URL}"
     serviceAuthClientId: "${SERVICE_AUTH_CLIENT_ID}"
     serviceAuthClientSecret: "${SERVICE_AUTH_CLIENT_SECRET}"
     slackBotToken: "${SLACK_BOT_TOKEN}"

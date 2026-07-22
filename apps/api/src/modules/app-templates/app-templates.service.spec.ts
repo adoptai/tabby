@@ -20,6 +20,7 @@ function makeTemplate(overrides: Partial<AppTemplateEntity> = {}): AppTemplateEn
     notification_config: {},
     credential_ref_default: 'manual:',
     execute_enabled: false,
+    residential_proxy_enabled: false,
     is_active: true,
     extra_egress_allowlist: [],
     idle_shutdown_seconds: null,
@@ -145,6 +146,7 @@ describe('AppTemplatesService — propagation', () => {
         export_policy: template.export_policy,
         notification_config: template.notification_config,
         execute_enabled: template.execute_enabled,
+        residential_proxy_enabled: template.residential_proxy_enabled,
       };
 
       expect(appRepo.update).toHaveBeenCalledWith('app-1', expectedPayload);

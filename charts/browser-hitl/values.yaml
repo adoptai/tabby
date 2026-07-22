@@ -489,6 +489,14 @@ secrets:
   adminBootstrapPassword: "changeme-admin-password"
   egressProxyAdminToken: "changeme-egress-proxy-admin-token"
   egressProxySessionKey: "changeme-egress-proxy-session-key"
+  # Upstream residential proxy gateway (e.g. Oxylabs), incl. server-side creds.
+  # Empty = residential routing disabled (the egress proxy dials targets direct).
+  # Wired into the egress-proxy pod ONLY. Confirm datacenter-vs-residential before
+  # setting: residential = "http://customer-<USER>-sessid-{sessionId}:<PASS>@pr.oxylabs.io:7777"
+  # (the {sessionId} placeholder pins a sticky exit IP per Tabby session);
+  # datacenter = "http://user-<USER>:<PASS>@dc.oxylabs.io:8000". Datacenter IPs
+  # defeat the residential purpose — do not use unless intentional.
+  egressUpstreamProxyUrl: ""
   slackBotToken: ""
   slackSigningSecret: ""
   slackAppToken: ""
