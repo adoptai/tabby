@@ -164,6 +164,10 @@ secrets:
   adminBootstrapPassword: "LocalDev123!@#"
   egressProxyAdminToken: "localdev-egress-token"
   egressProxySessionKey: "localdev-egress-session-key"
+  # Set to an Oxylabs (or other) upstream proxy URL to exercise residential
+  # egress locally, e.g. "http://customer-USER-sessid-{sessionId}:PASS@pr.oxylabs.io:7777".
+  # Empty = residential routing disabled (targets dialed direct).
+  egressUpstreamProxyUrl: ""
   serviceAuthClientId: "phase4-bot"
   serviceAuthClientSecret: "phase4-secret"
   metricsAuthToken: ""  # Open access locally

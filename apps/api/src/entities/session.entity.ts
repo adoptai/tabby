@@ -96,4 +96,12 @@ export class SessionEntity {
 
   @Column({ type: 'varchar', nullable: true })
   traceparent: string | null;
+
+  /**
+   * Per-session override for residential-proxy egress. null = inherit the
+   * app-level default (applications.residential_proxy_enabled). The controller
+   * resolves session ?? app ?? false and tells the egress proxy per session.
+   */
+  @Column({ type: 'boolean', nullable: true })
+  residential_proxy_enabled: boolean | null;
 }

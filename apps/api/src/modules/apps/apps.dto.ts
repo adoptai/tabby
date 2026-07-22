@@ -7,7 +7,7 @@ import { Type } from 'class-transformer';
 export const APP_SELECTABLE_FIELDS = [
   'id', 'name', 'tenant_id', 'target_urls', 'extra_egress_allowlist', 'login_config', 'keepalive_config',
   'export_policy', 'notification_config', 'browser_policy', 'desired_session_count',
-  'execute_enabled', 'credential_last_validated_at', 'credential_rotation_reminder_days',
+  'execute_enabled', 'residential_proxy_enabled', 'credential_last_validated_at', 'credential_rotation_reminder_days',
   'created_at', 'updated_at',
 ] as const;
 
@@ -89,6 +89,11 @@ export class CreateAppDto {
   @IsBoolean()
   execute_enabled?: boolean;
 
+  @ApiProperty({ description: 'Whether this app routes browser session egress through the residential proxy (Oxylabs). App-level default; a session may override.', required: false, default: false })
+  @IsOptional()
+  @IsBoolean()
+  residential_proxy_enabled?: boolean;
+
   @ApiProperty({ description: 'Target tenant UUID. Admin only — defaults to caller tenant if omitted.', required: false })
   @IsOptional()
   @IsUUID()
@@ -144,4 +149,9 @@ export class UpdateAppDto {
   @IsOptional()
   @IsBoolean()
   execute_enabled?: boolean;
+
+  @ApiProperty({ description: 'Whether this app routes browser session egress through the residential proxy (Oxylabs). App-level default; a session may override.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  residential_proxy_enabled?: boolean;
 }

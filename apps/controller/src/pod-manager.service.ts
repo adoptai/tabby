@@ -206,6 +206,7 @@ export class PodManagerService {
     executeEnabled: boolean = false,
     extraAllowlist: string[] = [],
     allowAll: boolean = false,
+    residential: boolean = false,
   ): Promise<void> {
     const policyName = this.buildNetworkPolicyName(sessionId);
 
@@ -213,7 +214,7 @@ export class PodManagerService {
       const policy = this.buildNetworkPolicy(policyName, sessionId, streamingMode, executeEnabled);
       this.logger.log(`Creating NetworkPolicy ${policyName} for pod ${podName}`);
       await this.createPolicy(policy);
-      await this.syncEgressAllowlist(sessionId, targetUrls, extraAllowlist, allowAll);
+      await this.syncEgressAllowlist(sessionId, targetUrls, extraAllowlist, allowAll, residential);
       this.logger.log(`NetworkPolicy ${policyName} created`);
     } catch (error) {
       this.logger.error(`Failed to create NetworkPolicy ${policyName}: ${error}`);
@@ -245,6 +246,7 @@ export class PodManagerService {
     targetUrls: string[],
     extraAllowlist: string[] = [],
     allowAll: boolean = false,
+    residential: boolean = false,
   ): Promise<void> {
     const allowlistEndpoint = process.env.EGRESS_PROXY_ALLOWLIST_URL;
     if (!allowlistEndpoint) {
@@ -262,6 +264,7 @@ export class PodManagerService {
         target_urls: targetUrls,
         extra_allowlist: extraAllowlist,
         allow_all: allowAll,
+        residential,
       }),
     });
 

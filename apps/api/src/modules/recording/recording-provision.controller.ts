@@ -30,6 +30,12 @@ interface CreateRecordingSessionBody {
    * `--from` a login recording.
    */
   source_session_id?: string;
+  /**
+   * Per-session override for residential-proxy egress. When set, this recording
+   * session routes (or does not route) through the residential proxy regardless
+   * of the recording-shell app default. Omit to inherit the app default.
+   */
+  residential_proxy?: boolean;
 }
 
 /**
@@ -147,7 +153,9 @@ export class RecordingProvisionController {
     if (ownerUserId) {
       await this.appRepo.update(app_id, { owner_user_id: ownerUserId });
     }
-    await this.sessionsService.scale(app_id, 1, tenantId, actorId);
+    await this.sessionsService.scale(app_id, 1, tenantId, actorId, undefined, {
+      residentialProxy: body?.residential_proxy,
+    });
 
     // 3. Wait for the controller to create the session row, then mint the URL.
     const session = await this.waitForSession(app_id, tenantId);

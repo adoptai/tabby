@@ -63,6 +63,10 @@ export class ApplicationEntity {
   @Column({ type: 'boolean', default: false })
   execute_enabled: boolean;
 
+  /** App-level default: route this app's session egress through the residential proxy. Session may override; precedence session ?? app ?? false. */
+  @Column({ type: 'boolean', default: false })
+  residential_proxy_enabled: boolean;
+
   /** Timestamp of last reconcile pass by any controller replica (FOR UPDATE SKIP LOCKED) */
   @Column({ type: 'timestamptz', nullable: true })
   last_reconciled_at: Date | null;
