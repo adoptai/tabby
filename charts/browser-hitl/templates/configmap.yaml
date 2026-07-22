@@ -60,7 +60,7 @@ data:
   WORKER_IMAGE_PULL_POLICY: {{ .Values.config.workerImagePullPolicy | default "IfNotPresent" | quote }}
   # Warm recording-session pool (see RecordingPoolService). size 0 / empty
   # tenants list = feature off (cold path everywhere). Tenants: comma list or '*'.
-  RECORDING_POOL_SIZE: {{ .Values.config.recordingPoolSize | default "0" | quote }}
+  RECORDING_POOL_SIZE: {{ .Values.config.recordingPoolSize | default "3" | quote }}
   RECORDING_POOL_TENANTS: {{ .Values.config.recordingPoolTenants | default "" | quote }}
   WORKER_CPU_REQUEST: {{ .Values.worker.resources.requests.cpu | quote }}
   WORKER_CPU_LIMIT: {{ .Values.worker.resources.limits.cpu | quote }}
