@@ -141,6 +141,21 @@ export const DEFAULTS = {
 } as const;
 
 /**
+ * Warm recording-session pool. A per-tenant pool of pre-warmed recording pods
+ * (browser up, sitting on about:blank) that a recording request claims + binds
+ * in place of cold-starting a pod — cutting link provisioning from ~1-2min to
+ * seconds. Cross-tenant reuse is impossible (bundles are stored in the tenant's
+ * MinIO bucket under its encryption key), so the pool is strictly per-tenant and
+ * opt-in via RECORDING_POOL_TENANTS (empty = feature off, cold path everywhere).
+ */
+export const RECORDING_POOL = {
+  /** Well-known app name the controller/API use to find a tenant's pool app. */
+  APP_NAME: '__recording_pool__',
+  WARM: 'WARM',
+  CLAIMED: 'CLAIMED',
+} as const;
+
+/**
  * Password complexity rules (C2 remediation).
  * Minimum 12 chars, at least one uppercase, lowercase, digit, and special character.
  */
