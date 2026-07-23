@@ -313,6 +313,13 @@ jobs:
       EGRESS_MEM_REQUEST: ${{ secrets.EGRESS_MEM_REQUEST || '128Mi' }}
       EGRESS_MEM_LIMIT: ${{ secrets.EGRESS_MEM_LIMIT || '512Mi' }}
       RECONCILE_BATCH_SIZE: ${{ secrets.RECONCILE_BATCH_SIZE || '50' }}
+      # Egress / residential proxy
+      EGRESS_UPSTREAM_PROXY_URL: ${{ secrets.EGRESS_UPSTREAM_PROXY_URL || '' }}
+      # Warm recording-session pool
+      RECORDING_POOL_SIZE: ${{ secrets.RECORDING_POOL_SIZE || '3' }}
+      RECORDING_POOL_RESIDENTIAL_SIZE: ${{ secrets.RECORDING_POOL_RESIDENTIAL_SIZE || '0' }}
+      RECORDING_POOL_TENANTS: ${{ secrets.RECORDING_POOL_TENANTS || '' }}
+      WORKER_IMAGE_PULL_POLICY: ${{ secrets.WORKER_IMAGE_PULL_POLICY || 'IfNotPresent' }}
       # New Relic APM
       NEWRELIC_ENABLED: ${{ secrets.NEWRELIC_ENABLED || 'false' }}
       NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY || '' }}

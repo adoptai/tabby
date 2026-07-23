@@ -77,6 +77,20 @@ Registry: `ghcr.io/adoptai/tabby/{service}:{tag}`
 - `deploy-production.yaml` — Push to `main`: reads already-bumped version from Chart.yaml, builds `prod-*` images, same chart version
 - Secrets are in GitHub Environments (`staging` / `production`), injected via envsubst into `infra/tfy/deploy.yaml`
 
+### Adding a New Environment Variable (STRICT)
+
+Every new env var must be wired through the **entire chain** or `envsubst` silently replaces it with an empty string:
+
+1. **`charts/browser-hitl/values.yaml`** — default value under `config.*` (ConfigMap) or `secrets.*` (Secret)
+2. **`charts/browser-hitl/templates/configmap.yaml`** or **`secrets.yaml`** — render the value into the K8s resource
+3. **Deployment template** (if the env goes to a specific pod only, e.g. `egress-proxy-deployment.yaml`) — inject via `env:` with `secretKeyRef` or `configMapKeyRef`
+4. **`infra/tfy/deploy.yaml`** — add the `${PLACEHOLDER}` so envsubst can substitute it
+5. **`.github/workflows/deploy-staging.yaml`** — map from GitHub secrets in the deploy job `env:` block
+6. **`.github/workflows/deploy-production.yaml`** — same mapping in the production deploy job `env:` block
+7. **Code** — read via `process.env.VAR_NAME` with a sensible fallback
+
+If step 5 or 6 is missing, the var works locally (Helm values) but is always empty in CI deploys. This has caused production issues.
+
 ### Conventional Commits (enforced)
 
 PR titles MUST follow conventional commits (squash merge makes PR title the commit message):
