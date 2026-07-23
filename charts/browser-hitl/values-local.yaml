@@ -152,6 +152,14 @@ config:
   reconcileBatchSize: "50"
   extractTabTimeoutMs: "15000"
   extractTabPollIntervalMs: "3000"
+  # Warm recording-session pool (off by default locally — set recordingPoolTenants
+  # to "*" or a tenant id to warm spares; residential spares also need
+  # EGRESS_UPSTREAM_PROXY_URL on the egress-proxy). IfNotPresent is required for
+  # local Kind (images are `kind load`ed at :dev, there's no registry to pull from).
+  recordingPoolSize: "3"
+  recordingPoolResidentialSize: "0"
+  recordingPoolTenants: ""
+  workerImagePullPolicy: "IfNotPresent"
 
 
 # Development secrets (NEVER use in production)
