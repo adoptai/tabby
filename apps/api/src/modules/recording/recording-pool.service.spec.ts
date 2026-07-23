@@ -8,7 +8,12 @@ import { RecordingPoolService } from './recording-pool.service';
  */
 function makeService(
   env: { size?: string; residentialSize?: string; tenants?: string },
-  deps: { appRepoFindOne?: jest.Mock; managerQuery?: jest.Mock; findOne?: jest.Mock } = {},
+  deps: {
+    appRepoFindOne?: jest.Mock;
+    managerQuery?: jest.Mock;
+    findOne?: jest.Mock;
+    sessionCount?: jest.Mock;
+  } = {},
 ) {
   const prevSize = process.env.RECORDING_POOL_SIZE;
   const prevResidentialSize = process.env.RECORDING_POOL_RESIDENTIAL_SIZE;
@@ -21,7 +26,9 @@ function makeService(
   else process.env.RECORDING_POOL_TENANTS = env.tenants;
 
   const appRepo = { findOne: deps.appRepoFindOne ?? jest.fn(), update: jest.fn() } as any;
-  const sessionRepo = {} as any;
+  // countWarmingSpares() reads sessionRepo.count(); default to 0 (nothing warming).
+  const sessionCount = deps.sessionCount ?? jest.fn().mockResolvedValue(0);
+  const sessionRepo = { count: sessionCount } as any;
   // claimWarmSession runs inside dataSource.transaction(cb): the callback gets a
   // manager exposing query() (SELECT ... FOR UPDATE SKIP LOCKED, then UPDATE) and
   // getRepository().findOne() to return the claimed entity.
@@ -43,7 +50,7 @@ function makeService(
   if (prevTenants === undefined) delete process.env.RECORDING_POOL_TENANTS;
   else process.env.RECORDING_POOL_TENANTS = prevTenants;
 
-  return { svc, appRepo, dataSource, managerQuery, findOne };
+  return { svc, appRepo, dataSource, managerQuery, findOne, sessionCount };
 }
 
 describe('RecordingPoolService.isEnabledForTenant', () => {
@@ -112,9 +119,10 @@ describe('RecordingPoolService.claimWarmSession', () => {
 
   it('atomically reassigns a warm spare with the right claim params', async () => {
     const claimedEntity = { id: 'sess-1', pod_name: 'worker-abc', app_id: 'shell-app' };
-    // First manager.query = SELECT (returns picked id); second = UPDATE.
+    // manager.query order: SELECT (picked id), UPDATE sessions, UPDATE applications.
     const managerQuery = jest.fn()
       .mockResolvedValueOnce([{ id: 'sess-1' }])
+      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
     const findOne = jest.fn().mockResolvedValue(claimedEntity);
     const { svc } = makeService(
@@ -134,6 +142,13 @@ describe('RecordingPoolService.claimWarmSession', () => {
       RECORDING_POOL.CLAIMED,
       'sess-1',
     ]);
+    // Third UPDATE retains the spare by setting the shell app desired=1 in the
+    // SAME transaction (prevents the reconcile scale-down race that would
+    // otherwise terminate the just-claimed spare as "excess").
+    expect(managerQuery.mock.calls[2][0]).toMatch(
+      /UPDATE applications SET desired_session_count = 1/,
+    );
+    expect(managerQuery.mock.calls[2][1]).toEqual(['shell-app']);
     expect(findOne).toHaveBeenCalledWith({ where: { id: 'sess-1' } });
   });
 
@@ -160,4 +175,63 @@ describe('RecordingPoolService.claimWarmSession', () => {
       where: { tenant_id: 't1', name: RECORDING_POOL.RESIDENTIAL_APP_NAME },
     });
   });
+});
+
+describe('RecordingPoolService.claimWarmSessionWithWait', () => {
+  it('returns a spare immediately on a hit, without checking for warming spares', async () => {
+    const managerQuery = jest.fn()
+      .mockResolvedValueOnce([{ id: 'sess-1' }]) // SELECT (hit)
+      .mockResolvedValueOnce(undefined) // UPDATE sessions
+      .mockResolvedValueOnce(undefined); // UPDATE applications
+    const findOne = jest.fn().mockResolvedValue({ id: 'sess-1', pod_name: 'worker-abc' });
+    const sessionCount = jest.fn().mockResolvedValue(3);
+    const { svc } = makeService(
+      { size: '2', tenants: '*' },
+      { appRepoFindOne: jest.fn().mockResolvedValue({ id: 'pool-app' }), managerQuery, findOne, sessionCount },
+    );
+
+    const result = await svc.claimWarmSessionWithWait('t1', 'shell-app', 'user-1');
+
+    expect(result).toEqual({ id: 'sess-1', pod_name: 'worker-abc' });
+    // A hit never needs the warming-spare probe.
+    expect(sessionCount).not.toHaveBeenCalled();
+  });
+
+  it('does NOT wait when nothing is warming — cold-starts immediately', async () => {
+    const managerQuery = jest.fn().mockResolvedValue([]); // SELECT always misses
+    const sessionCount = jest.fn().mockResolvedValue(0); // no warming spare
+    const { svc } = makeService(
+      { size: '2', tenants: '*' },
+      { appRepoFindOne: jest.fn().mockResolvedValue({ id: 'pool-app' }), managerQuery, sessionCount },
+    );
+
+    const started = Date.now();
+    const result = await svc.claimWarmSessionWithWait('t1', 'shell-app', 'user-1');
+
+    expect(result).toBeNull();
+    expect(sessionCount).toHaveBeenCalledTimes(1);
+    // Only the single immediate claim attempt ran — no poll loop.
+    expect(managerQuery).toHaveBeenCalledTimes(1);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('waits for a warming spare and claims it once it becomes HEALTHY', async () => {
+    // First claim misses; a spare is warming (count=1); the poll retry hits.
+    const managerQuery = jest.fn()
+      .mockResolvedValueOnce([]) // immediate SELECT (miss)
+      .mockResolvedValueOnce([{ id: 'sess-2' }]) // poll SELECT (hit)
+      .mockResolvedValueOnce(undefined) // UPDATE sessions
+      .mockResolvedValueOnce(undefined); // UPDATE applications
+    const findOne = jest.fn().mockResolvedValue({ id: 'sess-2', pod_name: 'worker-xyz' });
+    const sessionCount = jest.fn().mockResolvedValue(1);
+    const { svc } = makeService(
+      { size: '2', tenants: '*' },
+      { appRepoFindOne: jest.fn().mockResolvedValue({ id: 'pool-app' }), managerQuery, findOne, sessionCount },
+    );
+
+    const result = await svc.claimWarmSessionWithWait('t1', 'shell-app', 'user-1');
+
+    expect(result).toEqual({ id: 'sess-2', pod_name: 'worker-xyz' });
+    expect(sessionCount).toHaveBeenCalledTimes(1);
+  }, 10_000);
 });
