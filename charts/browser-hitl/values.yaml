@@ -441,7 +441,8 @@ config:
   # cut VNC link provisioning from ~1-2min to seconds. Per-tenant + opt-in — the
   # pool stays OFF until recordingPoolTenants is non-empty; recordingPoolSize is
   # the number of warm spares kept per opted-in tenant once enabled.
-  recordingPoolSize: "3"        # warm spares per opted-in tenant (default when enabled)
+  recordingPoolSize: "3"        # non-residential warm spares per opted-in tenant (default when enabled)
+  recordingPoolResidentialSize: "0"  # warm spares warmed WITH residential-proxy egress, claimed by residential_proxy=true requests. 0 = residential requests cold-start.
   recordingPoolTenants: ""      # comma-separated tenant ids, or "*" for all. EMPTY = pool disabled.
   natsStreamMaxAgeHours: "8"
   minioOrphanMaxAgeHours: "2"

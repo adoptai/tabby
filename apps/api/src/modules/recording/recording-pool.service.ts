@@ -23,6 +23,7 @@ import { AppsService } from '../apps/apps.service';
 export class RecordingPoolService implements OnModuleInit {
   private readonly logger = new Logger(RecordingPoolService.name);
   private readonly poolSize: number;
+  private readonly residentialPoolSize: number;
   private readonly poolTenants: Set<string>;
   private readonly allTenants: boolean;
 
@@ -35,6 +36,10 @@ export class RecordingPoolService implements OnModuleInit {
     private readonly dataSource: DataSource,
   ) {
     this.poolSize = Math.max(0, parseInt(process.env.RECORDING_POOL_SIZE || '0', 10) || 0);
+    this.residentialPoolSize = Math.max(
+      0,
+      parseInt(process.env.RECORDING_POOL_RESIDENTIAL_SIZE || '0', 10) || 0,
+    );
     const raw = (process.env.RECORDING_POOL_TENANTS || '').trim();
     this.allTenants = raw === '*';
     this.poolTenants = new Set(
@@ -42,54 +47,78 @@ export class RecordingPoolService implements OnModuleInit {
     );
   }
 
-  /** Pool active for this tenant? size>0 AND (tenant listed OR wildcard). */
-  isEnabledForTenant(tenantId: string): boolean {
-    if (this.poolSize <= 0) return false;
+  /** Desired warm-spare count for the requested flavor. */
+  private sizeFor(residential: boolean): number {
+    return residential ? this.residentialPoolSize : this.poolSize;
+  }
+
+  /** Well-known pool app name for the requested flavor. */
+  private appNameFor(residential: boolean): string {
+    return residential ? RECORDING_POOL.RESIDENTIAL_APP_NAME : RECORDING_POOL.APP_NAME;
+  }
+
+  /**
+   * Pool active for this tenant + flavor? The flavor's size>0 AND (tenant listed
+   * OR wildcard). Residential and non-residential capacity are sized
+   * independently (RECORDING_POOL_SIZE vs RECORDING_POOL_RESIDENTIAL_SIZE), so a
+   * tenant can have a warm pool for one flavor and cold-start the other.
+   */
+  isEnabledForTenant(tenantId: string, residential = false): boolean {
+    if (this.sizeFor(residential) <= 0) return false;
     return this.allTenants || this.poolTenants.has(tenantId);
   }
 
   async onModuleInit(): Promise<void> {
-    if (this.poolSize <= 0) return;
+    if (this.poolSize <= 0 && this.residentialPoolSize <= 0) return;
     // Eagerly ensure pool apps for explicitly-listed tenants so spares warm
     // before the first request. A '*' wildcard can't be pre-enumerated, so those
-    // tenants warm lazily on their first recording request.
+    // tenants warm lazily on their first recording request. Each enabled flavor
+    // gets its own pool app.
     for (const tenantId of this.poolTenants) {
-      try {
-        await this.ensurePoolApp(tenantId);
-      } catch (err) {
-        this.logger.warn(`Failed to ensure pool app for tenant ${tenantId}: ${err}`);
+      for (const residential of [false, true]) {
+        if (this.sizeFor(residential) <= 0) continue;
+        try {
+          await this.ensurePoolApp(tenantId, residential);
+        } catch (err) {
+          this.logger.warn(
+            `Failed to ensure ${residential ? 'residential ' : ''}pool app for tenant ${tenantId}: ${err}`,
+          );
+        }
       }
     }
   }
 
   /**
-   * Find-or-create the tenant's pool app and keep its desired_session_count in
-   * sync with RECORDING_POOL_SIZE. Idempotent + safe under concurrent API
-   * replicas (re-reads on create race). Returns the pool app id.
+   * Find-or-create the tenant's pool app for the given flavor and keep its
+   * desired_session_count in sync with the flavor's configured size. Idempotent +
+   * safe under concurrent API replicas (re-reads on create race). Returns the
+   * pool app id.
    */
-  async ensurePoolApp(tenantId: string): Promise<string> {
+  async ensurePoolApp(tenantId: string, residential = false): Promise<string> {
+    const appName = this.appNameFor(residential);
+    const size = this.sizeFor(residential);
     const existing = await this.appRepo.findOne({
-      where: { tenant_id: tenantId, name: RECORDING_POOL.APP_NAME },
+      where: { tenant_id: tenantId, name: appName },
     });
     if (existing) {
-      if (existing.desired_session_count !== this.poolSize) {
-        await this.appRepo.update(existing.id, { desired_session_count: this.poolSize });
+      if (existing.desired_session_count !== size) {
+        await this.appRepo.update(existing.id, { desired_session_count: size });
       }
       return existing.id;
     }
     try {
       const { app_id } = await this.appsService.create(
-        this.buildPoolAppInput(),
+        this.buildPoolAppInput(residential),
         tenantId,
         'system:recording-pool',
       );
       this.logger.log(
-        `Created recording pool app ${app_id} for tenant ${tenantId} (size ${this.poolSize})`,
+        `Created ${residential ? 'residential ' : ''}recording pool app ${app_id} for tenant ${tenantId} (size ${size})`,
       );
       return app_id;
     } catch (err) {
       const raced = await this.appRepo.findOne({
-        where: { tenant_id: tenantId, name: RECORDING_POOL.APP_NAME },
+        where: { tenant_id: tenantId, name: appName },
       });
       if (raced) return raced.id;
       throw err;
@@ -109,9 +138,10 @@ export class RecordingPoolService implements OnModuleInit {
     tenantId: string,
     targetAppId: string,
     ownerUserId: string | null,
+    residential = false,
   ): Promise<SessionEntity | null> {
     const poolApp = await this.appRepo.findOne({
-      where: { tenant_id: tenantId, name: RECORDING_POOL.APP_NAME },
+      where: { tenant_id: tenantId, name: this.appNameFor(residential) },
     });
     if (!poolApp) return null;
 
@@ -140,7 +170,7 @@ export class RecordingPoolService implements OnModuleInit {
     });
   }
 
-  private buildPoolAppInput() {
+  private buildPoolAppInput(residential = false) {
     // HTTPS placeholder: app validation requires https target_urls / goto steps,
     // and about:blank fails it. The value is inert — recording mode runs
     // unrestricted egress (resolveEgressOptions allowAll), so a claimed spare can
@@ -148,8 +178,12 @@ export class RecordingPoolService implements OnModuleInit {
     // warms on this page and bind re-navigates it to the real target.
     const PLACEHOLDER_URL = process.env.RECORDING_POOL_WARM_URL || 'https://example.com';
     return {
-      name: RECORDING_POOL.APP_NAME,
+      name: this.appNameFor(residential),
       target_urls: [PLACEHOLDER_URL],
+      // Residential pool spares warm with residential egress active (the session
+      // rows also carry an explicit residential flag — see reconcile.createSession
+      // — so it survives reassignment to the target shell app on claim).
+      residential_proxy_enabled: residential,
       login_config: {
         login_url: PLACEHOLDER_URL,
         credential_ref: 'manual:',
@@ -172,7 +206,7 @@ export class RecordingPoolService implements OnModuleInit {
         recording_mode: 'login' as RecordingMode,
       },
       notification_config: {},
-      desired_session_count: this.poolSize,
+      desired_session_count: this.sizeFor(residential),
     };
   }
 }

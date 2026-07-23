@@ -151,6 +151,15 @@ export const DEFAULTS = {
 export const RECORDING_POOL = {
   /** Well-known app name the controller/API use to find a tenant's pool app. */
   APP_NAME: '__recording_pool__',
+  /**
+   * Well-known app name for the tenant's RESIDENTIAL warm pool. Its spares boot
+   * with residential_proxy_enabled so their egress is chained through the
+   * residential proxy while they warm and after they're claimed. A recording
+   * request that asks for residential egress claims from this pool; all other
+   * requests claim from APP_NAME. Kept as a separate app (not a flag on one pool)
+   * so each flavor has its own desired_session_count / warm capacity.
+   */
+  RESIDENTIAL_APP_NAME: '__recording_pool_residential__',
   WARM: 'WARM',
   CLAIMED: 'CLAIMED',
 } as const;

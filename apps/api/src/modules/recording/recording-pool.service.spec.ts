@@ -7,13 +7,16 @@ import { RecordingPoolService } from './recording-pool.service';
  * before instantiating.
  */
 function makeService(
-  env: { size?: string; tenants?: string },
+  env: { size?: string; residentialSize?: string; tenants?: string },
   deps: { appRepoFindOne?: jest.Mock; managerQuery?: jest.Mock; findOne?: jest.Mock } = {},
 ) {
   const prevSize = process.env.RECORDING_POOL_SIZE;
+  const prevResidentialSize = process.env.RECORDING_POOL_RESIDENTIAL_SIZE;
   const prevTenants = process.env.RECORDING_POOL_TENANTS;
   if (env.size === undefined) delete process.env.RECORDING_POOL_SIZE;
   else process.env.RECORDING_POOL_SIZE = env.size;
+  if (env.residentialSize === undefined) delete process.env.RECORDING_POOL_RESIDENTIAL_SIZE;
+  else process.env.RECORDING_POOL_RESIDENTIAL_SIZE = env.residentialSize;
   if (env.tenants === undefined) delete process.env.RECORDING_POOL_TENANTS;
   else process.env.RECORDING_POOL_TENANTS = env.tenants;
 
@@ -35,6 +38,8 @@ function makeService(
   // Restore env so tests don't leak.
   if (prevSize === undefined) delete process.env.RECORDING_POOL_SIZE;
   else process.env.RECORDING_POOL_SIZE = prevSize;
+  if (prevResidentialSize === undefined) delete process.env.RECORDING_POOL_RESIDENTIAL_SIZE;
+  else process.env.RECORDING_POOL_RESIDENTIAL_SIZE = prevResidentialSize;
   if (prevTenants === undefined) delete process.env.RECORDING_POOL_TENANTS;
   else process.env.RECORDING_POOL_TENANTS = prevTenants;
 
@@ -63,6 +68,24 @@ describe('RecordingPoolService.isEnabledForTenant', () => {
     expect(svc.isEnabledForTenant('t1')).toBe(true);
     expect(svc.isEnabledForTenant('t2')).toBe(true);
     expect(svc.isEnabledForTenant('t3')).toBe(false);
+  });
+
+  it('gates the residential flavor on RECORDING_POOL_RESIDENTIAL_SIZE independently', () => {
+    // Non-residential pool on, residential pool off.
+    const nonResiOnly = makeService({ size: '2', tenants: '*' }).svc;
+    expect(nonResiOnly.isEnabledForTenant('t1', false)).toBe(true);
+    expect(nonResiOnly.isEnabledForTenant('t1', true)).toBe(false);
+
+    // Residential pool on, non-residential pool off.
+    const resiOnly = makeService({ residentialSize: '2', tenants: '*' }).svc;
+    expect(resiOnly.isEnabledForTenant('t1', false)).toBe(false);
+    expect(resiOnly.isEnabledForTenant('t1', true)).toBe(true);
+
+    // Both flavors sized (the 2+2 config).
+    const both = makeService({ size: '2', residentialSize: '2', tenants: 't1' }).svc;
+    expect(both.isEnabledForTenant('t1', false)).toBe(true);
+    expect(both.isEnabledForTenant('t1', true)).toBe(true);
+    expect(both.isEnabledForTenant('t2', true)).toBe(false);
   });
 });
 
@@ -112,5 +135,29 @@ describe('RecordingPoolService.claimWarmSession', () => {
       'sess-1',
     ]);
     expect(findOne).toHaveBeenCalledWith({ where: { id: 'sess-1' } });
+  });
+
+  it('claims from the non-residential pool app by default', async () => {
+    const appRepoFindOne = jest.fn().mockResolvedValue(null);
+    const { svc } = makeService(
+      { size: '2', residentialSize: '2', tenants: '*' },
+      { appRepoFindOne },
+    );
+    await svc.claimWarmSession('t1', 'shell-app', 'user-1');
+    expect(appRepoFindOne).toHaveBeenCalledWith({
+      where: { tenant_id: 't1', name: RECORDING_POOL.APP_NAME },
+    });
+  });
+
+  it('claims from the residential pool app when residential=true', async () => {
+    const appRepoFindOne = jest.fn().mockResolvedValue(null);
+    const { svc } = makeService(
+      { size: '2', residentialSize: '2', tenants: '*' },
+      { appRepoFindOne },
+    );
+    await svc.claimWarmSession('t1', 'shell-app', 'user-1', true);
+    expect(appRepoFindOne).toHaveBeenCalledWith({
+      where: { tenant_id: 't1', name: RECORDING_POOL.RESIDENTIAL_APP_NAME },
+    });
   });
 });

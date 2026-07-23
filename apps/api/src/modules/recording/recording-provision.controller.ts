@@ -110,11 +110,14 @@ export class RecordingProvisionController {
       }
     }
 
-    // Warm pool is used only when enabled for this tenant AND the request isn't
-    // asking for residential egress (a warm spare booted with the pool's proxy
-    // config; honoring a per-request residential override needs a cold pod).
-    const poolEligible =
-      this.recordingPool.isEnabledForTenant(tenantId) && body?.residential_proxy !== true;
+    // Residential egress is opt-in per request (default: non-residential). Each
+    // flavor has its own warm pool (RECORDING_POOL_SIZE vs
+    // RECORDING_POOL_RESIDENTIAL_SIZE): a residential request claims a spare that
+    // was warmed WITH residential egress, a non-residential request claims one
+    // warmed without. Pool-eligible only when that flavor's pool is enabled for
+    // the tenant; otherwise the cold path honors the flag via the shell app.
+    const wantResidential = body?.residential_proxy === true;
+    const poolEligible = this.recordingPool.isEnabledForTenant(tenantId, wantResidential);
 
     // 1. Create the recording-shell app (no login, manual creds, recording mode).
     // desired=1 when pool-eligible so a claimed spare (or a reconcile-created
@@ -152,6 +155,12 @@ export class RecordingProvisionController {
           file_chooser: false,
           recording_mode: mode,
         },
+        // The shell app carries the residential intent so that on a warm-pool
+        // MISS the reconcile-created cold session (session-level flag null →
+        // inherits the app default) still routes through the residential proxy.
+        // On a pool HIT the claimed spare already carries an explicit session-level
+        // flag, which wins regardless.
+        residential_proxy_enabled: wantResidential,
         notification_config: {},
         desired_session_count: poolEligible ? 1 : 0,
       },
@@ -169,11 +178,16 @@ export class RecordingProvisionController {
     //    target (seed cookies + navigate) instead of cold-starting a pod.
     if (poolEligible) {
       // Keep the tenant's pool warm / topped up (best-effort, off the hot path).
-      this.recordingPool.ensurePoolApp(tenantId).catch((err) =>
+      this.recordingPool.ensurePoolApp(tenantId, wantResidential).catch((err) =>
         this.logger.warn(`ensurePoolApp failed for tenant ${tenantId}: ${err}`),
       );
 
-      const claimed = await this.recordingPool.claimWarmSession(tenantId, app_id, ownerUserId);
+      const claimed = await this.recordingPool.claimWarmSession(
+        tenantId,
+        app_id,
+        ownerUserId,
+        wantResidential,
+      );
       if (claimed?.pod_name) {
         await this.bindClaimedSession(claimed.pod_name, startUrl, seedCookies);
         const stream = await this.vncStreamProvider.getStreamUrl(claimed.id, ownerUserId || actorId);

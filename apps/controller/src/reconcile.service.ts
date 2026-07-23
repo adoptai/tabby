@@ -307,7 +307,8 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     // They boot as recording pods on about:blank and wait to be claimed, so they
     // must never inherit an owner (claimed on demand) and are marked WARM so the
     // idle reaper leaves them alone and the claim query can find them.
-    const isPoolSession = app.name === RECORDING_POOL.APP_NAME;
+    const isResidentialPool = app.name === RECORDING_POOL.RESIDENTIAL_APP_NAME;
+    const isPoolSession = app.name === RECORDING_POOL.APP_NAME || isResidentialPool;
     // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
       app_id: app.id,
@@ -319,6 +320,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       hitl_attempt_count: 0,
       owner_user_id: isPoolSession ? null : (app.owner_user_id ?? null),
       pool_state: isPoolSession ? RECORDING_POOL.WARM : null,
+      // Warm spares carry an explicit session-level residential flag so the
+      // residential egress is (a) pushed to the egress proxy while they warm and
+      // (b) preserved after claimWarmSession reassigns them to the (non-residential)
+      // target shell app — the per-session flag wins over the app default in
+      // resolveResidential(). Non-pool sessions leave it null to inherit the app default.
+      residential_proxy_enabled: isPoolSession ? isResidentialPool : null,
       // Continue the distributed trace originated by the API scale request.
       // pod-manager stamps this onto the worker pod's TRACEPARENT env so the
       // browser worker joins the same trace (api -> controller -> worker).
