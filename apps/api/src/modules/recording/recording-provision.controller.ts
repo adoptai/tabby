@@ -120,9 +120,11 @@ export class RecordingProvisionController {
     const poolEligible = this.recordingPool.isEnabledForTenant(tenantId, wantResidential);
 
     // 1. Create the recording-shell app (no login, manual creds, recording mode).
-    // desired=1 when pool-eligible so a claimed spare (or a reconcile-created
-    // cold session on pool miss) is retained; desired=0 otherwise so the cold
-    // path's scale() creates the session row inline (fast) in the request path.
+    // Always desired=0 at creation: a warm claim sets desired=1 in the SAME
+    // transaction as the reassignment (so the claim-wait poll can't race
+    // reconcile), and the cold path bumps desired 0->1 via scale() below. This
+    // keeps reconcile from spawning a phantom cold pod while we wait for a
+    // warming spare.
     const shortId = randomUUID().slice(0, 8);
     const { app_id } = await this.appsService.create(
       {
@@ -162,7 +164,7 @@ export class RecordingProvisionController {
         // flag, which wins regardless.
         residential_proxy_enabled: wantResidential,
         notification_config: {},
-        desired_session_count: poolEligible ? 1 : 0,
+        desired_session_count: 0,
       },
       tenantId,
       actorId,
@@ -175,14 +177,19 @@ export class RecordingProvisionController {
     }
 
     // 3. Warm-pool fast path: claim a pre-warmed spare and bind it to this
-    //    target (seed cookies + navigate) instead of cold-starting a pod.
+    //    target (seed cookies + navigate) instead of cold-starting a pod. On a
+    //    transient miss (pool momentarily drained but a refill is warming),
+    //    claimWarmSessionWithWait waits a few seconds for a spare to go HEALTHY
+    //    rather than cold-starting a fresh pod — a warming spare is usually
+    //    seconds away and far cheaper than a cold bring-up (which also leaves an
+    //    extra pod behind). A genuinely empty pool returns immediately → cold.
     if (poolEligible) {
       // Keep the tenant's pool warm / topped up (best-effort, off the hot path).
       this.recordingPool.ensurePoolApp(tenantId, wantResidential).catch((err) =>
         this.logger.warn(`ensurePoolApp failed for tenant ${tenantId}: ${err}`),
       );
 
-      const claimed = await this.recordingPool.claimWarmSession(
+      const claimed = await this.recordingPool.claimWarmSessionWithWait(
         tenantId,
         app_id,
         ownerUserId,
@@ -205,17 +212,16 @@ export class RecordingProvisionController {
         };
       }
       this.logger.log(`Warm pool empty for tenant ${tenantId}; falling back to cold provisioning`);
-      // Pool miss: the shell app already has desired=1, so the controller
-      // reconcile will create a cold session; waitForSession picks it up below.
-    } else {
-      // Cold path: bump desired 0 -> 1, which creates the session row inline in
-      // this request (fast) rather than waiting a reconcile tick.
-      await this.sessionsService.scale(app_id, 1, tenantId, actorId, undefined, {
-        residentialProxy: body?.residential_proxy,
-      });
     }
 
-    // 4. Wait for the session row, then mint the URL.
+    // 4. Cold path (pool disabled, or a miss with nothing warming in time): bump
+    //    desired 0 -> 1, which creates the session row inline in this request
+    //    (fast) rather than waiting a reconcile tick.
+    await this.sessionsService.scale(app_id, 1, tenantId, actorId, undefined, {
+      residentialProxy: body?.residential_proxy,
+    });
+
+    // 5. Wait for the session row, then mint the URL.
     const session = await this.waitForSession(app_id, tenantId);
     if (!session) {
       throw new GatewayTimeoutException(
