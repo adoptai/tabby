@@ -1,9 +1,17 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { RECORDING_POOL, type RecordingMode } from '@browser-hitl/shared';
 import { ApplicationEntity, SessionEntity } from '../../entities';
 import { AppsService } from '../apps/apps.service';
+
+// Warm-claim miss handling. When the pool is momentarily drained (a burst claimed
+// every HEALTHY spare) but a refill is already warming, waiting a few seconds for
+// a spare to go HEALTHY beats cold-starting a brand-new pod: a warming spare is
+// usually seconds away, whereas a cold bring-up is ~1min AND leaves an extra pod
+// behind. Kept as constants (not env) to avoid widening the deploy env chain.
+const CLAIM_WAIT_MS = 15_000;
+const CLAIM_POLL_MS = 1_500;
 
 /**
  * Warm recording-session pool.
@@ -166,7 +174,64 @@ export class RecordingPoolService implements OnModuleInit {
         `UPDATE sessions SET app_id = $1, owner_user_id = $2, pool_state = $3 WHERE id = $4`,
         [targetAppId, ownerUserId, RECORDING_POOL.CLAIMED, claimedId],
       );
+      // Retain the reassigned spare atomically with the claim. The recording-shell
+      // app is created with desired_session_count=0 (see the provision controller)
+      // so a claim-wait poll can neither spawn a phantom cold pod (desired=1 with 0
+      // sessions) nor let reconcile reap the spare (desired=0 with 1 session). Set
+      // desired=1 in the SAME transaction so reconcile only ever sees a consistent
+      // (desired=1, 1 session) pair.
+      await manager.query(
+        `UPDATE applications SET desired_session_count = 1 WHERE id = $1`,
+        [targetAppId],
+      );
       return manager.getRepository(SessionEntity).findOne({ where: { id: claimedId } });
+    });
+  }
+
+  /**
+   * Claim a warm spare, waiting briefly for one to become HEALTHY on a transient
+   * miss. Returns immediately on a hit. On a miss it waits ONLY when a spare is
+   * already warming (a refill is in flight) — an empty pool with nothing warming
+   * cold-starts right away, adding zero latency. Bounded by CLAIM_WAIT_MS so a
+   * slow refill still falls back to cold provisioning rather than hanging.
+   */
+  async claimWarmSessionWithWait(
+    tenantId: string,
+    targetAppId: string,
+    ownerUserId: string | null,
+    residential = false,
+  ): Promise<SessionEntity | null> {
+    const immediate = await this.claimWarmSession(tenantId, targetAppId, ownerUserId, residential);
+    if (immediate) return immediate;
+    if (CLAIM_WAIT_MS <= 0) return null;
+    // Nothing warming → nothing to wait for; let the caller cold-start now.
+    if ((await this.countWarmingSpares(tenantId, residential)) === 0) return null;
+    const deadline = Date.now() + CLAIM_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
+      const claimed = await this.claimWarmSession(tenantId, targetAppId, ownerUserId, residential);
+      if (claimed) return claimed;
+    }
+    return null;
+  }
+
+  /**
+   * How many spares for this tenant+flavor are still warming (WARM pool_state but
+   * not yet HEALTHY). >0 means a refill is in flight and worth waiting a moment
+   * for; 0 means the pool is genuinely empty and the caller should cold-start.
+   */
+  private async countWarmingSpares(tenantId: string, residential: boolean): Promise<number> {
+    const poolApp = await this.appRepo.findOne({
+      where: { tenant_id: tenantId, name: this.appNameFor(residential) },
+    });
+    if (!poolApp) return 0;
+    return this.sessionRepo.count({
+      where: {
+        app_id: poolApp.id,
+        tenant_id: tenantId,
+        pool_state: RECORDING_POOL.WARM,
+        state: In(['STARTING', 'UNHEALTHY']),
+      },
     });
   }
 
