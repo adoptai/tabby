@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import * as Sentry from '@sentry/node';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThan, Repository, DataSource } from 'typeorm';
-import { SessionState, StreamingMode } from '@browser-hitl/shared';
+import { SessionState, StreamingMode, RECORDING_POOL } from '@browser-hitl/shared';
 import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
@@ -303,6 +303,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async createSession(app: ApplicationEntity): Promise<void> {
+    // Warm-pool spares are the sessions of the well-known per-tenant pool app.
+    // They boot as recording pods on about:blank and wait to be claimed, so they
+    // must never inherit an owner (claimed on demand) and are marked WARM so the
+    // idle reaper leaves them alone and the claim query can find them.
+    const isResidentialPool = app.name === RECORDING_POOL.RESIDENTIAL_APP_NAME;
+    const isPoolSession = app.name === RECORDING_POOL.APP_NAME || isResidentialPool;
     // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
       app_id: app.id,
@@ -312,7 +318,14 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       retry_count: 0,
       intervention_count: 0,
       hitl_attempt_count: 0,
-      owner_user_id: app.owner_user_id ?? null,
+      owner_user_id: isPoolSession ? null : (app.owner_user_id ?? null),
+      pool_state: isPoolSession ? RECORDING_POOL.WARM : null,
+      // Warm spares carry an explicit session-level residential flag so the
+      // residential egress is (a) pushed to the egress proxy while they warm and
+      // (b) preserved after claimWarmSession reassigns them to the (non-residential)
+      // target shell app — the per-session flag wins over the app default in
+      // resolveResidential(). Non-pool sessions leave it null to inherit the app default.
+      residential_proxy_enabled: isPoolSession ? isResidentialPool : null,
       // Continue the distributed trace originated by the API scale request.
       // pod-manager stamps this onto the worker pod's TRACEPARENT env so the
       // browser worker joins the same trace (api -> controller -> worker).
@@ -463,6 +476,16 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     for (const session of healthySessions) {
       const age = now - new Date(session.started_at).getTime();
       if (age >= maxAgeMs) {
+        // A WARM pool spare recycles like any pod at max age, but must NOT scale
+        // its (shared) pool app to 0 — that would drain the whole pool. Just
+        // terminate it; the pool top-up creates a fresh spare next tick.
+        if (session.pool_state === RECORDING_POOL.WARM) {
+          this.logger.log(
+            `Max-age recycle of warm pool spare ${session.id} (age=${Math.round(age / 3600000)}h) — pool will refill`,
+          );
+          await this.terminateSession(session);
+          continue;
+        }
         this.logger.log(
           `Max-age shutdown: session ${session.id} age=${Math.round(age / 3600000)}h ` +
           `(max: ${maxAgeHours}h) — scaling app ${session.app_id} to 0`,

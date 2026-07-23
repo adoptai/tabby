@@ -141,6 +141,30 @@ export const DEFAULTS = {
 } as const;
 
 /**
+ * Warm recording-session pool. A per-tenant pool of pre-warmed recording pods
+ * (browser up, sitting on about:blank) that a recording request claims + binds
+ * in place of cold-starting a pod — cutting link provisioning from ~1-2min to
+ * seconds. Cross-tenant reuse is impossible (bundles are stored in the tenant's
+ * MinIO bucket under its encryption key), so the pool is strictly per-tenant and
+ * opt-in via RECORDING_POOL_TENANTS (empty = feature off, cold path everywhere).
+ */
+export const RECORDING_POOL = {
+  /** Well-known app name the controller/API use to find a tenant's pool app. */
+  APP_NAME: '__recording_pool__',
+  /**
+   * Well-known app name for the tenant's RESIDENTIAL warm pool. Its spares boot
+   * with residential_proxy_enabled so their egress is chained through the
+   * residential proxy while they warm and after they're claimed. A recording
+   * request that asks for residential egress claims from this pool; all other
+   * requests claim from APP_NAME. Kept as a separate app (not a flag on one pool)
+   * so each flavor has its own desired_session_count / warm capacity.
+   */
+  RESIDENTIAL_APP_NAME: '__recording_pool_residential__',
+  WARM: 'WARM',
+  CLAIMED: 'CLAIMED',
+} as const;
+
+/**
  * Password complexity rules (C2 remediation).
  * Minimum 12 chars, at least one uppercase, lowercase, digit, and special character.
  */

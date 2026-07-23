@@ -19,6 +19,7 @@ import { AppsService } from '../apps/apps.service';
 import { SessionsService } from '../sessions/sessions.service';
 import { VncStreamProvider } from '../streaming/vnc-stream.provider';
 import { RecordingStore } from './recording.store';
+import { RecordingPoolService } from './recording-pool.service';
 
 interface CreateRecordingSessionBody {
   recording_mode?: RecordingMode;
@@ -58,6 +59,7 @@ export class RecordingProvisionController {
     private readonly sessionsService: SessionsService,
     private readonly vncStreamProvider: VncStreamProvider,
     private readonly recordingStore: RecordingStore,
+    private readonly recordingPool: RecordingPoolService,
     @InjectRepository(SessionEntity)
     private readonly sessionRepo: Repository<SessionEntity>,
     @InjectRepository(ApplicationEntity)
@@ -108,7 +110,19 @@ export class RecordingProvisionController {
       }
     }
 
+    // Residential egress is opt-in per request (default: non-residential). Each
+    // flavor has its own warm pool (RECORDING_POOL_SIZE vs
+    // RECORDING_POOL_RESIDENTIAL_SIZE): a residential request claims a spare that
+    // was warmed WITH residential egress, a non-residential request claims one
+    // warmed without. Pool-eligible only when that flavor's pool is enabled for
+    // the tenant; otherwise the cold path honors the flag via the shell app.
+    const wantResidential = body?.residential_proxy === true;
+    const poolEligible = this.recordingPool.isEnabledForTenant(tenantId, wantResidential);
+
     // 1. Create the recording-shell app (no login, manual creds, recording mode).
+    // desired=1 when pool-eligible so a claimed spare (or a reconcile-created
+    // cold session on pool miss) is retained; desired=0 otherwise so the cold
+    // path's scale() creates the session row inline (fast) in the request path.
     const shortId = randomUUID().slice(0, 8);
     const { app_id } = await this.appsService.create(
       {
@@ -141,23 +155,67 @@ export class RecordingProvisionController {
           file_chooser: false,
           recording_mode: mode,
         },
+        // The shell app carries the residential intent so that on a warm-pool
+        // MISS the reconcile-created cold session (session-level flag null →
+        // inherits the app default) still routes through the residential proxy.
+        // On a pool HIT the claimed spare already carries an explicit session-level
+        // flag, which wins regardless.
+        residential_proxy_enabled: wantResidential,
         notification_config: {},
-        desired_session_count: 0,
+        desired_session_count: poolEligible ? 1 : 0,
       },
       tenantId,
       actorId,
     );
 
     // 2. Scope the session to the requesting user (if federated) so the VNC
-    //    OAuth gate matches, then scale up a single session.
+    //    OAuth gate matches.
     if (ownerUserId) {
       await this.appRepo.update(app_id, { owner_user_id: ownerUserId });
     }
-    await this.sessionsService.scale(app_id, 1, tenantId, actorId, undefined, {
-      residentialProxy: body?.residential_proxy,
-    });
 
-    // 3. Wait for the controller to create the session row, then mint the URL.
+    // 3. Warm-pool fast path: claim a pre-warmed spare and bind it to this
+    //    target (seed cookies + navigate) instead of cold-starting a pod.
+    if (poolEligible) {
+      // Keep the tenant's pool warm / topped up (best-effort, off the hot path).
+      this.recordingPool.ensurePoolApp(tenantId, wantResidential).catch((err) =>
+        this.logger.warn(`ensurePoolApp failed for tenant ${tenantId}: ${err}`),
+      );
+
+      const claimed = await this.recordingPool.claimWarmSession(
+        tenantId,
+        app_id,
+        ownerUserId,
+        wantResidential,
+      );
+      if (claimed?.pod_name) {
+        await this.bindClaimedSession(claimed.pod_name, startUrl, seedCookies);
+        const stream = await this.vncStreamProvider.getStreamUrl(claimed.id, ownerUserId || actorId);
+        const vncUrl = stream.url.replace('#', '?mode=recording#');
+        this.logger.log(
+          `Provisioned recording session ${claimed.id} from warm pool (app ${app_id}, mode ${mode})`,
+        );
+        return {
+          session_id: claimed.id,
+          app_id,
+          recording_mode: mode,
+          vnc_url: vncUrl,
+          expires_at: stream.expires_at,
+          warm: true,
+        };
+      }
+      this.logger.log(`Warm pool empty for tenant ${tenantId}; falling back to cold provisioning`);
+      // Pool miss: the shell app already has desired=1, so the controller
+      // reconcile will create a cold session; waitForSession picks it up below.
+    } else {
+      // Cold path: bump desired 0 -> 1, which creates the session row inline in
+      // this request (fast) rather than waiting a reconcile tick.
+      await this.sessionsService.scale(app_id, 1, tenantId, actorId, undefined, {
+        residentialProxy: body?.residential_proxy,
+      });
+    }
+
+    // 4. Wait for the session row, then mint the URL.
     const session = await this.waitForSession(app_id, tenantId);
     if (!session) {
       throw new GatewayTimeoutException(
@@ -176,6 +234,35 @@ export class RecordingProvisionController {
       vnc_url: vncUrl,
       expires_at: stream.expires_at,
     };
+  }
+
+  /**
+   * Bind a claimed warm spare to the recording target. Best-effort with one
+   * retry: the pod is already HEALTHY (browser up on about:blank), so if the
+   * bind navigation fails we still return the working VNC URL — the human sees
+   * a live browser and can navigate manually — rather than failing the request.
+   */
+  private async bindClaimedSession(
+    podName: string,
+    startUrl: string,
+    seedCookies: unknown[],
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await this.recordingStore.bindWorker(podName, {
+          start_url: startUrl,
+          seed_cookies: seedCookies,
+        });
+        return;
+      } catch (err) {
+        if (attempt === 2) {
+          this.logger.warn(
+            `Bind failed for pod ${podName} after ${attempt} attempts (returning URL anyway): ${err}`,
+          );
+          return;
+        }
+      }
+    }
   }
 
   private async waitForSession(
