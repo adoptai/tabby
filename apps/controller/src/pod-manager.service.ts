@@ -428,9 +428,22 @@ export class PodManagerService {
       workerPorts.push({ containerPort: CDP_PORTS.CDP_RELAY, name: 'cdp-relay' });
     }
 
+    // Startup budget for the worker container: image already local + browser
+    // cold start is a few seconds, but a cold-node image pull can take much
+    // longer. failureThreshold * periodSeconds caps how long we wait for the
+    // browser to become viewable before liveness takes over.
+    const startupPeriodSeconds = this.readPositiveInt('WORKER_STARTUP_PERIOD_SECONDS', 2);
+    const startupFailureThreshold = this.readPositiveInt('WORKER_STARTUP_FAILURE_THRESHOLD', 90);
+
     const workerContainer = {
       name: 'worker',
       image: process.env.WORKER_IMAGE || 'browser-hitl/worker:latest',
+      // Dynamic worker pods had no pull policy: with the default `:latest` tag
+      // K8s implies `Always`, forcing a registry round-trip (multi-GB Playwright
+      // + Chromium image) on every cold start. Pin to IfNotPresent so a node
+      // that already has the image skips the pull. Override via env when running
+      // a mutable dev tag that must always re-pull.
+      imagePullPolicy: process.env.WORKER_IMAGE_PULL_POLICY || 'IfNotPresent',
       ports: workerPorts,
       env: workerEnv,
       resources: {
@@ -443,15 +456,24 @@ export class PodManagerService {
           memory: process.env.WORKER_MEM_LIMIT || '1536Mi',
         },
       },
+      // startupProbe gates liveness+readiness until the browser is actually up
+      // (GET /ready flips 200 once the page is rendering). This lets us drop the
+      // old fixed `readinessProbe.initialDelaySeconds: 15` — the noVNC Service
+      // now gets endpoints the instant VNC is serveable, not 15s later — while
+      // still giving a generous cold-start budget before liveness can kill.
+      startupProbe: {
+        httpGet: { path: '/ready', port: 8091 },
+        periodSeconds: startupPeriodSeconds,
+        failureThreshold: startupFailureThreshold,
+        timeoutSeconds: 2,
+      },
       livenessProbe: {
         httpGet: { path: '/health', port: 8091 },
-        initialDelaySeconds: 30,
         periodSeconds: 10,
       },
       readinessProbe: {
-        httpGet: { path: '/health', port: 8091 },
-        initialDelaySeconds: 15,
-        periodSeconds: 5,
+        httpGet: { path: '/ready', port: 8091 },
+        periodSeconds: 3,
       },
       volumeMounts: workerVolumeMounts,
       securityContext: {
@@ -467,6 +489,7 @@ export class PodManagerService {
       containers.push({
         name: 'novnc',
         image: process.env.NOVNC_IMAGE || 'browser-hitl/novnc:latest',
+        imagePullPolicy: process.env.NOVNC_IMAGE_PULL_POLICY || process.env.WORKER_IMAGE_PULL_POLICY || 'IfNotPresent',
         ports: [{ containerPort: 6080, name: 'novnc' }],
         command: ['websockify', '--web', '/usr/share/novnc', '6080', 'localhost:5900'],
         resources: {
@@ -894,5 +917,11 @@ export class PodManagerService {
       this.logger.warn(`Invalid JSON in ${envVar} — skipping ${key}: ${raw}`);
       return {};
     }
+  }
+
+  /** Read a positive integer env var, falling back to `fallback` if unset/invalid. */
+  private readPositiveInt(envVar: string, fallback: number): number {
+    const parsed = parseInt(process.env[envVar] || '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
 }

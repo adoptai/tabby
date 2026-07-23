@@ -93,4 +93,13 @@ export class SessionEntity {
   /** Per-session override for residential-proxy egress. null = inherit app default. */
   @Column({ type: 'boolean', nullable: true })
   residential_proxy_enabled: boolean | null;
+
+  /**
+   * Warm-pool marker. 'WARM' = a pre-warmed recording spare on about:blank
+   * awaiting claim; 'CLAIMED' = claimed and reassigned to a recording-shell
+   * app; null = ordinary session. Set to WARM by the controller when creating
+   * sessions for the recording-pool app; the idle reaper and pool top-up read it.
+   */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  pool_state: 'WARM' | 'CLAIMED' | null;
 }

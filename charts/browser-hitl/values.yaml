@@ -436,6 +436,14 @@ config:
   reconcileIntervalSeconds: "15"
   maxSessionAgeHours: "24"
   idleShutdownSeconds: "0"  # 0 = disabled. Set >DEFAULT_KEEPALIVE_SECONDS (300) to enable idle pod reclaim.
+  workerImagePullPolicy: "IfNotPresent"  # dynamic worker/noVNC pods; avoids re-pulling the multi-GB image per cold start
+  # Warm recording-session pool: pre-warmed recording pods claimed on demand to
+  # cut VNC link provisioning from ~1-2min to seconds. Per-tenant + opt-in — the
+  # pool stays OFF until recordingPoolTenants is non-empty; recordingPoolSize is
+  # the number of warm spares kept per opted-in tenant once enabled.
+  recordingPoolSize: "3"        # non-residential warm spares per opted-in tenant (default when enabled)
+  recordingPoolResidentialSize: "0"  # warm spares warmed WITH residential-proxy egress, claimed by residential_proxy=true requests. 0 = residential requests cold-start.
+  recordingPoolTenants: ""      # comma-separated tenant ids, or "*" for all. EMPTY = pool disabled.
   natsStreamMaxAgeHours: "8"
   minioOrphanMaxAgeHours: "2"
   publicBaseUrl: ""

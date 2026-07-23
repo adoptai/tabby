@@ -234,6 +234,12 @@ async function main() {
     // Register execute endpoint on the health server
     healthServer.setPage(page);
 
+    // The browser window is now up and rendering in Xvfb (VNC mode) / headless
+    // (CDP). Mark the pod Ready so its noVNC Service gets endpoints immediately,
+    // rather than after a fixed 15s probe delay. Done BEFORE login/DSL so a HITL
+    // login session is viewable while the human is still completing the login.
+    healthServer.setReady(true);
+
     // Start CDP relay server if in CDP mode
     if (streamingMode === 'cdp') {
       const { CdpRelayServer } = await import('./cdp-relay-server');
@@ -281,6 +287,24 @@ async function main() {
       recordingRunner = new RecordingRunner(page, context, sessionId, recordingMode);
       await recordingRunner.start();
       healthServer.setRecordingRunner(recordingRunner);
+
+      // Warm-pool bind: a pooled recording pod boots on about:blank; when a
+      // recording request claims it, the API POSTs /recording/bind with the real
+      // target. Seed cookies first (so the human starts authenticated), then
+      // navigate. The already-running RecordingRunner captures from here on.
+      const boundContext = context;
+      healthServer.setBindHandler(async ({ start_url, seed_cookies }) => {
+        if (Array.isArray(seed_cookies) && seed_cookies.length > 0) {
+          try {
+            await boundContext.addCookies(seed_cookies as Parameters<typeof boundContext.addCookies>[0]);
+            console.log(`Bind: seeded ${seed_cookies.length} cookie(s)`);
+          } catch (err) {
+            console.warn(`Bind: failed to seed cookies: ${err}`);
+          }
+        }
+        await page.goto(start_url, { waitUntil: 'domcontentloaded' });
+        console.log(`Bind: navigated to ${start_url}`);
+      });
 
       // Session reuse: seed cookies captured from a prior login recording so the
       // human starts already authenticated (no stored credentials). Provisioned

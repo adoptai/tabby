@@ -138,6 +138,13 @@ values:
     minioOrphanMaxAgeHours: "${MINIO_ORPHAN_MAX_AGE_HOURS}"
     apiDocsEnabled: "${API_DOCS_ENABLED}"
     reconcileBatchSize: "${RECONCILE_BATCH_SIZE}"
+    # Warm recording-session pool (per-environment control via GitHub secrets).
+    # Unset ⇒ envsubst leaves these empty and the chart falls back to its
+    # defaults (size 3 / residential 0 / tenants "" ⇒ pool off).
+    recordingPoolSize: "${RECORDING_POOL_SIZE}"
+    recordingPoolResidentialSize: "${RECORDING_POOL_RESIDENTIAL_SIZE}"
+    recordingPoolTenants: "${RECORDING_POOL_TENANTS}"
+    workerImagePullPolicy: "${WORKER_IMAGE_PULL_POLICY}"
 
   postgres:
     enabled: ${POSTGRES_ENABLED}

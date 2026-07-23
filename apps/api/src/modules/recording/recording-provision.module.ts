@@ -6,6 +6,7 @@ import { SessionsModule } from '../sessions/sessions.module';
 import { StreamingModule } from '../streaming/streaming.module';
 import { RecordingModule } from './recording.module';
 import { RecordingProvisionController } from './recording-provision.controller';
+import { RecordingPoolService } from './recording-pool.service';
 
 /**
  * Recording-session provisioning ("agent generates a URL"). Separate from
@@ -22,5 +23,6 @@ import { RecordingProvisionController } from './recording-provision.controller';
     RecordingModule,
   ],
   controllers: [RecordingProvisionController],
+  providers: [RecordingPoolService],
 })
 export class RecordingProvisionModule {}

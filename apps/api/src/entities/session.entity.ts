@@ -104,4 +104,13 @@ export class SessionEntity {
    */
   @Column({ type: 'boolean', nullable: true })
   residential_proxy_enabled: boolean | null;
+
+  /**
+   * Warm-pool marker. 'WARM' = a pre-warmed recording spare sitting on
+   * about:blank, ready to be claimed. 'CLAIMED' = claimed by a recording
+   * request and reassigned to a per-target recording-shell app. null = an
+   * ordinary (non-pool) session.
+   */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  pool_state: 'WARM' | 'CLAIMED' | null;
 }
