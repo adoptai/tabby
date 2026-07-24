@@ -501,6 +501,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       const idleSeconds = template?.idle_shutdown_seconds ?? globalIdleShutdownSeconds;
       const idleMs = idleSeconds * 1000;
 
+      // Idle shutdown is driven by real activity (last_activity_at), refreshed
+      // while a session is genuinely in use: agent traffic (execute/credentials)
+      // and — for human-driven VNC/recording sessions — the viewer's panel-state
+      // poll heartbeat and human input. A warm-pool claim stamps last_activity_at
+      // at claim time (see claimWarmSession), so a claimed recording is NOT judged
+      // idle from the spare's older started_at. An abandoned recording (viewer
+      // closed → no more heartbeat) falls idle and is reaped like anything else.
       if (idleMs > 0 && session.owner_user_id) {
         const lastUsed = session.last_activity_at || session.last_credential_request_at || session.started_at;
         const idleTime = now - new Date(lastUsed).getTime();
