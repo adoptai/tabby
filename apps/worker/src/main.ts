@@ -294,6 +294,13 @@ async function main() {
       // navigate. The already-running RecordingRunner captures from here on.
       const boundContext = context;
       healthServer.setBindHandler(async ({ start_url, seed_cookies }) => {
+        // Seed cookies synchronously — the human must start authenticated before
+        // they interact — but do NOT await the navigation. Loading the target
+        // through the residential proxy can take tens of seconds, and the API
+        // awaits this bind on the provision response's critical path; awaiting the
+        // full page load there is what made residential links ~50s to hand over.
+        // The RecordingRunner captures from navigation onward regardless, and the
+        // human watches the page load in the viewer (where they'd wait anyway).
         if (Array.isArray(seed_cookies) && seed_cookies.length > 0) {
           try {
             await boundContext.addCookies(seed_cookies as Parameters<typeof boundContext.addCookies>[0]);
@@ -302,8 +309,10 @@ async function main() {
             console.warn(`Bind: failed to seed cookies: ${err}`);
           }
         }
-        await page.goto(start_url, { waitUntil: 'domcontentloaded' });
-        console.log(`Bind: navigated to ${start_url}`);
+        page
+          .goto(start_url, { waitUntil: 'domcontentloaded' })
+          .then(() => console.log(`Bind: navigated to ${start_url}`))
+          .catch((err) => console.warn(`Bind: navigation to ${start_url} failed: ${err}`));
       });
 
       // Session reuse: seed cookies captured from a prior login recording so the

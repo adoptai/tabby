@@ -141,18 +141,27 @@ export const DEFAULTS = {
 } as const;
 
 /**
- * Warm recording-session pool. A per-tenant pool of pre-warmed recording pods
+ * Warm recording-session pool. A single GLOBAL pool of pre-warmed recording pods
  * (browser up, sitting on about:blank) that a recording request claims + binds
  * in place of cold-starting a pod — cutting link provisioning from ~1-2min to
- * seconds. Cross-tenant reuse is impossible (bundles are stored in the tenant's
- * MinIO bucket under its encryption key), so the pool is strictly per-tenant and
- * opt-in via RECORDING_POOL_TENANTS (empty = feature off, cold path everywhere).
+ * seconds. The pool app + its warm spares live under a well-known system tenant
+ * (SYSTEM_TENANT_ID); a claim reassigns a spare to the requesting tenant's shell
+ * app AND rebinds the session's tenant_id to that tenant in one transaction, so
+ * the exported bundle persists to the correct per-tenant MinIO bucket.
+ *
+ * Cross-tenant reuse is safe: the bundle encryption key is process-wide (not
+ * per-tenant), the bucket is derived from the session's tenant_id at persist
+ * time, and a spare is single-use (claimed -> becomes a real recording ->
+ * terminated, never re-pooled), so no data from one tenant is ever visible to
+ * another. The feature is opt-in via RECORDING_POOL_TENANTS (empty = off); that
+ * list now gates only WHICH tenants may claim from the shared pool — the pool
+ * itself is warmed once, globally, at boot.
  */
 export const RECORDING_POOL = {
-  /** Well-known app name the controller/API use to find a tenant's pool app. */
+  /** Well-known app name the controller/API use to find the global pool app. */
   APP_NAME: '__recording_pool__',
   /**
-   * Well-known app name for the tenant's RESIDENTIAL warm pool. Its spares boot
+   * Well-known app name for the global RESIDENTIAL warm pool. Its spares boot
    * with residential_proxy_enabled so their egress is chained through the
    * residential proxy while they warm and after they're claimed. A recording
    * request that asks for residential egress claims from this pool; all other
@@ -160,6 +169,12 @@ export const RECORDING_POOL = {
    * so each flavor has its own desired_session_count / warm capacity.
    */
   RESIDENTIAL_APP_NAME: '__recording_pool_residential__',
+  /**
+   * Sentinel tenant that owns the global pool app(s) and their unclaimed warm
+   * spares. Seeded by migration 033. A claim rebinds the spare's tenant_id to the
+   * real requesting tenant, so this id only ever appears on unclaimed spares.
+   */
+  SYSTEM_TENANT_ID: '00000000-0000-0000-0000-000000000000',
   WARM: 'WARM',
   CLAIMED: 'CLAIMED',
 } as const;
