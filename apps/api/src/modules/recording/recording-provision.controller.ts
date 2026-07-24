@@ -184,9 +184,9 @@ export class RecordingProvisionController {
     //    seconds away and far cheaper than a cold bring-up (which also leaves an
     //    extra pod behind). A genuinely empty pool returns immediately → cold.
     if (poolEligible) {
-      // Keep the tenant's pool warm / topped up (best-effort, off the hot path).
-      this.recordingPool.ensurePoolApp(tenantId, wantResidential).catch((err) =>
-        this.logger.warn(`ensurePoolApp failed for tenant ${tenantId}: ${err}`),
+      // Keep the shared global pool warm / topped up (best-effort, off the hot path).
+      this.recordingPool.ensurePoolApp(wantResidential).catch((err) =>
+        this.logger.warn(`ensurePoolApp failed (${wantResidential ? 'residential' : 'standard'}): ${err}`),
       );
 
       const claimed = await this.recordingPool.claimWarmSessionWithWait(

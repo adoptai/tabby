@@ -133,13 +133,15 @@ describe('RecordingPoolService.claimWarmSession', () => {
     const result = await svc.claimWarmSession('t1', 'shell-app', 'user-1');
 
     expect(result).toEqual(claimedEntity);
-    // SELECT filters pool-app / tenant / WARM.
-    expect(managerQuery.mock.calls[0][1]).toEqual(['pool-app', 't1', RECORDING_POOL.WARM]);
-    // UPDATE sets shell app_id, owner, CLAIMED for the picked id.
+    // SELECT filters by the (global) pool app id + WARM — no tenant predicate.
+    expect(managerQuery.mock.calls[0][1]).toEqual(['pool-app', RECORDING_POOL.WARM]);
+    // UPDATE sets shell app_id, owner, CLAIMED, and rebinds tenant_id to the
+    // claiming tenant, for the picked id.
     expect(managerQuery.mock.calls[1][1]).toEqual([
       'shell-app',
       'user-1',
       RECORDING_POOL.CLAIMED,
+      't1',
       'sess-1',
     ]);
     // Third UPDATE retains the spare by setting the shell app desired=1 in the
@@ -160,7 +162,7 @@ describe('RecordingPoolService.claimWarmSession', () => {
     );
     await svc.claimWarmSession('t1', 'shell-app', 'user-1');
     expect(appRepoFindOne).toHaveBeenCalledWith({
-      where: { tenant_id: 't1', name: RECORDING_POOL.APP_NAME },
+      where: { tenant_id: RECORDING_POOL.SYSTEM_TENANT_ID, name: RECORDING_POOL.APP_NAME },
     });
   });
 
@@ -172,7 +174,7 @@ describe('RecordingPoolService.claimWarmSession', () => {
     );
     await svc.claimWarmSession('t1', 'shell-app', 'user-1', true);
     expect(appRepoFindOne).toHaveBeenCalledWith({
-      where: { tenant_id: 't1', name: RECORDING_POOL.RESIDENTIAL_APP_NAME },
+      where: { tenant_id: RECORDING_POOL.SYSTEM_TENANT_ID, name: RECORDING_POOL.RESIDENTIAL_APP_NAME },
     });
   });
 });
