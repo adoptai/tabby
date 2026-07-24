@@ -1398,6 +1398,16 @@ export class StreamingController {
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Session not found');
 
+    // Activity heartbeat: the viewer polls panel-state every ~5s while the tab is
+    // open, so treat each poll as "session in use". This keeps a session that a
+    // human is actively viewing/driving (VNC recording, HITL) alive under the idle
+    // reaper, while an abandoned one (viewer closed → polling stops) correctly
+    // falls idle and gets reaped. Fire-and-forget: a heartbeat must never block or
+    // fail the state response.
+    if (session.state !== 'TERMINATED') {
+      this.sessionRepo.update(sessionId, { last_activity_at: new Date() }).catch(() => {});
+    }
+
     let pendingInput = session.pending_input_request as Record<string, unknown> | null;
     if (!pendingInput && (session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED')) {
       const autoResolved = await this.streamTokenService.isHitlAutoResolved(sessionId);

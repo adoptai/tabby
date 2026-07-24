@@ -144,6 +144,9 @@ describe('RecordingPoolService.claimWarmSession', () => {
       't1',
       'sess-1',
     ]);
+    // …and stamps last_activity_at so the idle reaper measures idleness from the
+    // claim, not the spare's older started_at.
+    expect(managerQuery.mock.calls[1][0]).toMatch(/last_activity_at = NOW\(\)/);
     // Third UPDATE retains the spare by setting the shell app desired=1 in the
     // SAME transaction (prevents the reconcile scale-down race that would
     // otherwise terminate the just-claimed spare as "excess").

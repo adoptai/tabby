@@ -191,8 +191,13 @@ export class RecordingPoolService implements OnModuleInit {
       // bucket, not the system pool's. (The worker pod's baked TENANT_ID env goes
       // stale here but is unused on the recording path — drain is raw, encrypt +
       // persist are API-side off this DB row.)
+      //
+      // Stamp last_activity_at = NOW() so the idle reaper measures idleness from
+      // the CLAIM, not the spare's (older) started_at. A warm spare may have sat
+      // warm for a while; without this the claimed session would look
+      // pre-aged/idle the instant it's handed over and get reaped mid-login.
       await manager.query(
-        `UPDATE sessions SET app_id = $1, owner_user_id = $2, pool_state = $3, tenant_id = $4 WHERE id = $5`,
+        `UPDATE sessions SET app_id = $1, owner_user_id = $2, pool_state = $3, tenant_id = $4, last_activity_at = NOW() WHERE id = $5`,
         [targetAppId, ownerUserId, RECORDING_POOL.CLAIMED, tenantId, claimedId],
       );
       // Retain the reassigned spare atomically with the claim. The recording-shell
