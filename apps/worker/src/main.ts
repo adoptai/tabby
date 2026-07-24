@@ -309,6 +309,10 @@ async function main() {
             console.warn(`Bind: failed to seed cookies: ${err}`);
           }
         }
+        // Drop the pre-bind capture (the spare's warm-up navigation to the pool
+        // placeholder URL) so the bundle starts clean at the real target — the
+        // placeholder must never leak into the compiled login_url / HAR.
+        recordingRunner?.reset();
         page
           .goto(start_url, { waitUntil: 'domcontentloaded' })
           .then(() => console.log(`Bind: navigated to ${start_url}`))
