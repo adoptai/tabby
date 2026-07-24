@@ -105,6 +105,31 @@ describe('RecordingRunner', () => {
     expect(bundle.stopped_at).toBeTruthy();
   });
 
+  it('reset() drops pre-bind capture so the bundle starts at the real target', async () => {
+    // A warm spare warms on the pool placeholder page, then bind resets + navigates.
+    const f = makeFakes('https://example.com/');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    // Pre-bind (warm-up) activity on the placeholder that must NOT leak.
+    f.emit(clickEvent);
+    f.navigate('https://example.com/warmup');
+
+    // Bind: reset, then navigate to the real target.
+    runner.reset();
+    f.navigate('https://www.airbnb.com/');
+
+    const bundle = await runner.drain();
+
+    // Placeholder click + url events are gone.
+    expect(bundle.click_events).toHaveLength(0);
+    // First url_event is the real target, with from_url cleared by reset — so the
+    // NoUI login compiler resolves login_url to the target, not the placeholder.
+    expect(bundle.url_events).toEqual([
+      expect.objectContaining({ from_url: '', to_url: 'https://www.airbnb.com/' }),
+    ]);
+  });
+
   it('does not record a url event when the url is unchanged', async () => {
     const f = makeFakes('https://example.com/login');
     const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'workflow');
