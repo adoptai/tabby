@@ -16,16 +16,21 @@ const CLAIM_POLL_MS = 1_500;
 /**
  * Warm recording-session pool.
  *
- * Maintains, per opt-in tenant, a dedicated "pool app" whose sessions are
- * pre-warmed recording pods sitting on about:blank (browser up, noVNC serving,
- * health PASS). A recording request atomically CLAIMS one of these spares and
- * reassigns it to a per-target recording-shell app, then binds it (navigate +
- * seed cookies) — turning a ~1-2min cold pod bring-up into a sub-second claim.
+ * Maintains a single GLOBAL "pool app" (per flavor) — owned by the sentinel
+ * system tenant — whose sessions are pre-warmed recording pods sitting on
+ * about:blank (browser up, noVNC serving, health PASS). A recording request
+ * atomically CLAIMS one of these spares, reassigns it to a per-target
+ * recording-shell app AND rebinds its tenant_id to the requesting tenant, then
+ * binds it (navigate + seed cookies) — turning a ~1-2min cold pod bring-up into
+ * a sub-second claim, for EVERY tenant, with no per-tenant/per-flavor lazy-warm
+ * gap (the shared pool is warmed once at boot).
  *
- * Cross-tenant reuse is impossible: recording bundles are stored in the tenant's
- * MinIO bucket under its encryption key, so a spare can only ever serve its own
- * tenant. The pool is therefore strictly per-tenant and opt-in via
- * RECORDING_POOL_TENANTS (empty = feature off → cold path everywhere).
+ * Cross-tenant reuse is safe: the bundle encryption key is process-wide (not
+ * per-tenant), the MinIO bucket is derived from the session's tenant_id at
+ * persist time (which the claim rebinds to the requesting tenant), and a spare
+ * is single-use — claimed → becomes a real recording → terminated, never
+ * re-pooled. The feature is opt-in via RECORDING_POOL_TENANTS (empty = off);
+ * that list now gates only WHICH tenants may claim from the shared pool.
  */
 @Injectable()
 export class RecordingPoolService implements OnModuleInit {
@@ -76,35 +81,43 @@ export class RecordingPoolService implements OnModuleInit {
     return this.allTenants || this.poolTenants.has(tenantId);
   }
 
+  /**
+   * Is the pool feature on for this flavor at all — i.e. size>0 AND at least one
+   * tenant (or '*') may claim? The tenant-agnostic counterpart of
+   * isEnabledForTenant, used to decide whether to warm the shared pool at boot.
+   */
+  private featureEnabled(residential: boolean): boolean {
+    return this.sizeFor(residential) > 0 && (this.allTenants || this.poolTenants.size > 0);
+  }
+
   async onModuleInit(): Promise<void> {
     if (this.poolSize <= 0 && this.residentialPoolSize <= 0) return;
-    // Eagerly ensure pool apps for explicitly-listed tenants so spares warm
-    // before the first request. A '*' wildcard can't be pre-enumerated, so those
-    // tenants warm lazily on their first recording request. Each enabled flavor
-    // gets its own pool app.
-    for (const tenantId of this.poolTenants) {
-      for (const residential of [false, true]) {
-        if (this.sizeFor(residential) <= 0) continue;
-        try {
-          await this.ensurePoolApp(tenantId, residential);
-        } catch (err) {
-          this.logger.warn(
-            `Failed to ensure ${residential ? 'residential ' : ''}pool app for tenant ${tenantId}: ${err}`,
-          );
-        }
+    // Warm the GLOBAL pool once at boot. Unlike the old per-tenant pool this no
+    // longer depends on enumerating tenants (the shared pool serves every enabled
+    // tenant), so a '*' wildcard is pre-warmed too — eliminating the first-request
+    // cold start. Each enabled flavor gets its own global pool app.
+    for (const residential of [false, true]) {
+      if (!this.featureEnabled(residential)) continue;
+      try {
+        await this.ensurePoolApp(residential);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to ensure ${residential ? 'residential ' : ''}global pool app: ${err}`,
+        );
       }
     }
   }
 
   /**
-   * Find-or-create the tenant's pool app for the given flavor and keep its
-   * desired_session_count in sync with the flavor's configured size. Idempotent +
-   * safe under concurrent API replicas (re-reads on create race). Returns the
-   * pool app id.
+   * Find-or-create the GLOBAL pool app for the given flavor (owned by the system
+   * tenant) and keep its desired_session_count in sync with the flavor's
+   * configured size. Idempotent + safe under concurrent API replicas (re-reads on
+   * create race). Returns the pool app id.
    */
-  async ensurePoolApp(tenantId: string, residential = false): Promise<string> {
+  async ensurePoolApp(residential = false): Promise<string> {
     const appName = this.appNameFor(residential);
     const size = this.sizeFor(residential);
+    const tenantId = RECORDING_POOL.SYSTEM_TENANT_ID;
     const existing = await this.appRepo.findOne({
       where: { tenant_id: tenantId, name: appName },
     });
@@ -121,7 +134,7 @@ export class RecordingPoolService implements OnModuleInit {
         'system:recording-pool',
       );
       this.logger.log(
-        `Created ${residential ? 'residential ' : ''}recording pool app ${app_id} for tenant ${tenantId} (size ${size})`,
+        `Created global ${residential ? 'residential ' : ''}recording pool app ${app_id} (size ${size})`,
       );
       return app_id;
     } catch (err) {
@@ -149,7 +162,7 @@ export class RecordingPoolService implements OnModuleInit {
     residential = false,
   ): Promise<SessionEntity | null> {
     const poolApp = await this.appRepo.findOne({
-      where: { tenant_id: tenantId, name: this.appNameFor(residential) },
+      where: { tenant_id: RECORDING_POOL.SYSTEM_TENANT_ID, name: this.appNameFor(residential) },
     });
     if (!poolApp) return null;
 
@@ -157,22 +170,30 @@ export class RecordingPoolService implements OnModuleInit {
     // the picked spare for the txn so concurrent API replicas grab distinct
     // rows. (We don't use UPDATE ... RETURNING here: TypeORM's query() does not
     // reliably surface RETURNING rows for an UPDATE, which would make the claim
-    // look empty even though it committed.)
+    // look empty even though it committed.) app_id alone scopes the pick to the
+    // global pool app — no tenant predicate, since spares are tenant-agnostic
+    // until claimed.
     return this.dataSource.transaction(async (manager) => {
       const picked = await manager.query(
         `SELECT id FROM sessions
-          WHERE app_id = $1 AND tenant_id = $2 AND pool_state = $3
+          WHERE app_id = $1 AND pool_state = $2
             AND state = 'HEALTHY' AND pod_name IS NOT NULL
           ORDER BY started_at ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED`,
-        [poolApp.id, tenantId, RECORDING_POOL.WARM],
+        [poolApp.id, RECORDING_POOL.WARM],
       );
       if (!picked || picked.length === 0) return null;
       const claimedId = picked[0].id;
+      // Rebind the spare to the requesting tenant AS PART OF the claim. This is
+      // load-bearing: persist() derives the per-tenant MinIO bucket from
+      // session.tenant_id, so the exported bundle lands in the CLAIMING tenant's
+      // bucket, not the system pool's. (The worker pod's baked TENANT_ID env goes
+      // stale here but is unused on the recording path — drain is raw, encrypt +
+      // persist are API-side off this DB row.)
       await manager.query(
-        `UPDATE sessions SET app_id = $1, owner_user_id = $2, pool_state = $3 WHERE id = $4`,
-        [targetAppId, ownerUserId, RECORDING_POOL.CLAIMED, claimedId],
+        `UPDATE sessions SET app_id = $1, owner_user_id = $2, pool_state = $3, tenant_id = $4 WHERE id = $5`,
+        [targetAppId, ownerUserId, RECORDING_POOL.CLAIMED, tenantId, claimedId],
       );
       // Retain the reassigned spare atomically with the claim. The recording-shell
       // app is created with desired_session_count=0 (see the provision controller)
@@ -205,7 +226,7 @@ export class RecordingPoolService implements OnModuleInit {
     if (immediate) return immediate;
     if (CLAIM_WAIT_MS <= 0) return null;
     // Nothing warming → nothing to wait for; let the caller cold-start now.
-    if ((await this.countWarmingSpares(tenantId, residential)) === 0) return null;
+    if ((await this.countWarmingSpares(residential)) === 0) return null;
     const deadline = Date.now() + CLAIM_WAIT_MS;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
@@ -220,15 +241,14 @@ export class RecordingPoolService implements OnModuleInit {
    * not yet HEALTHY). >0 means a refill is in flight and worth waiting a moment
    * for; 0 means the pool is genuinely empty and the caller should cold-start.
    */
-  private async countWarmingSpares(tenantId: string, residential: boolean): Promise<number> {
+  private async countWarmingSpares(residential: boolean): Promise<number> {
     const poolApp = await this.appRepo.findOne({
-      where: { tenant_id: tenantId, name: this.appNameFor(residential) },
+      where: { tenant_id: RECORDING_POOL.SYSTEM_TENANT_ID, name: this.appNameFor(residential) },
     });
     if (!poolApp) return 0;
     return this.sessionRepo.count({
       where: {
         app_id: poolApp.id,
-        tenant_id: tenantId,
         pool_state: RECORDING_POOL.WARM,
         state: In(['STARTING', 'UNHEALTHY']),
       },
