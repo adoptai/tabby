@@ -96,4 +96,21 @@ export class SessionEntity {
 
   @Column({ type: 'varchar', nullable: true })
   traceparent: string | null;
+
+  /**
+   * Per-session override for residential-proxy egress. null = inherit the
+   * app-level default (applications.residential_proxy_enabled). The controller
+   * resolves session ?? app ?? false and tells the egress proxy per session.
+   */
+  @Column({ type: 'boolean', nullable: true })
+  residential_proxy_enabled: boolean | null;
+
+  /**
+   * Warm-pool marker. 'WARM' = a pre-warmed recording spare sitting on
+   * about:blank, ready to be claimed. 'CLAIMED' = claimed by a recording
+   * request and reassigned to a per-target recording-shell app. null = an
+   * ordinary (non-pool) session.
+   */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  pool_state: 'WARM' | 'CLAIMED' | null;
 }

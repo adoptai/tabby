@@ -56,7 +56,7 @@ describe('PodManagerService egress allowlist sync', () => {
     process.env.EGRESS_PROXY_ALLOWLIST_URL = 'http://egress-proxy:8095/allowlist';
 
     const service = new PodManagerService();
-    await service.syncEgressAllowlist('session-1', ['https://example.com/login'], ['.expedia.com'], true);
+    await service.syncEgressAllowlist('session-1', ['https://example.com/login'], ['.expedia.com'], true, true);
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
     expect(body).toEqual({
@@ -64,6 +64,7 @@ describe('PodManagerService egress allowlist sync', () => {
       target_urls: ['https://example.com/login'],
       extra_allowlist: ['.expedia.com'],
       allow_all: true,
+      residential: true,
     });
   });
 
@@ -79,6 +80,7 @@ describe('PodManagerService egress allowlist sync', () => {
     const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
     expect(body.extra_allowlist).toEqual([]);
     expect(body.allow_all).toBe(false);
+    expect(body.residential).toBe(false);
   });
 
   it('sends DELETE allowlist cleanup with encoded session id', async () => {

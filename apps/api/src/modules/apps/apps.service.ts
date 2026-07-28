@@ -29,6 +29,7 @@ interface CreateAppInput {
   desired_session_count?: number;
   browser_policy?: Record<string, unknown>;
   execute_enabled?: boolean;
+  residential_proxy_enabled?: boolean;
 }
 
 @Injectable()
@@ -101,6 +102,7 @@ export class AppsService {
       desired_session_count: input.desired_session_count ?? 1,
       browser_policy: input.browser_policy ?? { downloads: false, clipboard: false, file_chooser: false },
       execute_enabled: input.execute_enabled ?? false,
+      residential_proxy_enabled: input.residential_proxy_enabled ?? false,
     });
     const saved = await this.appRepo.save(app);
 
@@ -186,6 +188,7 @@ export class AppsService {
       ...(input.desired_session_count !== undefined && { desired_session_count: input.desired_session_count }),
       ...(input.browser_policy !== undefined && { browser_policy: input.browser_policy }),
       ...(input.execute_enabled !== undefined && { execute_enabled: input.execute_enabled }),
+      ...(input.residential_proxy_enabled !== undefined && { residential_proxy_enabled: input.residential_proxy_enabled }),
     });
 
     const saved = await this.appRepo.save(app);

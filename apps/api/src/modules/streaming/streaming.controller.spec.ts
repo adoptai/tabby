@@ -42,7 +42,7 @@ function buildModule(overrides: {
   streamTokenService?: Record<string, unknown>;
   jwtService?: Record<string, unknown>;
 } = {}) {
-  const sessionRepo = overrides.sessionRepo ?? { findOne: jest.fn(), update: jest.fn() };
+  const sessionRepo = overrides.sessionRepo ?? { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined) };
   const appRepo = overrides.appRepo ?? { findOne: jest.fn() };
   const interventionRepo = overrides.interventionRepo ?? { findOne: jest.fn() };
   const streamTokenService = overrides.streamTokenService ?? {
@@ -83,7 +83,7 @@ describe('StreamingController — panel-state', () => {
   let streamTokenService: any;
 
   beforeEach(async () => {
-    sessionRepo = { findOne: jest.fn(), update: jest.fn() };
+    sessionRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined) };
     interventionRepo = { findOne: jest.fn() };
     streamTokenService = {
       verifyToken: jest.fn().mockReturnValue({
@@ -173,7 +173,7 @@ describe('StreamingController — restart', () => {
   let streamTokenService: any;
 
   beforeEach(async () => {
-    sessionRepo = { findOne: jest.fn(), update: jest.fn() };
+    sessionRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined) };
     streamTokenService = {
       verifyToken: jest.fn().mockReturnValue({
         valid: true,
@@ -232,7 +232,7 @@ describe('StreamingController — successor', () => {
   let streamTokenService: any;
 
   beforeEach(async () => {
-    sessionRepo = { findOne: jest.fn(), update: jest.fn() };
+    sessionRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined) };
     appRepo = { findOne: jest.fn() };
     streamTokenService = {
       verifyToken: jest.fn().mockReturnValue({

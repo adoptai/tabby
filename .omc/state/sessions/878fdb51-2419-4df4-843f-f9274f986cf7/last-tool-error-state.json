@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk grep -n \\\"window.location.href\\\" /home/moraski/work/tabby/apps/admin-ui/src/routes/session-detail.tsx\",\"description\":\"Check XSS concern\"}",
+  "error": "Exit code 1\n0 matches for 'window.location.href'",
+  "timestamp": "2026-07-23T19:54:05.306Z",
+  "retry_count": 1
+}

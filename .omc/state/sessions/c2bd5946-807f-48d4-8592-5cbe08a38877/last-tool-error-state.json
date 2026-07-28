@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"python3 -c \\\"\\nimport yaml\\nwf = yaml.safe_load(open('.github/workflows/sync-branches.yaml'))\\nprint('Trigger:', wf['on'])\\nprint()\\nfor j, cfg in wf['jobs'].items():\\n    print(f'{j}: nee...",
+  "error": "Exit code 1\nTraceback (most recent call last):\n  File \"<string>\", line 4, in <module>\n    print('Trigger:', wf['on'])\n                      ~~^^^^^^\nKeyError: 'on'",
+  "timestamp": "2026-07-07T19:42:16.687Z",
+  "retry_count": 1
+}

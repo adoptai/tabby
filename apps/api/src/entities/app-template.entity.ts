@@ -52,6 +52,28 @@ export class AppTemplateEntity {
   execute_enabled: boolean;
 
   /**
+   * Whether apps auto-provisioned from this template route their browser session
+   * egress through the residential proxy (Oxylabs) chained upstream of Tabby's
+   * egress proxy. App-level default for the app's execute sessions; a session may
+   * override via sessions.residential_proxy_enabled. Mirrors
+   * applications.residential_proxy_enabled. Whole-session scope; `.adopt.ai`/internal
+   * hosts always dial direct regardless of this flag.
+   */
+  @Column({ type: 'boolean', default: false })
+  residential_proxy_enabled: boolean;
+
+  /**
+   * Whether this template is active. Inactive templates are skipped by
+   * auto-provisioning (autoProvisionFromTemplate treats is_active=false like a
+   * missing template), so no new per-user apps are cloned from them. Existing
+   * provisioned apps/profiles/sessions are unaffected — this is a soft on/off
+   * switch, not a teardown. Not propagated to linked apps and not part of the
+   * content hash, so toggling it never version-bumps downstream profiles.
+   */
+  @Column({ type: 'boolean', default: true })
+  is_active: boolean;
+
+  /**
    * Extra egress domains cloned onto every app auto-provisioned from this
    * template. Mirrors applications.extra_egress_allowlist. NoUI populates this
    * from recorded HAR so per-user sessions inherit the full domain set.

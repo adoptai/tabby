@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "entries": {
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1783109659291,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1783107714011,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1783107706759,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "4aee5f4dad3206a4f1bc19a2911c01b7733a3fa7b0df85aac54c120b61bb8302": {
+      "last_emitted_at_ms": 1783107005595,
+      "message": "Spawning agent: implementer (inherit) | Task: Rebuild viewer + shared components"
+    },
+    "764fe434c1b5d217ca3daa60a3b05cd85bd4b08266e8c0e01a9e84f5671892e4": {
+      "last_emitted_at_ms": 1783106965936,
+      "message": "Spawning agent: implementer (inherit) | Task: Rebuild admin pages with proper fields"
+    },
+    "19e9fc7ef46ab7744c5e6444e6bcda7ff9204d65c7dbc49321879dbe35807ac2": {
+      "last_emitted_at_ms": 1783106932662,
+      "message": "Spawning agent: implementer (inherit) | Task: Rebuild apps + templates + profiles pages"
+    },
+    "6515044d2abdc4aece8d3fe2bf85cb872b03cc372e0a09014adb029ea4b4ed96": {
+      "last_emitted_at_ms": 1783106871914,
+      "message": "Spawning agent: implementer (inherit) | Task: Rebuild dashboard + sessions pages"
+    },
+    "9305d697a5f208d77256b35f3a24da3da3a8018b0e5bec2d0267f12f7dfe2731": {
+      "last_emitted_at_ms": 1783106840223,
+      "message": "Spawning agent: implementer (inherit) | Task: Rebuild sidebar + topbar + shell"
+    }
+  },
+  "updated_at": "2026-07-03T20:14:19.291Z"
+}

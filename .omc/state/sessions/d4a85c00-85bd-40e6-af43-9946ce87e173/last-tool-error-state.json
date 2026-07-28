@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk grep -rn \\\"integration_id\\\" /home/moraski/work/adoptwebui/backend/app/services/tabby_resolution_service.py\",\"description\":\"Check if integration_id is used in resolution\"}",
+  "error": "Exit code 1",
+  "timestamp": "2026-07-17T13:36:41.877Z",
+  "retry_count": 2
+}

@@ -92,6 +92,7 @@ export class AppTemplatesService {
   private static readonly PROPAGATED_FIELDS = [
     'browser_policy', 'login_config', 'keepalive_config',
     'export_policy', 'notification_config', 'execute_enabled',
+    'residential_proxy_enabled',
   ] as const;
 
   /** Bump minor version, reset patch. e.g. "1.0.0" → "1.1.0", "2.5.3" → "2.6.0" */
@@ -113,6 +114,7 @@ export class AppTemplatesService {
       notification_config: template.notification_config,
       credential_ref_default: template.credential_ref_default,
       execute_enabled: template.execute_enabled,
+      residential_proxy_enabled: template.residential_proxy_enabled,
       idle_shutdown_seconds: template.idle_shutdown_seconds,
     };
     return createHash('sha256')

@@ -8,6 +8,12 @@ import { registerBrowserHandler, cleanupHarListeners } from './execute-browser-h
 import { executeAuthMiddleware } from './execute-auth';
 import type { RecordingRunner } from './recording-runner';
 
+/** Params for binding a warm pool recording pod to a real recording target. */
+export interface BindParams {
+  start_url: string;
+  seed_cookies?: unknown[];
+}
+
 /**
  * Worker Health HTTP Server per spec section 15.5.
  * GET /health - Kubernetes liveness/readiness probe
@@ -21,8 +27,18 @@ export class HealthServer {
   private app: Express | null = null;
   private page: Page | null = null;
   private healthy = true;
+  // Readiness is distinct from liveness (`healthy`). The pod's K8s readinessProbe
+  // hits /ready, which stays 503 until the browser window is actually up and
+  // rendering in Xvfb — i.e. until VNC/noVNC can serve a real frame. This
+  // replaces the old fixed `readinessProbe.initialDelaySeconds: 15` guess with an
+  // accurate signal, so the per-session noVNC Service gets endpoints the moment
+  // the browser is viewable instead of ~15s later. Flipped true right after the
+  // page is created (main.ts), NOT after login/DSL — a HITL login session must be
+  // viewable while the human is still completing the login.
+  private ready = false;
   private recordingRunner: RecordingRunner | null = null;
   private recording = false;
+  private bindHandler: ((params: BindParams) => Promise<void>) | null = null;
 
   constructor(private readonly sessionId: string) {}
 
@@ -41,6 +57,15 @@ export class HealthServer {
    */
   setRecordingRunner(runner: RecordingRunner): void {
     this.recordingRunner = runner;
+  }
+
+  /**
+   * Register the warm-pool bind handler. A pool pod boots as a recording session
+   * on about:blank; when a recording request claims it, the API POSTs
+   * /recording/bind with the real target so the worker seeds cookies + navigates.
+   */
+  setBindHandler(handler: (params: BindParams) => Promise<void>): void {
+    this.bindHandler = handler;
   }
 
   /**
@@ -90,6 +115,17 @@ export class HealthServer {
       }
     });
 
+    // Readiness probe (and startup probe) target. 503 until the browser window
+    // is up and rendering in Xvfb so the noVNC Service only gets endpoints once
+    // VNC can actually serve a frame. See the `ready` field comment.
+    app.get('/ready', (_req, res) => {
+      if (this.ready) {
+        res.json({ status: 'ready', session_id: this.sessionId });
+      } else {
+        res.status(503).json({ status: 'starting', session_id: this.sessionId });
+      }
+    });
+
     app.get('/status', (_req, res) => {
       res.json({
         session_id: this.sessionId,
@@ -125,6 +161,28 @@ export class HealthServer {
         });
     });
 
+    // Bind a warm pool pod to a real recording target (seed cookies + navigate).
+    // Pod-internal only — the API authenticates the caller before proxying here.
+    app.post('/recording/bind', (req, res) => {
+      if (!this.bindHandler) {
+        res.status(409).json({ success: false, error: 'Session does not support binding' });
+        return;
+      }
+      const body = (req.body || {}) as Partial<BindParams>;
+      const startUrl = typeof body.start_url === 'string' ? body.start_url.trim() : '';
+      if (!startUrl) {
+        res.status(400).json({ success: false, error: 'start_url is required' });
+        return;
+      }
+      this.bindHandler({ start_url: startUrl, seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [] })
+        .then(() => res.json({ success: true }))
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`Recording bind error: ${message}`);
+          res.status(500).json({ success: false, error: message });
+        });
+    });
+
     this.server = app.listen(port, () => {
       console.log(`Health server listening on port ${port}`);
     });
@@ -138,5 +196,15 @@ export class HealthServer {
 
   setHealthy(healthy: boolean): void {
     this.healthy = healthy;
+  }
+
+  /**
+   * Flip the K8s readiness/startup signal. Called once the browser window is up
+   * and rendering (main.ts, right after the page is created) — for every mode,
+   * BEFORE login/DSL runs, so HITL login sessions are viewable while the human
+   * completes the login.
+   */
+  setReady(ready: boolean): void {
+    this.ready = ready;
   }
 }

@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk git add -A && rtk git commit --no-edit 2>&1\",\"timeout\":120000,\"description\":\"Retry merge commit after rebuilding shared\"}",
+  "error": "Exit code 1\nok 159 files changed, 7633 insertions(+), 56 deletions(-)\n[STARTED] Backing up original state...\n[COMPLETED] Backed up original state in git stash (beb7421)\n[STARTED] Hiding unstaged changes to partially staged files...\n[COMPLETED] Hiding unstaged changes to partially staged files...\n[STARTED] Running tasks for staged files...\n[STARTED] package.json — 159 files\n[STARTED] *.ts — 33 files\n[STARTED] bash -c 'pnpm -r run lint'\n[COMPLETED] bash -c 'pnpm -r run lint'\n[COMPLETED] *.ts — 33 ...",
+  "timestamp": "2026-07-28T17:54:31.988Z",
+  "retry_count": 3
+}

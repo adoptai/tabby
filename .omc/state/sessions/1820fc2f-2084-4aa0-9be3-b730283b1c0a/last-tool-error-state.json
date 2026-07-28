@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /home/moraski/work/python-mcp && rtk grep -n \\\"<<<<<<\\\\|======\\\\|>>>>>>\\\" src/core/adopt_agent.py\",\"description\":\"Check for remaining conflicts\"}",
+  "error": "Exit code 1\n0 matches for '<<<<<<\\|======\\|>>>>>>'",
+  "timestamp": "2026-07-14T20:51:56.106Z",
+  "retry_count": 2
+}

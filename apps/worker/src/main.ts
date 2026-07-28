@@ -234,6 +234,12 @@ async function main() {
     // Register execute endpoint on the health server
     healthServer.setPage(page);
 
+    // The browser window is now up and rendering in Xvfb (VNC mode) / headless
+    // (CDP). Mark the pod Ready so its noVNC Service gets endpoints immediately,
+    // rather than after a fixed 15s probe delay. Done BEFORE login/DSL so a HITL
+    // login session is viewable while the human is still completing the login.
+    healthServer.setReady(true);
+
     // Start CDP relay server if in CDP mode
     if (streamingMode === 'cdp') {
       const { CdpRelayServer } = await import('./cdp-relay-server');
@@ -281,6 +287,37 @@ async function main() {
       recordingRunner = new RecordingRunner(page, context, sessionId, recordingMode);
       await recordingRunner.start();
       healthServer.setRecordingRunner(recordingRunner);
+
+      // Warm-pool bind: a pooled recording pod boots on about:blank; when a
+      // recording request claims it, the API POSTs /recording/bind with the real
+      // target. Seed cookies first (so the human starts authenticated), then
+      // navigate. The already-running RecordingRunner captures from here on.
+      const boundContext = context;
+      healthServer.setBindHandler(async ({ start_url, seed_cookies }) => {
+        // Seed cookies synchronously — the human must start authenticated before
+        // they interact — but do NOT await the navigation. Loading the target
+        // through the residential proxy can take tens of seconds, and the API
+        // awaits this bind on the provision response's critical path; awaiting the
+        // full page load there is what made residential links ~50s to hand over.
+        // The RecordingRunner captures from navigation onward regardless, and the
+        // human watches the page load in the viewer (where they'd wait anyway).
+        if (Array.isArray(seed_cookies) && seed_cookies.length > 0) {
+          try {
+            await boundContext.addCookies(seed_cookies as Parameters<typeof boundContext.addCookies>[0]);
+            console.log(`Bind: seeded ${seed_cookies.length} cookie(s)`);
+          } catch (err) {
+            console.warn(`Bind: failed to seed cookies: ${err}`);
+          }
+        }
+        // Drop the pre-bind capture (the spare's warm-up navigation to the pool
+        // placeholder URL) so the bundle starts clean at the real target — the
+        // placeholder must never leak into the compiled login_url / HAR.
+        recordingRunner?.reset();
+        page
+          .goto(start_url, { waitUntil: 'domcontentloaded' })
+          .then(() => console.log(`Bind: navigated to ${start_url}`))
+          .catch((err) => console.warn(`Bind: navigation to ${start_url} failed: ${err}`));
+      });
 
       // Session reuse: seed cookies captured from a prior login recording so the
       // human starts already authenticated (no stored credentials). Provisioned

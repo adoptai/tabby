@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"source ~/.virtualenvs/adoptai-workflows/bin/activate && pip uninstall opentelemetry-proto -y 2>&1 && python -c \\\"from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanE...",
+  "error": "Exit code 1\nFound existing installation: opentelemetry-proto 1.33.0\nUninstalling opentelemetry-proto-1.33.0:\n  Successfully uninstalled opentelemetry-proto-1.33.0\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter; print('OK')\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/moraski/.virtualenvs/adoptai-workflows/lib/python3.13/site-pac...",
+  "timestamp": "2026-07-20T22:54:43.234Z",
+  "retry_count": 1
+}

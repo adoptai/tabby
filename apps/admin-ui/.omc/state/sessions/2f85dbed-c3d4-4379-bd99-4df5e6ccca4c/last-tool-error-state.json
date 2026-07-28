@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk pnpm run build 2>&1\",\"timeout\":60000}",
+  "error": "Exit code 1\n\n> @browser-hitl/admin-ui@0.1.0 build /home/moraski/work/tabby/apps/admin-ui\n> tsc -b && vite build\n\nsrc/routes/app-detail.tsx(194,83): error TS18048: 'app' is possibly 'undefined'.\nsrc/routes/identity-providers.tsx(88,5): error TS2322: Type 'string | null' is not assignable to type 'string'.\n  Type 'null' is not assignable to type 'string'.\nsrc/routes/identity-providers.tsx(775,21): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.\n  Type 'null' is n...",
+  "timestamp": "2026-07-03T19:39:09.185Z",
+  "retry_count": 1
+}

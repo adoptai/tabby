@@ -31,6 +31,34 @@ export class RecordingStore {
     return `http://${podName}-worker.${this.workerNamespace}.svc.cluster.local:${PORTS.WORKER_HEALTH}${path}`;
   }
 
+  /**
+   * Bind a warm-pool recording pod to a real target: the worker seeds cookies
+   * (so the human starts authenticated) then navigates to start_url. Pod-internal
+   * HTTP, same trust boundary as drainFromWorker.
+   */
+  async bindWorker(
+    podName: string,
+    params: { start_url: string; seed_cookies?: unknown[] },
+  ): Promise<void> {
+    const url = this.buildWorkerUrl(podName, '/recording/bind');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+        signal: controller.signal,
+      });
+      const json = (await resp.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!resp.ok || !json.success) {
+        throw new Error(json.error || `Worker bind failed (HTTP ${resp.status})`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Drain the recording bundle from the worker pod (synchronous flush). */
   async drainFromWorker(podName: string, sessionId: string): Promise<RecordingBundle> {
     const url = this.buildWorkerUrl(podName, '/recording/stop');

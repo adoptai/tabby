@@ -116,6 +116,30 @@ export class RecordingRunner {
     console.log(`[Recording] started: session=${this.sessionId}, mode=${this.recordingMode}`);
   }
 
+  /**
+   * Discard everything captured so far and start fresh. Called when a warm-pool
+   * spare is bound to its real target: the spare booted + navigated to the pool
+   * placeholder URL (RECORDING_POOL_WARM_URL, e.g. about:blank/example.com) while
+   * warming, and that pre-bind activity would otherwise pollute the bundle —
+   * most visibly, the first url_event's to_url is the placeholder, which the NoUI
+   * login compiler picks as the login_url. Resetting here makes a warm capture
+   * indistinguishable from a cold one (recording starts at the real target).
+   *
+   * lastUrl is cleared (not set to the current placeholder page) so the imminent
+   * navigation to the real start_url is recorded as the first url_event.
+   */
+  reset(): void {
+    if (!this.started) return;
+    this.events.length = 0;
+    this.urlEvents.length = 0;
+    this.lastUrl = '';
+    // Re-arm HAR capture: startHarCapture detaches the existing listeners and
+    // installs fresh ones over a new (empty) entries buffer, dropping any
+    // placeholder-page requests captured while the spare was warm.
+    startHarCapture(this.page);
+    console.log(`[Recording] reset at bind: session=${this.sessionId} (dropped pre-bind capture)`);
+  }
+
   /** Assemble and return the bundle. Detaches listeners (idempotent). */
   async drain(): Promise<RecordingBundle> {
     // Capture session cookies before tearing down so a workflow recording can

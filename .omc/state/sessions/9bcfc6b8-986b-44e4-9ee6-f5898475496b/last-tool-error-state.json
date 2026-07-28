@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk gh pr merge 131 --repo adoptai/tabby --merge 2>&1\",\"description\":\"Merge PR #131 to dev\"}",
+  "error": "Exit code 1\nX Pull request adoptai/tabby#131 is not mergeable: the base branch policy prohibits the merge.\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.\nTo use administrator privileges to immediately merge the pull request, add the `--admin` flag.",
+  "timestamp": "2026-07-23T19:54:24.917Z",
+  "retry_count": 1
+}

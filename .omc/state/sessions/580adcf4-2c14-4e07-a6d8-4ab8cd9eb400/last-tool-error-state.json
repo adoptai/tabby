@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"claude mcp remove your-buddy-adi 2>&1\",\"description\":\"Remove current config\"}",
+  "error": "Exit code 1\nMCP server \"your-buddy-adi\" exists in multiple scopes:\n  - Local config (private to you in this project) (/home/moraski/.claude.json [project: /home/moraski/work/tabby])\n  - User config (available in all your projects) (/home/moraski/.claude.json)\n\nTo remove from a specific scope, use:\n  claude mcp remove your-buddy-adi -s local\n  claude mcp remove your-buddy-adi -s user",
+  "timestamp": "2026-07-23T13:40:46.818Z",
+  "retry_count": 1
+}

@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import * as Sentry from '@sentry/node';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThan, Repository, DataSource } from 'typeorm';
-import { SessionState, StreamingMode } from '@browser-hitl/shared';
+import { SessionState, StreamingMode, RECORDING_POOL } from '@browser-hitl/shared';
 import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
@@ -223,7 +223,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll);
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll, this.resolveResidential(session, app));
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -293,7 +293,22 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     return { extraAllowlist, allowAll };
   }
 
+  /**
+   * Resolve whether a session's egress should chain through the residential proxy.
+   * Precedence: per-session override → app-level default → off. The egress proxy
+   * uses this to decide per session whether to tunnel via Oxylabs.
+   */
+  private resolveResidential(session: SessionEntity, app: ApplicationEntity): boolean {
+    return session.residential_proxy_enabled ?? app.residential_proxy_enabled ?? false;
+  }
+
   private async createSession(app: ApplicationEntity): Promise<void> {
+    // Warm-pool spares are the sessions of the well-known per-tenant pool app.
+    // They boot as recording pods on about:blank and wait to be claimed, so they
+    // must never inherit an owner (claimed on demand) and are marked WARM so the
+    // idle reaper leaves them alone and the claim query can find them.
+    const isResidentialPool = app.name === RECORDING_POOL.RESIDENTIAL_APP_NAME;
+    const isPoolSession = app.name === RECORDING_POOL.APP_NAME || isResidentialPool;
     // Create session record — inherit owner_user_id from app (per-user isolation)
     const session = this.sessionRepo.create({
       app_id: app.id,
@@ -303,7 +318,14 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       retry_count: 0,
       intervention_count: 0,
       hitl_attempt_count: 0,
-      owner_user_id: app.owner_user_id ?? null,
+      owner_user_id: isPoolSession ? null : (app.owner_user_id ?? null),
+      pool_state: isPoolSession ? RECORDING_POOL.WARM : null,
+      // Warm spares carry an explicit session-level residential flag so the
+      // residential egress is (a) pushed to the egress proxy while they warm and
+      // (b) preserved after claimWarmSession reassigns them to the (non-residential)
+      // target shell app — the per-session flag wins over the app default in
+      // resolveResidential(). Non-pool sessions leave it null to inherit the app default.
+      residential_proxy_enabled: isPoolSession ? isResidentialPool : null,
       // Continue the distributed trace originated by the API scale request.
       // pod-manager stamps this onto the worker pod's TRACEPARENT env so the
       // browser worker joins the same trace (api -> controller -> worker).
@@ -368,7 +390,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
 
       // Generate NetworkPolicy — open the 8091 ingress when the worker health
       // Service exists (execute or recording drain).
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll);
+      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll, this.resolveResidential(savedSession, app));
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {
@@ -454,6 +476,16 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     for (const session of healthySessions) {
       const age = now - new Date(session.started_at).getTime();
       if (age >= maxAgeMs) {
+        // A WARM pool spare recycles like any pod at max age, but must NOT scale
+        // its (shared) pool app to 0 — that would drain the whole pool. Just
+        // terminate it; the pool top-up creates a fresh spare next tick.
+        if (session.pool_state === RECORDING_POOL.WARM) {
+          this.logger.log(
+            `Max-age recycle of warm pool spare ${session.id} (age=${Math.round(age / 3600000)}h) — pool will refill`,
+          );
+          await this.terminateSession(session);
+          continue;
+        }
         this.logger.log(
           `Max-age shutdown: session ${session.id} age=${Math.round(age / 3600000)}h ` +
           `(max: ${maxAgeHours}h) — scaling app ${session.app_id} to 0`,
@@ -469,6 +501,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       const idleSeconds = template?.idle_shutdown_seconds ?? globalIdleShutdownSeconds;
       const idleMs = idleSeconds * 1000;
 
+      // Idle shutdown is driven by real activity (last_activity_at), refreshed
+      // while a session is genuinely in use: agent traffic (execute/credentials)
+      // and — for human-driven VNC/recording sessions — the viewer's panel-state
+      // poll heartbeat and human input. A warm-pool claim stamps last_activity_at
+      // at claim time (see claimWarmSession), so a claimed recording is NOT judged
+      // idle from the spare's older started_at. An abandoned recording (viewer
+      // closed → no more heartbeat) falls idle and is reaped like anything else.
       if (idleMs > 0 && session.owner_user_id) {
         const lastUsed = session.last_activity_at || session.last_credential_request_at || session.started_at;
         const idleTime = now - new Date(lastUsed).getTime();

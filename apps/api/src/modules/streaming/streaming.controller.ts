@@ -904,7 +904,7 @@ export class CdpStreamingController {
               if (data.started_at) {
                 stUptime.textContent = Math.round((Date.now() - new Date(data.started_at).getTime()) / 60000) + 'm';
               }
-              if (data.state === 'TERMINATED') { sessionTerminated = true; handleTerminated(); return; }
+              if (data.state === 'TERMINATED') { sessionTerminated = true; window.__sessionTerminated = true; handleTerminated(); return; }
               if (!fromMcp) return;
               var pending = data.pending_input_request;
               if (pending && pending.step_index != null) {
@@ -1398,6 +1398,16 @@ export class StreamingController {
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Session not found');
 
+    // Activity heartbeat: the viewer polls panel-state every ~5s while the tab is
+    // open, so treat each poll as "session in use". This keeps a session that a
+    // human is actively viewing/driving (VNC recording, HITL) alive under the idle
+    // reaper, while an abandoned one (viewer closed → polling stops) correctly
+    // falls idle and gets reaped. Fire-and-forget: a heartbeat must never block or
+    // fail the state response.
+    if (session.state !== 'TERMINATED') {
+      this.sessionRepo.update(sessionId, { last_activity_at: new Date() }).catch(() => {});
+    }
+
     let pendingInput = session.pending_input_request as Record<string, unknown> | null;
     if (!pendingInput && (session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED')) {
       const autoResolved = await this.streamTokenService.isHitlAutoResolved(sessionId);
@@ -1785,7 +1795,7 @@ export class StreamingController {
               if (data.started_at) {
                 stUptime.textContent = Math.round((Date.now() - new Date(data.started_at).getTime()) / 60000) + 'm';
               }
-              if (data.state === 'TERMINATED') { sessionTerminated = true; handleTerminated(); return; }
+              if (data.state === 'TERMINATED') { sessionTerminated = true; window.__sessionTerminated = true; handleTerminated(); return; }
               if (!fromMcp) return;
               var pending = data.pending_input_request;
               if (pending && pending.step_index != null) {
@@ -1925,20 +1935,49 @@ export class StreamingController {
       document.getElementById('panel-config').setAttribute('data-stream-token', token);
 
       const wsUrl = proto + '://' + window.location.host + '/vnc-ws?session_id=' + encodeURIComponent(sessionId);
-      const rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + token] });
-      rfb.scaleViewport = true;
-      rfb.resizeSession = true;
-      rfb.background = '#0b1020';
-      // Trade server CPU (now uncapped) for fewer bytes over the slow transport:
-      // max zlib compression, JPEG quality kept legible for login forms.
-      rfb.qualityLevel = 6;
-      rfb.compressionLevel = 9;
-      window.rfb = rfb;
 
-      rfb.addEventListener('connect', () => { stateEl.textContent = 'Connected'; });
-      rfb.addEventListener('disconnect', (e) => {
-        stateEl.textContent = 'Disconnected (' + (e.detail?.clean ? 'clean' : 'error') + ')';
-      });
+      // The VNC/recording link is minted before the worker pod is ready, so the
+      // first connect commonly lands on a pod whose noVNC isn't accepting yet
+      // (the WS proxy returns 409/502) — and noVNC's RFB has no built-in retry,
+      // so the viewer would strand on "Disconnected" until a manual reload.
+      // Auto-reconnect on an error-disconnect (mirrors the CDP viewer's 3s x20
+      // loop) so the link self-heals the moment the pod comes up. A CLEAN
+      // disconnect means the session ended — do not reconnect.
+      const RECONNECT_DELAY_MS = 3000;
+      const MAX_RECONNECT_ATTEMPTS = 20;
+      let rfb = null;
+      let reconnectAttempts = 0;
+
+      function connect() {
+        if (window.__sessionTerminated) return;
+        // Reconnect with the freshest token (refreshToken rotates window.__streamToken).
+        const activeToken = window.__streamToken || token;
+        rfb = new RFB(document.getElementById('screen'), wsUrl, { wsProtocols: ['binary', 'token.' + activeToken] });
+        rfb.scaleViewport = true;
+        rfb.resizeSession = true;
+        rfb.background = '#0b1020';
+        // Trade server CPU (now uncapped) for fewer bytes over the slow transport:
+        // max zlib compression, JPEG quality kept legible for login forms.
+        rfb.qualityLevel = 6;
+        rfb.compressionLevel = 9;
+        window.rfb = rfb;
+
+        rfb.addEventListener('connect', () => {
+          reconnectAttempts = 0;
+          stateEl.textContent = 'Connected';
+        });
+        rfb.addEventListener('disconnect', (e) => {
+          const clean = !!(e.detail && e.detail.clean);
+          if (clean || window.__sessionTerminated || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            stateEl.textContent = 'Disconnected (' + (clean ? 'clean' : 'error') + ')';
+            return;
+          }
+          reconnectAttempts += 1;
+          stateEl.textContent = 'Connecting… (attempt ' + reconnectAttempts + '/' + MAX_RECONNECT_ATTEMPTS + ')';
+          setTimeout(connect, RECONNECT_DELAY_MS);
+        });
+      }
+      connect();
 
       // Side panel clipboard: paste text → sends to VNC remote clipboard → user Ctrl+V inside VNC
       const clipInput = document.getElementById('clip-input');

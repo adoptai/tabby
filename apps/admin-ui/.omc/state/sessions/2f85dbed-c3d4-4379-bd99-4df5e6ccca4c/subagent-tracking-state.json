@@ -1,0 +1,100 @@
+{
+  "agents": [
+    {
+      "agent_id": "a1af7ba312c7deaa7",
+      "agent_type": "unknown",
+      "started_at": "2026-07-03T18:28:11.269Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T18:28:11.269Z",
+      "duration_ms": 0
+    },
+    {
+      "agent_id": "ad6bc8219ceff9564",
+      "agent_type": "unknown",
+      "started_at": "2026-07-03T18:37:36.100Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T18:37:36.100Z",
+      "duration_ms": 0
+    },
+    {
+      "agent_id": "aea513fe26996ea67",
+      "agent_type": "context-explorer",
+      "started_at": "2026-07-03T18:41:08.730Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T18:45:20.579Z",
+      "duration_ms": 251849
+    },
+    {
+      "agent_id": "af95daf46af576d20",
+      "agent_type": "unknown",
+      "started_at": "2026-07-03T18:55:23.863Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T18:55:23.863Z",
+      "duration_ms": 0
+    },
+    {
+      "agent_id": "a7691d3f6a6fe47ff",
+      "agent_type": "implementer",
+      "started_at": "2026-07-03T19:27:23.077Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T19:32:02.905Z",
+      "duration_ms": 279828
+    },
+    {
+      "agent_id": "a682d708f6d943d0c",
+      "agent_type": "implementer",
+      "started_at": "2026-07-03T19:27:59.325Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T19:32:05.306Z",
+      "duration_ms": 245981
+    },
+    {
+      "agent_id": "a0337aae20ba5e6d4",
+      "agent_type": "implementer",
+      "started_at": "2026-07-03T19:28:56.267Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T19:42:39.455Z",
+      "duration_ms": 823188,
+      "output_summary": "Marked as stale during unmatched stop reconciliation - exceeded timeout"
+    },
+    {
+      "agent_id": "aaa56e116f13dce33",
+      "agent_type": "implementer",
+      "started_at": "2026-07-03T19:29:29.048Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T19:45:42.005Z",
+      "duration_ms": 972957,
+      "output_summary": "Marked as stale during unmatched stop reconciliation - exceeded timeout"
+    },
+    {
+      "agent_id": "ae181fdd38e20aa43",
+      "agent_type": "implementer",
+      "started_at": "2026-07-03T19:30:08.348Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T19:33:27.893Z",
+      "duration_ms": 199545
+    },
+    {
+      "agent_id": "a89fb066ae5abf0bf",
+      "agent_type": "unknown",
+      "started_at": "2026-07-03T19:36:08.942Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-03T19:36:08.942Z",
+      "duration_ms": 0
+    }
+  ],
+  "total_spawned": 6,
+  "total_completed": 10,
+  "total_failed": 2,
+  "last_updated": "2026-07-03T19:45:42.142Z"
+}

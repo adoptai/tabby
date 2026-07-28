@@ -370,4 +370,29 @@ describe('ReconcileService checkRecycling', () => {
     expect(appRepo.update).toHaveBeenCalledWith('app-1', { desired_session_count: 0 });
     expect(stateMachine.transition).toHaveBeenCalledWith(healthy, expect.anything());
   });
+
+  it('spares a session with recent last_activity_at even when started_at is old (activity-driven)', async () => {
+    // A recording session actively viewed via the panel-state heartbeat, or a
+    // warm-claimed session, has a fresh last_activity_at even though started_at
+    // (the pool spare's warm time) is old. The reaper must judge by activity, not
+    // age — otherwise it would kill sessions that are actively in use.
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '60', MAX_SESSION_AGE_HOURS: '24' };
+    const { service, sessionRepo, appRepo, stateMachine } = buildForRecycling();
+
+    const healthy = makeSession({
+      id: 'recently-active',
+      state: 'HEALTHY',
+      owner_user_id: 'user-a',
+      started_at: new Date(Date.now() - 3_600_000), // 1h old (e.g. long-warmed spare)
+      last_activity_at: new Date(Date.now() - 5_000), // but active 5s ago (< 60s threshold)
+    });
+    sessionRepo.find
+      .mockResolvedValueOnce([healthy])
+      .mockResolvedValueOnce([]); // no FAILED
+
+    await (service as any).checkRecycling();
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+    expect(stateMachine.transition).not.toHaveBeenCalled();
+  });
 });
