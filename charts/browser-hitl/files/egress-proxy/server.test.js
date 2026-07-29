@@ -99,7 +99,46 @@ test.beforeEach(() => {
   lastUpstreamConnectLine = null;
   server.sessionAllowlist.clear();
   server.sessionResidential.clear();
+  server.sessionByPodIp.clear();
 });
+
+// Drive a CONNECT with NO Proxy-Authorization — exactly what Chromium sends on
+// its first attempt, and what browser-process traffic sends always.
+function connectWithoutAuth(host, port, { timeoutMs = 3000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(proxyPort, '127.0.0.1');
+    let buf = Buffer.alloc(0);
+    let status = null;
+    const finish = (extra = {}) => {
+      resolve({ status, body: buf.toString('utf8'), ...extra });
+      sock.destroy();
+    };
+    const timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
+    sock.on('connect', () => {
+      sock.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
+    });
+    sock.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (status === null) {
+        const idx = buf.indexOf('\r\n\r\n');
+        if (idx !== -1) {
+          const line = buf.slice(0, buf.indexOf('\r\n')).toString('utf8');
+          const m = line.match(/HTTP\/\d\.\d\s+(\d{3})/);
+          status = m ? parseInt(m[1], 10) : 0;
+          buf = buf.slice(idx + 4);
+          if (status === 200) {
+            sock.write(`GET / HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`);
+          } else {
+            clearTimeout(timer);
+            finish();
+          }
+        }
+      }
+    });
+    sock.on('close', () => { clearTimeout(timer); finish(); });
+    sock.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
 
 // Drive a CONNECT through the proxy using a valid session Proxy-Authorization.
 function connectThroughProxy(host, port, { sendGet = true, timeoutMs = 3000 } = {}) {
@@ -246,4 +285,77 @@ test('buildUpstreamAuth: strips non-alphanumerics from the session id for the st
   const header = server.buildUpstreamAuth('a1b2-c3d4-e5');
   const decoded = Buffer.from(header.replace(/^Basic\s+/, ''), 'base64').toString('utf8');
   assert.ok(decoded.startsWith('user-sessid-a1b2c3d4e5:'), decoded);
+});
+
+// --- pod-IP session identity ---------------------------------------------
+// Proxy-Authorization only covers requests Playwright manages: the browser
+// sends it in response to a 407, and unmanaged traffic (Chromium's own
+// browser-process requests) never gets that challenge answered, which surfaced
+// as a modal proxy-login prompt that froze the session. Source IP is present on
+// every connection, so it covers what the header cannot.
+
+test('pod-IP identity: unauthenticated CONNECT is attributed to the session and routes residential', async () => {
+  server.sessionAllowlist.set(SESSION_ID, new Set(['127.0.0.1']));
+  server.sessionResidential.set(SESSION_ID, true);
+  server.bindPodIp('127.0.0.1', SESSION_ID); // the test client's source IP
+
+  const res = await connectWithoutAuth('127.0.0.1', originPort);
+
+  assert.strictEqual(res.status, 200, 'no 407 — identity came from the pod IP');
+  assert.match(res.body, /OK-ORIGIN/, 'origin reached through the tunnel');
+  assert.strictEqual(upstreamConnects, 1, 'residential upstream was used');
+});
+
+test('pod-IP identity: without a binding an unauthenticated CONNECT still gets 407', async () => {
+  server.sessionAllowlist.set(SESSION_ID, new Set(['127.0.0.1']));
+  server.sessionResidential.set(SESSION_ID, true);
+  // no bindPodIp — fail-closed must be preserved
+
+  const res = await connectWithoutAuth('127.0.0.1', originPort);
+
+  assert.strictEqual(res.status, 407, 'unidentified request is still challenged');
+  assert.strictEqual(upstreamConnects, 0, 'never reached the upstream');
+});
+
+test('pod-IP identity: Proxy-Authorization wins over a conflicting IP binding', async () => {
+  server.sessionAllowlist.set(SESSION_ID, new Set(['127.0.0.1']));
+  server.sessionResidential.set(SESSION_ID, true);
+  // IP claims a DIFFERENT session that is not allowed to reach the origin
+  server.sessionByPodIp.set('127.0.0.1', 'other-session');
+  server.sessionAllowlist.set('other-session', new Set(['blocked.example']));
+  server.sessionResidential.set('other-session', false);
+
+  const res = await connectThroughProxy('127.0.0.1', originPort);
+
+  assert.strictEqual(res.status, 200, 'header-identified session was used, not the IP one');
+  assert.strictEqual(upstreamConnects, 1, 'residential flag came from the header session');
+});
+
+test('bindPodIp keeps the mapping 1:1 in both directions (pod IPs get recycled)', () => {
+  server.sessionByPodIp.clear();
+
+  // same session moves to a new IP → old IP must not linger
+  server.bindPodIp('10.0.0.1', 'session-a');
+  server.bindPodIp('10.0.0.2', 'session-a');
+  assert.strictEqual(server.sessionByPodIp.get('10.0.0.1'), undefined, 'stale IP released');
+  assert.strictEqual(server.sessionByPodIp.get('10.0.0.2'), 'session-a');
+
+  // recycled IP reassigned to a new session → newest claim wins
+  server.bindPodIp('10.0.0.2', 'session-b');
+  assert.strictEqual(server.sessionByPodIp.get('10.0.0.2'), 'session-b', 'recycled IP re-pointed');
+  assert.strictEqual(server.sessionByPodIp.size, 1, 'no duplicate claims left behind');
+
+  server.unbindSession('session-b');
+  assert.strictEqual(server.sessionByPodIp.size, 0, 'unbind removes every IP for the session');
+});
+
+test('normalizeIp strips the IPv4-mapped IPv6 prefix Node reports on dual-stack sockets', () => {
+  assert.strictEqual(server.normalizeIp('::ffff:10.244.0.7'), '10.244.0.7');
+  assert.strictEqual(server.normalizeIp('10.244.0.7'), '10.244.0.7');
+  assert.strictEqual(server.normalizeIp(''), '');
+  assert.strictEqual(server.normalizeIp(undefined), '');
+  // a mapped address must resolve to the same session as its bare form
+  server.sessionByPodIp.clear();
+  server.bindPodIp('::ffff:10.244.0.9', 'session-c');
+  assert.strictEqual(server.sessionByPodIp.get('10.244.0.9'), 'session-c');
 });
