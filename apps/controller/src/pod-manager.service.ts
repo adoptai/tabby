@@ -256,6 +256,12 @@ export class PodManagerService {
       return;
     }
 
+    // The worker's pod IP lets the proxy attribute requests that carry no
+    // Proxy-Authorization — browsers only send that in response to a 407, and
+    // only Playwright-managed requests get the challenge answered. Best-effort:
+    // a just-created pod has no IP yet, and the next reconcile pass fills it in.
+    const podIp = await this.getPodIp(this.buildPodName(sessionId));
+
     const response = await fetch(allowlistEndpoint, {
       method: 'PUT',
       headers: this.buildAllowlistHeaders(),
@@ -265,6 +271,7 @@ export class PodManagerService {
         extra_allowlist: extraAllowlist,
         allow_all: allowAll,
         residential,
+        ...(podIp ? { pod_ip: podIp } : {}),
       }),
     });
 
@@ -304,6 +311,34 @@ export class PodManagerService {
       }
     } catch (error) {
       this.logger.warn(`Failed to clear egress allowlist for session ${sessionId}: ${error}`);
+    }
+  }
+
+  /**
+   * Current pod IP, or null when the pod is missing or not yet scheduled.
+   *
+   * Never throws: this only enriches the egress allowlist sync, so a transient
+   * API error must not fail the sync (which is fail-closed for the caller).
+   */
+  async getPodIp(podName: string): Promise<string | null> {
+    const api: any = this.coreApi as any;
+    if (!api || typeof api.readNamespacedPod !== 'function') {
+      return null; // no API client (unit tests) — nothing to enrich with
+    }
+    try {
+      let result: any;
+      try {
+        result = await api.readNamespacedPod(podName, this.namespace);
+      } catch {
+        result = await api.readNamespacedPod({ name: podName, namespace: this.namespace });
+      }
+      const podIp = result?.body?.status?.podIP ?? result?.status?.podIP ?? null;
+      return typeof podIp === 'string' && podIp.length > 0 ? podIp : null;
+    } catch (error: any) {
+      if (!this.isNotFoundError(error)) {
+        this.logger.warn(`Could not read pod IP for ${podName}: ${error}`);
+      }
+      return null;
     }
   }
 
