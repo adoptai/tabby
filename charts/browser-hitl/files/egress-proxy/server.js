@@ -141,6 +141,28 @@ function isInfraOrInternal(hostname) {
 // configured, so the warning lands once per session instead of once per request.
 const residentialMisconfigWarned = new Set();
 
+// Unidentified CONNECTs are counted rather than logged individually: with
+// insecure mode on, EVERY browser request lands here, so per-request logging
+// would bury the signal. First occurrence plus every 100th keeps it visible
+// without flooding.
+let unidentifiedConnectCount = 0;
+const UNIDENTIFIED_LOG_INTERVAL = 100;
+
+function logUnidentifiedConnect(hostname, port) {
+  unidentifiedConnectCount += 1;
+  if (unidentifiedConnectCount !== 1 && unidentifiedConnectCount % UNIDENTIFIED_LOG_INTERVAL !== 0) {
+    return;
+  }
+  log('WARNING CONNECT has NO resolved session identity — per-session allowlist AND residential egress are both bypassed', {
+    target: `${hostname}:${port}`,
+    occurrences: unidentifiedConnectCount,
+    cause: SESSION_KEY
+      ? 'no valid Proxy-Authorization on the request; note that clients only send it in response to a 407, which EGRESS_PROXY_ALLOW_INSECURE_SESSION_ALLOWLIST=true suppresses'
+      : 'EGRESS_PROXY_SESSION_KEY is not set, so no request can ever be identified',
+    fix: 'set EGRESS_PROXY_ALLOW_INSECURE_SESSION_ALLOWLIST=false so the proxy challenges clients with 407',
+  });
+}
+
 // A session routes residential only when: an upstream is configured, the session
 // is flagged residential, and the target is an external (non-infra) host.
 function shouldRouteResidential(hostname, sessionId) {
@@ -578,6 +600,15 @@ function proxyConnect(req, clientSocket, head) {
     return;
   }
 
+  // An unidentified CONNECT that is nonetheless allowed through (insecure mode)
+  // silently loses BOTH the per-session allowlist and residential egress, since
+  // every session-scoped lookup below is keyed on sessionId. Browsers only send
+  // Proxy-Authorization in response to a 407, and insecure mode never issues
+  // one — so this is the normal case whenever the flag is on, not an edge case.
+  if (!sessionId) {
+    logUnidentifiedConnect(hostname, port);
+  }
+
   if (!isHostAllowed(hostname, sessionId)) {
     denyConnect(clientSocket, hostname);
     return;
@@ -809,6 +840,18 @@ if (require.main === module) {
   }
 
   logResidentialConfig();
+
+  // Insecure session mode is not merely "less strict": because it suppresses the
+  // 407 challenge, clients never send Proxy-Authorization, so no request can be
+  // attributed to a session. Per-session allowlists and residential egress both
+  // silently stop applying while still looking correctly configured everywhere
+  // else. Say so at boot.
+  if (ALLOW_INSECURE_SESSION_ALLOWLIST) {
+    log('WARNING EGRESS_PROXY_ALLOW_INSECURE_SESSION_ALLOWLIST=true — no 407 challenge is issued', {
+      effect: 'requests cannot be attributed to a session: per-session allowlists fall back to the default allowlist and residential egress NEVER applies',
+      recommendation: 'set it to false (EGRESS_PROXY_SESSION_KEY is ' + (SESSION_KEY ? 'present, so clients will authenticate)' : 'MISSING — set it first, or the proxy will refuse to start)'),
+    });
+  }
 
   proxyServer.listen(PROXY_PORT, '0.0.0.0', () => {
     log(`Proxy listening on 0.0.0.0:${PROXY_PORT}`);

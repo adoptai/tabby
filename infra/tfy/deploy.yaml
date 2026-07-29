@@ -229,7 +229,13 @@ values:
   egressProxy:
     enabled: true
     allowInsecureAdmin: true
-    allowInsecureSessionAllowlist: true
+    # MUST stay false. When true the proxy never issues a 407, and browsers only
+    # send Proxy-Authorization in response to one — so no request can be attributed
+    # to a session. Per-session allowlists silently fall back to defaultAllowlist
+    # and residential egress never applies, while every other signal (session flag,
+    # controller sync, upstream config) still looks correct. Requires
+    # EGRESS_PROXY_SESSION_KEY to be set, or the proxy refuses to start.
+    allowInsecureSessionAllowlist: false
     resources:
       requests:
         cpu: "${EGRESS_CPU_REQUEST}"
