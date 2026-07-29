@@ -68,6 +68,35 @@ describe('PodManagerService egress allowlist sync', () => {
     });
   });
 
+  it('includes pod_ip so the proxy can identify requests that carry no Proxy-Authorization', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = fetchMock as any;
+
+    process.env.EGRESS_PROXY_ALLOWLIST_URL = 'http://egress-proxy:8095/allowlist';
+
+    const service = new PodManagerService();
+    jest.spyOn(service, 'getPodIp').mockResolvedValue('10.244.0.7');
+    await service.syncEgressAllowlist('session-1', ['https://example.com/login']);
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    expect(body.pod_ip).toBe('10.244.0.7');
+  });
+
+  it('omits pod_ip while the pod is unscheduled, so the sync still succeeds', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = fetchMock as any;
+
+    process.env.EGRESS_PROXY_ALLOWLIST_URL = 'http://egress-proxy:8095/allowlist';
+
+    const service = new PodManagerService();
+    jest.spyOn(service, 'getPodIp').mockResolvedValue(null);
+    await service.syncEgressAllowlist('session-1', ['https://example.com/login']);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    expect('pod_ip' in body).toBe(false);
+  });
+
   it('defaults extra_allowlist to [] and allow_all to false', async () => {
     const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
     global.fetch = fetchMock as any;

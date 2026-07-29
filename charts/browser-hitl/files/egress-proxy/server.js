@@ -42,6 +42,36 @@ const sessionAllowlist = new Map();
 // the residential upstream proxy. Populated alongside the allowlist by the
 // controller's PUT /allowlist. In-memory (same volatility as sessionAllowlist).
 const sessionResidential = new Map();
+// podIp → sessionId, pushed by the controller alongside the allowlist. Lets a
+// request be attributed to a session even when it carries no
+// Proxy-Authorization, which is the normal case for browser-process traffic.
+// Kept 1:1 in both directions: pod IPs are recycled by the CNI, so a stale
+// mapping would misattribute a later pod's egress to a dead session.
+const sessionByPodIp = new Map();
+
+// Point podIp at sessionId, dropping any previous binding on either side so the
+// map can never hold two claims on one IP or one session.
+function bindPodIp(podIp, sessionId) {
+  const ip = normalizeIp(podIp);
+  if (!ip) {
+    return false;
+  }
+  for (const [knownIp, knownSession] of sessionByPodIp.entries()) {
+    if (knownSession === sessionId && knownIp !== ip) {
+      sessionByPodIp.delete(knownIp);
+    }
+  }
+  sessionByPodIp.set(ip, sessionId);
+  return true;
+}
+
+function unbindSession(sessionId) {
+  for (const [knownIp, knownSession] of sessionByPodIp.entries()) {
+    if (knownSession === sessionId) {
+      sessionByPodIp.delete(knownIp);
+    }
+  }
+}
 
 function log(message, extra) {
   if (typeof extra === 'undefined') {
@@ -215,7 +245,48 @@ function safeEqual(left, right) {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+// Strip the IPv4-mapped IPv6 prefix Node reports on dual-stack sockets
+// (`::ffff:10.244.0.7`) so pod IPs compare equal to what Kubernetes reports.
+function normalizeIp(address) {
+  const raw = (address || '').toString().trim().toLowerCase();
+  if (!raw) {
+    return '';
+  }
+  return raw.startsWith('::ffff:') ? raw.slice('::ffff:'.length) : raw;
+}
+
+// Identify the session from the connecting worker pod's source IP.
+//
+// Proxy-Authorization alone is not sufficient in practice: the browser only
+// sends it in response to a 407, and only requests Playwright manages get that
+// answered. Anything else (Chromium's own browser-process traffic, a page
+// Playwright did not create) is challenged with no handler, and Chromium falls
+// back to prompting the human with a modal proxy login — which blocks the whole
+// session. Source IP is available on every connection, so it covers the requests
+// the header cannot.
+//
+// Trustworthy here because pod IPs are assigned by the CNI, and the deny-all
+// NetworkPolicy forces worker egress through this proxy: a workload cannot
+// present another pod's source address without cluster-level privileges.
+function resolveSessionIdByPodIp(req) {
+  const ip = normalizeIp(req.socket && req.socket.remoteAddress);
+  if (!ip) {
+    return null;
+  }
+  return sessionByPodIp.get(ip) || null;
+}
+
 function resolveSessionId(req) {
+  // Proxy-Authorization stays authoritative: it is per-session and unforgeable,
+  // so an explicitly authenticated request always wins over the IP mapping.
+  const fromHeader = resolveSessionIdFromAuth(req);
+  if (fromHeader) {
+    return fromHeader;
+  }
+  return resolveSessionIdByPodIp(req);
+}
+
+function resolveSessionIdFromAuth(req) {
   if (!SESSION_KEY) {
     return null;
   }
@@ -722,6 +793,10 @@ async function handleAdmin(req, res) {
 
       sessionAllowlist.set(sessionId, domains);
       sessionResidential.set(sessionId, residential);
+      // pod_ip is optional: a freshly created pod has no IP assigned yet, so the
+      // controller sends it on a later reconcile pass once Kubernetes reports it.
+      const podIp = normalizeIp(body.pod_ip);
+      const podIpBound = podIp ? bindPodIp(podIp, sessionId) : false;
       // Proves what the controller actually asked for. No line at all for a
       // session means the controller never synced it; `residential_effective`
       // is the one to read — it is only true when the flag AND an upstream exist.
@@ -731,12 +806,16 @@ async function handleAdmin(req, res) {
         residential_effective: residential && Boolean(UPSTREAM_PROXY),
         domains: domains.size,
         allow_all: allowAll,
+        // Without a pod_ip binding, only requests carrying a valid
+        // Proxy-Authorization can be attributed to this session.
+        pod_ip_bound: podIpBound,
       });
       writeJson(res, 200, {
         updated: true,
         session_id: sessionId,
         domains: Array.from(domains).sort(),
         residential,
+        pod_ip_bound: podIpBound,
       });
       return;
     } catch (error) {
@@ -756,6 +835,10 @@ async function handleAdmin(req, res) {
     }
     const removed = sessionAllowlist.delete(sessionId);
     sessionResidential.delete(sessionId);
+    // Drop the IP binding too, or a recycled pod IP would keep resolving to this
+    // dead session and inherit its allowlist and residential flag.
+    unbindSession(sessionId);
+    residentialMisconfigWarned.delete(sessionId);
     writeJson(res, 200, { removed, session_id: sessionId });
     return;
   }
@@ -867,6 +950,11 @@ module.exports = {
   adminServer,
   sessionAllowlist,
   sessionResidential,
+  sessionByPodIp,
+  normalizeIp,
+  bindPodIp,
+  unbindSession,
+  resolveSessionId,
   UPSTREAM_PROXY,
   parseUpstreamProxy,
   hostMatchesList,
