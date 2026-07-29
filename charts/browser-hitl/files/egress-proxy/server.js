@@ -137,21 +137,45 @@ function isInfraOrInternal(hostname) {
   return /(?:\.local|\.internal|\.svc|\.svc\.cluster\.local|\.cluster\.local)$/.test(normalized);
 }
 
+// Sessions already warned about wanting residential egress with no upstream
+// configured, so the warning lands once per session instead of once per request.
+const residentialMisconfigWarned = new Set();
+
 // A session routes residential only when: an upstream is configured, the session
 // is flagged residential, and the target is an external (non-infra) host.
 function shouldRouteResidential(hostname, sessionId) {
-  if (!UPSTREAM_PROXY || !sessionId || !sessionResidential.get(sessionId)) {
+  if (!sessionId || !sessionResidential.get(sessionId)) {
+    return false;
+  }
+  // The session ASKED for residential egress but no upstream exists, so it is
+  // about to egress directly from the cluster instead. Silence here is what
+  // makes a missing/corrupt EGRESS_UPSTREAM_PROXY_URL look like success, so say
+  // so loudly — once per session.
+  if (!UPSTREAM_PROXY) {
+    if (!residentialMisconfigWarned.has(sessionId)) {
+      residentialMisconfigWarned.add(sessionId);
+      log('WARNING residential requested but NO upstream configured — egressing DIRECTLY from the cluster', {
+        session_id: sessionId,
+        fix: 'set EGRESS_UPSTREAM_PROXY_URL on the egress-proxy deployment',
+      });
+    }
     return false;
   }
   return !isInfraOrInternal(hostname);
+}
+
+// Vendor sticky-session id for a Tabby session: same value → same exit IP.
+// Non-alphanumerics are stripped because vendors use '-' as their username
+// parameter delimiter (a raw UUID's hyphens would be parsed as extra params).
+function stickySessionId(sessionId) {
+  return String(sessionId).replace(/[^a-zA-Z0-9]/g, '');
 }
 
 // Build the upstream Proxy-Authorization header for a session, substituting the
 // sanitized sessionId into the vendor's sticky-session placeholder so the same
 // session pins the same exit IP.
 function buildUpstreamAuth(sessionId) {
-  const stickyId = String(sessionId).replace(/[^a-zA-Z0-9]/g, '');
-  const username = UPSTREAM_PROXY.usernameTemplate.replace(/\{sessionId\}/g, stickyId);
+  const username = UPSTREAM_PROXY.usernameTemplate.replace(/\{sessionId\}/g, stickySessionId(sessionId));
   const creds = `${username}:${UPSTREAM_PROXY.password}`;
   return `Basic ${Buffer.from(creds, 'utf8').toString('base64')}`;
 }
@@ -391,9 +415,19 @@ function connectViaUpstream(clientSocket, head, targetHost, targetPort, sessionI
 
   let established = false;
   let responseBuffer = Buffer.alloc(0);
+  // Tunnel byte counters. A residential exit that accepts the CONNECT and then
+  // returns nothing is indistinguishable from success without these.
+  let bytesFromUpstream = 0;
+  let bytesToUpstream = 0;
 
   const fail = (reason) => {
     if (!established && !clientSocket.destroyed) {
+      log('residential CONNECT failed', {
+        session_id: sessionId,
+        target: `${targetHost}:${targetPort}`,
+        upstream: `${UPSTREAM_PROXY.hostname}:${UPSTREAM_PROXY.port}`,
+        reason,
+      });
       const body = JSON.stringify({ error: 'upstream_proxy_error', reason });
       clientSocket.write(
         'HTTP/1.1 502 Bad Gateway\r\n' +
@@ -403,6 +437,16 @@ function connectViaUpstream(clientSocket, head, targetHost, targetPort, sessionI
           '\r\n' +
           body,
       );
+    } else if (established) {
+      // Post-establish errors used to destroy both sockets in silence, so the
+      // browser saw ERR_CONNECTION_CLOSED while the logs still claimed success.
+      log('residential tunnel aborted after establish', {
+        session_id: sessionId,
+        target: `${targetHost}:${targetPort}`,
+        reason,
+        bytes_from_upstream: bytesFromUpstream,
+        bytes_to_upstream: bytesToUpstream,
+      });
     }
     upstreamSocket.destroy();
     clientSocket.destroy();
@@ -436,9 +480,43 @@ function connectViaUpstream(clientSocket, head, targetHost, targetPort, sessionI
     if (leftover.length > 0) {
       clientSocket.write(leftover);
     }
+    bytesFromUpstream += leftover.length;
+    bytesToUpstream += head && head.length > 0 ? head.length : 0;
+    // Counted alongside pipe() rather than instead of it, so the tunnel stays a
+    // blind byte relay and the browser's TLS fingerprint is untouched.
+    upstreamSocket.on('data', (chunk) => {
+      bytesFromUpstream += chunk.length;
+    });
+    clientSocket.on('data', (chunk) => {
+      bytesToUpstream += chunk.length;
+    });
+    upstreamSocket.once('close', () => {
+      // The vendor said 200 and then sent nothing back: a dead/over-quota exit
+      // node. Surfaces as ERR_CONNECTION_CLOSED in the browser, so name it here.
+      if (bytesFromUpstream === 0) {
+        log('WARNING residential exit returned ZERO bytes — exit node likely dead, request FAILED', {
+          session_id: sessionId,
+          target: `${targetHost}:${targetPort}`,
+          sticky_session: stickySessionId(sessionId),
+          bytes_to_upstream: bytesToUpstream,
+        });
+        return;
+      }
+      log('residential tunnel closed', {
+        session_id: sessionId,
+        target: `${targetHost}:${targetPort}`,
+        bytes_from_upstream: bytesFromUpstream,
+        bytes_to_upstream: bytesToUpstream,
+      });
+    });
     upstreamSocket.pipe(clientSocket);
     clientSocket.pipe(upstreamSocket);
-    log('residential CONNECT established', { session_id: sessionId, target: `${targetHost}:${targetPort}` });
+    log('residential CONNECT established', {
+      session_id: sessionId,
+      target: `${targetHost}:${targetPort}`,
+      upstream: `${UPSTREAM_PROXY.hostname}:${UPSTREAM_PROXY.port}`,
+      sticky_session: stickySessionId(sessionId),
+    });
   };
 
   upstreamSocket.on('connect', () => {
@@ -613,6 +691,16 @@ async function handleAdmin(req, res) {
 
       sessionAllowlist.set(sessionId, domains);
       sessionResidential.set(sessionId, residential);
+      // Proves what the controller actually asked for. No line at all for a
+      // session means the controller never synced it; `residential_effective`
+      // is the one to read — it is only true when the flag AND an upstream exist.
+      log('session allowlist synced', {
+        session_id: sessionId,
+        residential,
+        residential_effective: residential && Boolean(UPSTREAM_PROXY),
+        domains: domains.size,
+        allow_all: allowAll,
+      });
       writeJson(res, 200, {
         updated: true,
         session_id: sessionId,
@@ -672,6 +760,36 @@ const adminServer = http.createServer((req, res) => {
   void handleAdmin(req, res);
 });
 
+// Announce the residential upstream at boot, credential-free, so a missing or
+// corrupt EGRESS_UPSTREAM_PROXY_URL is obvious in the first lines of pod logs
+// instead of silently degrading every residential session to direct egress.
+// Only shape is logged (host, port, placeholder/country presence) — never the
+// username or password.
+function logResidentialConfig() {
+  const raw = (process.env.EGRESS_UPSTREAM_PROXY_URL || '').trim();
+  if (!UPSTREAM_PROXY) {
+    log('residential egress DISABLED', {
+      reason: raw
+        ? 'EGRESS_UPSTREAM_PROXY_URL is set but could not be parsed as a URL'
+        : 'EGRESS_UPSTREAM_PROXY_URL is empty or unset',
+      raw_length: raw.length,
+      // A wrapped YAML '>-' folded scalar joins lines with a space, which
+      // corrupts the URL — worth calling out explicitly.
+      contains_whitespace: /\s/.test(raw),
+      effect: 'sessions flagged residential WILL egress directly from the cluster',
+    });
+    return;
+  }
+  const template = UPSTREAM_PROXY.usernameTemplate || '';
+  const countryMatch = /-cc-([a-zA-Z]{2})/.exec(template);
+  log('residential egress ENABLED', {
+    upstream: `${UPSTREAM_PROXY.hostname}:${UPSTREAM_PROXY.port}`,
+    sticky_session_placeholder: template.includes('{sessionId}'),
+    country_pin: countryMatch ? countryMatch[1].toUpperCase() : null,
+    connect_timeout_ms: UPSTREAM_CONNECT_TIMEOUT_MS,
+  });
+}
+
 // Only start listening (and enforce the fail-closed startup guards) when run as
 // a script. When required as a module (tests), export the internals instead so
 // the routing decisions and the nested-CONNECT tunnel can be exercised directly.
@@ -689,6 +807,8 @@ if (require.main === module) {
     );
     process.exit(1);
   }
+
+  logResidentialConfig();
 
   proxyServer.listen(PROXY_PORT, '0.0.0.0', () => {
     log(`Proxy listening on 0.0.0.0:${PROXY_PORT}`);
