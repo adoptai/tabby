@@ -17,6 +17,18 @@ spec:
       app.kubernetes.io/component: egress-proxy
   template:
     metadata:
+      annotations:
+        # server.js is the egress proxy's ENTIRE implementation and ships in a
+        # ConfigMap, not in an image — .Values.egressProxy.image is stock
+        # node:alpine and never changes between releases. Without this checksum
+        # the pod template is byte-identical on every deploy, so the Deployment
+        # never rolls; and because server.js is mounted with subPath (below),
+        # Kubernetes never propagates ConfigMap updates into the running
+        # container either. Net effect: code changes to server.js silently never
+        # reach dev/prod until someone manually restarts the pod. This checksum
+        # makes the pod template change whenever server.js does, so a deploy
+        # actually recycles the pod.
+        checksum/config: {{ include (print $.Template.BasePath "/egress-proxy-configmap.yaml") . | sha256sum }}
       labels:
         {{- include "browser-hitl.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: egress-proxy
