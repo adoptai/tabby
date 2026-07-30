@@ -48,6 +48,59 @@ const CACHE_TTL_MS = 60_000; // 60 seconds
 const CACHE_MAX_ENTRIES = 1000;
 
 /**
+ * `target_urls` for an app cloned from an App Template.
+ *
+ * These are not just an egress allowlist. The worker's artifact extractor
+ * (`buildUrlMatcher`) compiles each entry into a FULLY-ANCHORED regex
+ * (`^...$`, with `*` → `.*`) and uses it to decide which requests and
+ * responses to harvest credentials from. A bare origin like
+ * `https://api.example.com` therefore matches that exact string and nothing
+ * else — never `https://api.example.com/v1/thing` — so a glob suffix is
+ * mandatory for any real request path to be seen.
+ *
+ * This used to derive the list solely from `export_policy.target_domains`,
+ * mapped to bare `https://{domain}` origins, which silently discarded the
+ * globbed patterns the template already carried in
+ * `export_policy.target_urls`. The consequence was invisible: request-header
+ * capture ran but matched zero URLs, so `/credentials/request` served a
+ * declared `authorization` header with an EMPTY value and every downstream
+ * call 401'd — against a session reporting HEALTHY, on a profile whose
+ * `credential_types` looked completely correct. It hit every user of every
+ * template-provisioned app, since each member's first request clones a fresh
+ * one through here.
+ *
+ * The union is deliberate and strictly additive: the template's globbed
+ * patterns are what make capture work, while the login URL and bare
+ * per-domain origins are preserved so nothing that relied on the previous
+ * shape changes. Extra patterns are harmless to both consumers — the matcher
+ * ORs them, and the egress proxy reduces each entry to `new URL(...).hostname`
+ * and ignores the path entirely.
+ */
+export function cloneTargetUrls(template: {
+  login_config?: unknown;
+  export_policy?: unknown;
+}): string[] {
+  const exportPolicy = (template.export_policy ?? {}) as {
+    target_urls?: unknown;
+    target_domains?: unknown;
+  };
+  const loginUrl = (template.login_config as { login_url?: unknown } | undefined)?.login_url;
+
+  const globbed = Array.isArray(exportPolicy.target_urls)
+    ? exportPolicy.target_urls.filter((u): u is string => typeof u === 'string' && u.length > 0)
+    : [];
+  const domains = Array.isArray(exportPolicy.target_domains)
+    ? exportPolicy.target_domains.filter((d): d is string => typeof d === 'string' && d.length > 0)
+    : [];
+
+  return [
+    ...(typeof loginUrl === 'string' && loginUrl ? [loginUrl] : []),
+    ...globbed,
+    ...domains.map((d) => `https://${d}`),
+  ].filter((url, i, all) => all.indexOf(url) === i);
+}
+
+/**
  * Credentials Service (ADR-013 + Sprint 3b).
  *
  * Responsible for:
@@ -352,10 +405,7 @@ export class CredentialsService {
     // 1. Create App via AppsService (full validation + audit)
     const { app_id } = await this.appsService.create({
       name: `${template.name} — ${ownerUserId}`,
-      target_urls: [
-        ...((template.login_config as any)?.login_url ? [(template.login_config as any).login_url] : []),
-        ...((template.export_policy as any)?.target_domains || []).map((d: string) => `https://${d}`),
-      ],
+      target_urls: cloneTargetUrls(template),
       // Carry the template's extra egress domains onto the cloned app so the
       // per-user session's allowlist includes the vendor's auth/CDN hosts.
       extra_egress_allowlist: template.extra_egress_allowlist ?? [],
