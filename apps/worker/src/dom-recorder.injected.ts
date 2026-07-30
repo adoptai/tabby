@@ -155,9 +155,40 @@ export function domRecorderScript(): void {
   const shouldRedact = (fieldRole: string | null): boolean =>
     fieldRole === 'password' || fieldRole === 'otp';
 
+  /**
+   * The element the human actually touched.
+   *
+   * Events that cross a shadow boundary are RETARGETED: a listener on
+   * `document` sees `e.target` as the shadow HOST, not the inner control. Any
+   * login box mounted as a web component (Frontegg's
+   * `#frontegg-login-box-container-default`, and most hosted-login widgets) is
+   * therefore invisible to a naive `e.target` — the input handler's
+   * "is this an <input>?" guard drops every keystroke, so no credential field
+   * is ever recorded and NoUI concludes no login happened.
+   *
+   * `composedPath()[0]` is the true origin of the event and pierces OPEN
+   * shadow roots. Closed roots still report only the host; nothing at this
+   * layer can see inside one.
+   */
+  const realTarget = (e: any): any => {
+    try {
+      if (typeof e.composedPath === 'function') {
+        const path = e.composedPath();
+        if (path && path.length && path[0] && path[0].tagName) return path[0];
+      }
+    } catch {
+      /* fall through to e.target */
+    }
+    return e.target;
+  };
+
   const handleClick = (e: any): void => {
+    const origin = realTarget(e);
+    if (!origin) return;
     const target =
-      e.target.closest('[id], [class], a, button, input, select, textarea, [role]') || e.target;
+      (typeof origin.closest === 'function'
+        ? origin.closest('[id], [class], a, button, input, select, textarea, [role]')
+        : null) || origin;
     if (!target || !target.tagName) return;
     emit({
       event_type: 'click',
@@ -183,7 +214,7 @@ export function domRecorderScript(): void {
   const inputTimers = new WeakMap<any, any>();
 
   const handleInput = (e: any): void => {
-    const target = e.target;
+    const target = realTarget(e);
     if (!target || !target.tagName) return;
     const tag = target.tagName.toLowerCase();
     if (tag !== 'input' && tag !== 'textarea') return;
@@ -222,7 +253,7 @@ export function domRecorderScript(): void {
   };
 
   const handleChange = (e: any): void => {
-    const target = e.target;
+    const target = realTarget(e);
     if (!target || !target.tagName) return;
     const tag = target.tagName.toLowerCase();
     if (tag === 'input' && !['checkbox', 'radio'].includes(target.type)) return;
@@ -258,7 +289,7 @@ export function domRecorderScript(): void {
   };
 
   const handleSubmit = (e: any): void => {
-    const form = e.target;
+    const form = realTarget(e);
     if (!form || (form.tagName && form.tagName.toLowerCase() !== 'form')) return;
     emit({
       event_type: 'submit',

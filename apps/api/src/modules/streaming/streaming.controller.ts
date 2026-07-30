@@ -295,9 +295,18 @@ function renderEmailGatePage(sessionId: string, token: string | undefined, prefi
         })
           .then(function(r) {
             if (r.ok) {
-              var dest = '/' + PREFIX + '/' + SESSION_ID;
-              if (STREAM_TOKEN) dest += '?token=' + encodeURIComponent(STREAM_TOKEN);
-              window.location.href = dest;
+              // Carry the viewer's own query params across the redirect. They
+              // select what the viewer renders — 'mode=recording' gates the
+              // "Finish & export" panel, 'from=mcp' the HITL panel — so
+              // rebuilding a bare URL here silently removed the only control
+              // a recording session has, on every Tabby without a browser-OAuth
+              // IdP (the email gate is the fallback there). The verify-token
+              // path above reload()s and never had this bug.
+              var params = new URLSearchParams(window.location.search);
+              params.delete('token');
+              if (STREAM_TOKEN) params.set('token', STREAM_TOKEN);
+              var qs = params.toString();
+              window.location.href = '/' + PREFIX + '/' + SESSION_ID + (qs ? '?' + qs : '');
             } else {
               r.json().catch(function() { return {}; }).then(function(d) {
                 msg.textContent = d.message || 'Access denied. Please check your email.';
@@ -870,6 +879,16 @@ export class CdpStreamingController {
         if (recordingMode) {
           var recSection = document.getElementById('recording-section');
           if (recSection) recSection.style.display = '';
+          // Open the panel: "Finish & export" is the only way to end a recording,
+          // and behind a collapsed tab it reads as missing entirely.
+          var recPanel = document.getElementById('side-panel');
+          var recToggle = document.getElementById('panel-toggle');
+          var recContent = document.getElementById('panel-content');
+          if (recPanel && recToggle && recContent) {
+            recPanel.setAttribute('aria-expanded', 'true');
+            recToggle.innerHTML = '&#9654;';
+            recContent.removeAttribute('inert');
+          }
         }
 
         var currentStepIndex = null;
@@ -1750,6 +1769,16 @@ export class StreamingController {
         if (recordingMode) {
           var recSection = document.getElementById('recording-section');
           if (recSection) recSection.style.display = '';
+          // Open the panel: "Finish & export" is the only way to end a recording,
+          // and behind a collapsed tab it reads as missing entirely.
+          var recPanel = document.getElementById('side-panel');
+          var recToggle = document.getElementById('panel-toggle');
+          var recContent = document.getElementById('panel-content');
+          if (recPanel && recToggle && recContent) {
+            recPanel.setAttribute('aria-expanded', 'true');
+            recToggle.innerHTML = '&#9654;';
+            recContent.removeAttribute('inert');
+          }
         }
 
         var currentStepIndex = null;
