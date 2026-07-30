@@ -694,8 +694,11 @@ function proxyConnect(req, clientSocket, head) {
     upstreamSocket?.destroy();
   });
 
+  let tunnelEstablished = false;
+
   const upstreamSocket = net.connect(port, hostname, () => {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    tunnelEstablished = true;
     if (head && head.length > 0) {
       upstreamSocket.write(head);
     }
@@ -704,7 +707,7 @@ function proxyConnect(req, clientSocket, head) {
   });
 
   upstreamSocket.on('error', (err) => {
-    if (!clientSocket.destroyed) {
+    if (!tunnelEstablished && !clientSocket.destroyed) {
       try {
         clientSocket.write(`HTTP/1.1 502 Bad Gateway\r\nX-Proxy-Error: ${String(err?.message || 'upstream connect failed').replace(/[\r\n]/g, ' ')}\r\nConnection: close\r\n\r\n`);
       } catch {}

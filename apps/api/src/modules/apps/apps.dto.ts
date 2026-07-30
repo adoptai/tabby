@@ -73,7 +73,7 @@ export class CreateAppDto {
   login_config: Record<string, unknown>;
 
   @ApiProperty({
-    description: 'Health check configuration. Required fields: interval_seconds (>= 60), actions (array, can be empty), health_checks (non-empty array). Health check types: url_check (needs url + expect_status), dom_check (needs selector), network_check (needs url + expect_status). policy: all | any | quorum.',
+    description: 'Health check configuration. Required fields: interval_seconds (>= 60), actions (array, can be empty), health_checks (non-empty array). Health check types: url_check (needs url + expect_status), dom_check (needs selector), network_check (needs url + expect_status). policy: all | any | quorum (quorum requires quorum_n >= 1).',
     example: {
       interval_seconds: 300,
       actions: [],
@@ -85,10 +85,10 @@ export class CreateAppDto {
   keepalive_config: Record<string, unknown>;
 
   @ApiProperty({
-    description: 'Credential export configuration. Required fields: artifact_types (non-empty array from: cookies, headers, csrf_token, local_storage, session_storage), encryption (algo must be AES-256-GCM), ttl_seconds (>= 300).',
+    description: 'Credential export configuration. Required fields: artifact_types (non-empty array from: cookies, headers, csrf_token, local_storage, session_storage), encryption (algo must be AES-256-GCM, key_ref format: k8s:secret/{name}), ttl_seconds (>= 300).',
     example: {
       artifact_types: ['cookies'],
-      encryption: { algo: 'AES-256-GCM' },
+      encryption: { algo: 'AES-256-GCM', key_ref: 'k8s:secret/tenant-key' },
       ttl_seconds: 3600,
     },
   })

@@ -252,6 +252,115 @@ describe('ReconcileService restart_requested', () => {
 });
 
 // ---------------------------------------------------------------------------
+// DISABLE_NETWORK_POLICY — skips K8s NetworkPolicy, pushes allow_all
+// ---------------------------------------------------------------------------
+
+describe('ReconcileService DISABLE_NETWORK_POLICY', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  function makeApp() {
+    return {
+      id: 'app-np',
+      tenant_id: 'tenant-np',
+      target_urls: ['https://example.com'],
+      extra_egress_allowlist: [],
+      execute_enabled: false,
+      residential_proxy_enabled: false,
+      browser_policy: {},
+      export_policy: {},
+    };
+  }
+
+  function makeSession() {
+    return {
+      id: 'sess-np',
+      tenant_id: 'tenant-np',
+      app_id: 'app-np',
+      pod_name: null,
+      state: 'STARTING',
+      state_version: 1,
+      retry_count: 0,
+      owner_user_id: null,
+      residential_proxy_override: null,
+    };
+  }
+
+  it('skips createNetworkPolicy and calls syncEgressAllowlist with allowAll=true when enabled', async () => {
+    process.env = { ...originalEnv, DISABLE_NETWORK_POLICY: 'true' };
+
+    const podManager = {
+      createWorkerPod: jest.fn().mockResolvedValue('pod-np-1'),
+      createNoVncService: jest.fn().mockResolvedValue(undefined),
+      createCdpService: jest.fn().mockResolvedValue(undefined),
+      createWorkerService: jest.fn().mockResolvedValue(undefined),
+      createNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+      deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+      deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
+      deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      listWorkerPods: jest.fn().mockResolvedValue([]),
+      podExists: jest.fn().mockResolvedValue(true),
+      resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = buildService({ podManager, sessionRepo });
+
+    await (service as any).provisionSessionRuntime(makeSession(), makeApp());
+
+    expect(podManager.createNetworkPolicy).not.toHaveBeenCalled();
+    expect(podManager.syncEgressAllowlist).toHaveBeenCalledWith(
+      'sess-np',
+      ['https://example.com'],
+      [],
+      true,
+      false,
+    );
+  });
+
+  it('creates NetworkPolicy normally when DISABLE_NETWORK_POLICY is not set', async () => {
+    delete process.env.DISABLE_NETWORK_POLICY;
+
+    const podManager = {
+      createWorkerPod: jest.fn().mockResolvedValue('pod-np-2'),
+      createNoVncService: jest.fn().mockResolvedValue(undefined),
+      createCdpService: jest.fn().mockResolvedValue(undefined),
+      createWorkerService: jest.fn().mockResolvedValue(undefined),
+      createNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+      deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+      deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
+      deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      listWorkerPods: jest.fn().mockResolvedValue([]),
+      podExists: jest.fn().mockResolvedValue(true),
+      resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = buildService({ podManager, sessionRepo });
+
+    await (service as any).provisionSessionRuntime(makeSession(), makeApp());
+
+    expect(podManager.createNetworkPolicy).toHaveBeenCalled();
+    expect(podManager.syncEgressAllowlist).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkRecycling — idle shutdown + FAILED session cleanup
 // ---------------------------------------------------------------------------
 
