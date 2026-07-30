@@ -31,17 +31,23 @@ function makeFakes(initialUrl: string) {
   const context = {
     addInitScript: jest.fn(async () => undefined),
     cookies: jest.fn(async () => []),
+    route: jest.fn(async () => undefined),
+    unroute: jest.fn(async () => undefined),
   } as unknown as import('playwright').BrowserContext;
 
-  // Simulate the sentinel fetch() beacon the injected recorder would issue.
+  // Simulate the sentinel fetch() beacon the injected recorder would issue. The
+  // recorder posts it SAME-ORIGIN so a connect-src CSP can't refuse it, so the
+  // beacon's host is the page's own host, not a fixed sentinel domain.
   const beaconReq = (url: string, body: string | null) => ({ url: () => url, postData: () => body });
+  const origin = new URL(initialUrl).origin;
 
   return {
     page,
     context,
     emit: (ev: RecordedInteractionEvent) =>
-      requestListener?.(beaconReq('https://tabby-rec.local/e', JSON.stringify(ev))),
-    install: () => requestListener?.(beaconReq('https://tabby-rec.local/i', 'https://example.com/login')),
+      requestListener?.(beaconReq(`${origin}/__tabby_rec__/e`, JSON.stringify(ev))),
+    install: () =>
+      requestListener?.(beaconReq(`${origin}/__tabby_rec__/i`, 'https://example.com/login')),
     navigate: (to: string) => {
       currentUrl = to;
       navListener?.(mainFrame);
@@ -78,6 +84,69 @@ describe('RecordingRunner', () => {
     const bundle = await runner.drain();
     expect(bundle.click_events).toHaveLength(1);
     expect(bundle.click_events[0].selector).toBe('#submit');
+  });
+
+  // Regression: an off-origin beacon is refused by any page declaring a
+  // connect-src CSP, which silently produced captures with zero interaction
+  // events — indistinguishable downstream from "the human never signed in".
+  it('reads the beacon from any origin, not a fixed sentinel host', async () => {
+    const f = makeFakes('https://app.adopt.ai/account/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-csp', 'login');
+    await runner.start();
+
+    f.install();
+    f.emit(clickEvent);
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events).toHaveLength(1);
+  });
+
+  it('aborts beacon requests so they never reach the page origin server', async () => {
+    const f = makeFakes('https://app.adopt.ai/account/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-csp', 'login');
+    await runner.start();
+
+    expect(f.context.route).toHaveBeenCalledWith('**/__tabby_rec__/**', expect.any(Function));
+
+    const abort = jest.fn(async () => undefined);
+    (f.context.route as jest.Mock).mock.calls[0][1]({ abort });
+    expect(abort).toHaveBeenCalled();
+  });
+
+  it('keeps beacon requests out of the drained HAR', async () => {
+    const f = makeFakes('https://app.adopt.ai/account/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-csp', 'login');
+    await runner.start();
+
+    f.emit(clickEvent);
+    const bundle = await runner.drain();
+
+    const urls = (bundle.har.log.entries as Array<{ request?: { url?: string } }>).map(
+      (e) => e.request?.url ?? '',
+    );
+    expect(urls.some((u) => u.includes('/__tabby_rec__/'))).toBe(false);
+  });
+
+  it('warns when traffic was captured but no interaction events were', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const f = makeFakes('https://app.adopt.ai/account/login');
+      const runner = new RecordingRunner(f.page, f.context, 'sess-csp', 'login');
+      await runner.start();
+
+      // Traffic happened (two navigations) but the recorder emitted nothing.
+      f.navigate('https://app.adopt.ai/oauth/callback');
+      f.navigate('https://app.adopt.ai/');
+      const bundle = await runner.drain();
+
+      expect(bundle.click_events).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('NO DOM interaction events captured'),
+      );
+      expect(warn.mock.calls[0][0]).toContain('Content-Security-Policy');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('drains a bundle with captured interaction + url events', async () => {

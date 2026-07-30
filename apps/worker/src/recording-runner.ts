@@ -6,7 +6,12 @@ import type {
   RecordedUrlEvent,
 } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, cleanupHarListeners } from './har-capture';
-import { REC_BEACON, REC_INSTALL_PATH, domRecorderScript } from './dom-recorder.injected';
+import {
+  REC_PATH,
+  REC_INSTALL_PATH,
+  REC_ROUTE_GLOB,
+  domRecorderScript,
+} from './dom-recorder.injected';
 import { sanitizeHar } from './har-sanitizer';
 
 /**
@@ -30,6 +35,7 @@ export class RecordingRunner {
   private onDomReady: (() => void) | null = null;
   private started = false;
   private installSeen = false;
+  private routed = false;
 
   constructor(
     private readonly page: Page,
@@ -48,11 +54,14 @@ export class RecordingRunner {
     startHarCapture(this.page);
 
     // DOM interaction capture: the injected recorder POSTs each event as a
-    // sentinel fetch() to REC_BEACON. We read them off page.on('request') +
-    // postData() — the same network-capture path HAR uses, which is the only
-    // CDP channel that survives the stealth Chromium build (exposeBinding and
-    // console forwarding are both suppressed). The beacon never reaches the
-    // network (host doesn't resolve); the request-initiation event is enough.
+    // sentinel fetch() to a reserved SAME-ORIGIN path (REC_PATH). We read them
+    // off page.on('request') + postData() — the same network-capture path HAR
+    // uses, which is the only CDP channel that survives the stealth Chromium
+    // build (exposeBinding and console forwarding are both suppressed).
+    //
+    // Same-origin is load-bearing: an off-origin beacon is refused outright by
+    // any page that sets a connect-src CSP, which silently produced captures
+    // with zero interaction events. See dom-recorder.injected.ts.
     this.onRequest = (req: any) => {
       let url: string;
       try {
@@ -60,8 +69,8 @@ export class RecordingRunner {
       } catch {
         return;
       }
-      if (!url.startsWith(REC_BEACON)) return;
-      if (url.startsWith(REC_INSTALL_PATH)) {
+      if (!url.includes(REC_PATH)) return;
+      if (url.endsWith(REC_INSTALL_PATH)) {
         if (!this.installSeen) {
           this.installSeen = true;
           console.log('[Recording] DOM recorder installed in page');
@@ -78,6 +87,20 @@ export class RecordingRunner {
       }
     };
     this.page.on('request', this.onRequest);
+
+    // Abort the beacon so it never reaches the page's real origin server. The
+    // 'request' event above fires before the route handler runs, so the event
+    // is already captured; aborting only stops it going out (and keeps it out
+    // of the HAR, which only records entries that get a response). Best effort:
+    // if interception is unavailable the beacon merely 404s against the origin.
+    try {
+      await this.context.route(REC_ROUTE_GLOB, (route: any) => {
+        route.abort().catch(() => undefined);
+      });
+      this.routed = true;
+    } catch {
+      /* interception unavailable — beacons 404 harmlessly */
+    }
 
     // Inject the recorder two ways for resilience against stealth Chromium:
     //  1. addInitScript — runs at document-start IF the build honors
@@ -162,7 +185,7 @@ export class RecordingRunner {
     // Drop our own sentinel beacon requests so they never reach the bundle.
     if (rawHar.log?.entries?.length) {
       rawHar.log.entries = rawHar.log.entries.filter(
-        (e: any) => !String(e?.request?.url || '').startsWith(REC_BEACON),
+        (e: any) => !String(e?.request?.url || '').includes(REC_PATH),
       );
     }
 
@@ -182,6 +205,21 @@ export class RecordingRunner {
         `har_entries=${har.log.entries.length}, events=${this.events.length}, urls=${this.urlEvents.length}, ` +
         `cookies=${cookies?.length ?? 0}, recorder_installed=${this.installSeen}`,
     );
+
+    // A capture with real traffic but zero interaction events means the beacon
+    // channel was silenced (page CSP, or injection blocked outright) — NOT that
+    // the human sat still. Downstream that is indistinguishable from "no login
+    // happened", which is exactly how it used to slip through unnoticed.
+    if (this.events.length === 0 && (har.log.entries.length > 0 || this.urlEvents.length > 1)) {
+      console.warn(
+        `[Recording] NO DOM interaction events captured for session=${this.sessionId} ` +
+          `despite ${har.log.entries.length} network entries ` +
+          `(recorder_installed=${this.installSeen}). The page most likely blocked the ` +
+          `recorder beacon via Content-Security-Policy. A login in this capture cannot ` +
+          `be detected downstream — treat it as workflow-only or re-import with an ` +
+          `explicit mode.`,
+      );
+    }
 
     return {
       session_id: this.sessionId,
@@ -208,6 +246,12 @@ export class RecordingRunner {
     if (this.onDomReady) {
       this.page.removeListener('domcontentloaded', this.onDomReady);
       this.onDomReady = null;
+    }
+    if (this.routed) {
+      this.routed = false;
+      // Fire-and-forget: detach() is sync, and a failed unroute (context already
+      // closing) must never break the drain.
+      Promise.resolve(this.context.unroute(REC_ROUTE_GLOB)).catch(() => undefined);
     }
     cleanupHarListeners(this.page);
   }
