@@ -386,6 +386,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       // both execute calls AND recording drain (POST /recording/stop). Recording
       // sessions don't set execute_enabled, so key off either.
       const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+      // Deliberately keyed off the raw `allowAll` (recording_mode), NOT
+      // `effectiveAllowAll`: when DISABLE_NETWORK_POLICY is on there's no
+      // NetworkPolicy gating port 8091, so the worker Service isn't needed for
+      // reachability. Only genuine execute/recording sessions need it.
       const needsWorkerHealth = app.execute_enabled || allowAll;
       if (needsWorkerHealth) {
         await this.podManager.createWorkerService(savedSession.id, podName);

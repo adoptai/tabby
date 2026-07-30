@@ -285,7 +285,9 @@ describe('ReconcileService DISABLE_NETWORK_POLICY', () => {
       state_version: 1,
       retry_count: 0,
       owner_user_id: null,
-      residential_proxy_override: null,
+      // resolveResidential reads session.residential_proxy_enabled ?? app.residential_proxy_enabled;
+      // null here documents the real field and makes the expected `false` come from the app default.
+      residential_proxy_enabled: null,
     };
   }
 
@@ -357,6 +359,38 @@ describe('ReconcileService DISABLE_NETWORK_POLICY', () => {
 
     expect(podManager.createNetworkPolicy).toHaveBeenCalled();
     expect(podManager.syncEgressAllowlist).not.toHaveBeenCalled();
+  });
+
+  it('forces allowAll=true on the reconcile-path allowlist sync for already-active sessions', async () => {
+    // Covers the second half of the flag: reconcileApp() re-syncs the egress
+    // allowlist for existing sessions every tick (reconcile.service.ts:229),
+    // using effectiveAllowAll = disableNetworkPolicy || allowAll. This is the
+    // continuously-running path, distinct from one-shot provisionSessionRuntime.
+    process.env = { ...originalEnv, DISABLE_NETWORK_POLICY: 'true' };
+
+    const activeSession = { ...makeSession(), state: 'HEALTHY', pod_name: 'pod-np-live' };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([activeSession]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    const podManager = {
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
+    };
+    // desired == actual (1), so reconcileApp only runs the allowlist-sync loop.
+    const app = { ...makeApp(), desired_session_count: 1 };
+    const service = buildService({ podManager, sessionRepo });
+
+    await (service as any).reconcileApp(app);
+
+    expect(podManager.syncEgressAllowlist).toHaveBeenCalledWith(
+      'sess-np',
+      ['https://example.com'],
+      [],
+      true,      // effectiveAllowAll — forced on by the flag despite app allowAll=false
+      false,
+    );
   });
 });
 

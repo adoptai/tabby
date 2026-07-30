@@ -707,9 +707,24 @@ function proxyConnect(req, clientSocket, head) {
   });
 
   upstreamSocket.on('error', (err) => {
+    // Only surface the 502 before the tunnel is established — once piping starts,
+    // writing HTTP bytes would corrupt the tunneled TLS stream.
     if (!tunnelEstablished && !clientSocket.destroyed) {
+      const reason = String(err?.message || 'upstream connect failed').replace(/[\r\n]/g, ' ');
+      // Log before responding (mirrors residential fail() at server.js:519) — a
+      // declined/failed CONNECT with no log is exactly the class of silent bug
+      // that has cost this path debugging time before.
+      log('direct CONNECT failed', { session_id: sessionId, target: `${hostname}:${port}`, reason });
       try {
-        clientSocket.write(`HTTP/1.1 502 Bad Gateway\r\nX-Proxy-Error: ${String(err?.message || 'upstream connect failed').replace(/[\r\n]/g, ' ')}\r\nConnection: close\r\n\r\n`);
+        const body = JSON.stringify({ error: 'upstream_connect_error', reason });
+        clientSocket.write(
+          'HTTP/1.1 502 Bad Gateway\r\n' +
+            'Connection: close\r\n' +
+            'Content-Type: application/json; charset=utf-8\r\n' +
+            `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+            '\r\n' +
+            body,
+        );
       } catch {}
     }
     clientSocket.destroy();

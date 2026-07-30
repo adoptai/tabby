@@ -388,6 +388,12 @@ egressProxy:
 # =============================================================================
 # Network Policies (H12 remediation) — restrict inter-service traffic
 # =============================================================================
+# NOTE: distinct from `config.disableNetworkPolicy` below — opposite polarity,
+# different scope. This flag governs CHART-LEVEL inter-service NetworkPolicies
+# (H12). `config.disableNetworkPolicy` governs PER-SESSION `np-{sessionId}` NPs
+# created by the controller. The two are independent — do not derive one from the
+# other (this defaults off, so that would silently disable per-session NPs where
+# they're currently on).
 networkPolicies:
   enabled: false  # Enable in production
 
@@ -484,8 +490,10 @@ config:
   reconcileBatchSize: "50"
   extractTabTimeoutMs: "15000"
   extractTabPollIntervalMs: "3000"
-  # Local dev: skip K8s NetworkPolicy creation and force egress allow_all.
-  # Leave "false" in staging/production — NPs are essential for isolation.
+  # Local dev: skip PER-SESSION `np-{sessionId}` NetworkPolicy creation and force
+  # egress allow_all. Distinct from `networkPolicies.enabled` above (chart-level
+  # inter-service NPs, opposite polarity). Leave "false" in staging/production —
+  # per-session NPs are essential for worker egress isolation.
   disableNetworkPolicy: "false"
 
 # =============================================================================

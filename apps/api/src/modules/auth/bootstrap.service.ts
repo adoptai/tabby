@@ -12,7 +12,9 @@ import { AuthService } from './auth.service';
  * 1. A tenant with name BOOTSTRAP_TENANT_NAME
  * 2. An admin user with ADMIN_BOOTSTRAP_EMAIL/PASSWORD
  * 3. (MinIO bucket + encryption key provisioned separately)
- * Idempotent: skips if any tenant exists.
+ * Idempotent: skips if any *non-system* tenant exists. The system recording-pool
+ * tenant (RECORDING_POOL.SYSTEM_TENANT_ID, seeded by migration 033) is excluded
+ * from the count, so a fresh install with only the system tenant still bootstraps.
  */
 @Injectable()
 export class BootstrapService implements OnModuleInit {

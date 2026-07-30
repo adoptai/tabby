@@ -245,33 +245,54 @@ kind-create: ## Create a Kind cluster for local development
 	$(MAKE) kind-fix-dns
 	@echo "Kind cluster '$(KIND_CLUSTER)' created. Context: kind-$(KIND_CLUSTER)"
 
+# The Kind cluster's kubectl context (Kind names it kind-<cluster>). All mutating
+# targets below pin --context to this so they can NEVER touch a remote cluster,
+# even if the current kube-context is pointed at staging/prod.
+KIND_CONTEXT := kind-$(KIND_CLUSTER)
+
+# Guard: refuse to run if the Kind cluster's context doesn't exist (i.e. the
+# cluster isn't up). Prevents these local-only targets from silently no-oping
+# against whatever context happens to be current.
+.PHONY: kind-guard
+kind-guard:
+	@kubectl config get-contexts -o name 2>/dev/null | grep -qx '$(KIND_CONTEXT)' || \
+		{ echo "refusing: kube-context '$(KIND_CONTEXT)' not found — is the Kind cluster up? (make kind-create)"; exit 1; }
+
 .PHONY: kind-fix-mtu
-kind-fix-mtu: ## Fix Kind pod MTU from 65535 to 1500 (prevents TLS failures to external sites)
-	@echo "Patching kindnet MTU to 1500..."
-	@docker exec $(KIND_CLUSTER)-control-plane sh -c '\
-		CNI=/etc/cni/net.d/10-kindnet.conflist; \
-		if [ -s "$$CNI" ]; then \
-			sed -i "s/\"mtu\": *[0-9]*/\"mtu\": 1500/g" "$$CNI"; \
-		fi'
-	kubectl rollout restart daemonset/kindnet -n kube-system
-	kubectl rollout status daemonset/kindnet -n kube-system --timeout=30s
-	@echo "MTU fixed to 1500. Restart pods to pick up the new MTU."
+kind-fix-mtu: kind-guard ## Fix Kind pod MTU from 65535 to 1500 (prevents TLS failures to external sites)
+	@echo "Patching kindnet MTU to 1500 on all nodes of '$(KIND_CLUSTER)'..."
+	@# kindnet rewrites its conflist on startup, so restart the daemonset FIRST,
+	@# then patch every node's conflist, so the patch is what survives.
+	kubectl --context $(KIND_CONTEXT) rollout restart daemonset/kindnet -n kube-system
+	kubectl --context $(KIND_CONTEXT) rollout status daemonset/kindnet -n kube-system --timeout=30s
+	@for node in $$(kind get nodes --name $(KIND_CLUSTER)); do \
+		docker exec $$node sh -c '\
+			CNI=/etc/cni/net.d/10-kindnet.conflist; \
+			[ -s "$$CNI" ] && sed -i "s/\"mtu\": *[0-9]*/\"mtu\": 1500/g" "$$CNI"; \
+			grep -q "\"mtu\": 1500" "$$CNI"' \
+			|| { echo "MTU patch did not land on $$node (no \"mtu\" key? kindnet variant changed)"; exit 1; }; \
+	done
+	@echo "MTU set to 1500 on all nodes (verified). Restart pods to pick it up."
 
 .PHONY: kind-fix-dns
-kind-fix-dns: ## Point CoreDNS at public resolvers (fixes AAAA SERVFAIL from Docker Desktop embedded DNS)
-	@echo "Pointing CoreDNS forward at 8.8.8.8 1.1.1.1 (local-dev only)..."
+kind-fix-dns: kind-guard ## Point CoreDNS at public resolvers (fixes AAAA SERVFAIL from Docker Desktop embedded DNS)
+	@echo "Pointing CoreDNS forward at 8.8.8.8 1.1.1.1 on '$(KIND_CONTEXT)' (local-dev only)..."
 	@# Docker Desktop's embedded DNS (127.0.0.11, reached via /etc/resolv.conf) returns
 	@# SERVFAIL on AAAA lookups for CNAME->CloudFront domains. getaddrinfo (Chromium + the
 	@# egress proxy's net.connect) does a dual A+AAAA lookup and fails the whole resolution
 	@# with EAI_AGAIN, surfacing as ERR_TUNNEL_CONNECTION_FAILED in worker sessions.
 	@# Forwarding to a public resolver that answers AAAA cleanly avoids this. Cloud clusters
 	@# (staging/prod) use a well-behaved VPC resolver and never hit this, so it stays local.
-	@kubectl get configmap coredns -n kube-system -o yaml | \
+	@kubectl --context $(KIND_CONTEXT) get configmap coredns -n kube-system -o yaml | \
 		sed 's#forward . /etc/resolv.conf#forward . 8.8.8.8 1.1.1.1#' | \
-		kubectl apply -f -
-	kubectl rollout restart deployment/coredns -n kube-system
-	kubectl rollout status deployment/coredns -n kube-system --timeout=60s
-	@echo "CoreDNS now forwards to public resolvers."
+		kubectl --context $(KIND_CONTEXT) apply -f -
+	@# Verify the substitution actually landed (CoreDNS Corefile variants differ; a
+	@# no-op sed would otherwise re-apply an identical ConfigMap and still report success).
+	@kubectl --context $(KIND_CONTEXT) get configmap coredns -n kube-system -o yaml | grep -q '8.8.8.8' \
+		|| { echo "CoreDNS Corefile did not match 'forward . /etc/resolv.conf' — nothing changed. Inspect the Corefile manually."; exit 1; }
+	kubectl --context $(KIND_CONTEXT) rollout restart deployment/coredns -n kube-system
+	kubectl --context $(KIND_CONTEXT) rollout status deployment/coredns -n kube-system --timeout=60s
+	@echo "CoreDNS now forwards to public resolvers (verified 8.8.8.8 in Corefile)."
 
 .PHONY: kind-load-images
 kind-load-images: ## Load all Docker images into the Kind cluster
