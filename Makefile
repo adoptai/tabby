@@ -242,6 +242,7 @@ tilt: ## Start Tilt for live rebuild and deploy (replaces kind-reload-all)
 kind-create: ## Create a Kind cluster for local development
 	kind create cluster --name $(KIND_CLUSTER) --config infra/kind/cluster-config.yaml
 	$(MAKE) kind-fix-mtu
+	$(MAKE) kind-fix-dns
 	@echo "Kind cluster '$(KIND_CLUSTER)' created. Context: kind-$(KIND_CLUSTER)"
 
 .PHONY: kind-fix-mtu
@@ -255,6 +256,22 @@ kind-fix-mtu: ## Fix Kind pod MTU from 65535 to 1500 (prevents TLS failures to e
 	kubectl rollout restart daemonset/kindnet -n kube-system
 	kubectl rollout status daemonset/kindnet -n kube-system --timeout=30s
 	@echo "MTU fixed to 1500. Restart pods to pick up the new MTU."
+
+.PHONY: kind-fix-dns
+kind-fix-dns: ## Point CoreDNS at public resolvers (fixes AAAA SERVFAIL from Docker Desktop embedded DNS)
+	@echo "Pointing CoreDNS forward at 8.8.8.8 1.1.1.1 (local-dev only)..."
+	@# Docker Desktop's embedded DNS (127.0.0.11, reached via /etc/resolv.conf) returns
+	@# SERVFAIL on AAAA lookups for CNAME->CloudFront domains. getaddrinfo (Chromium + the
+	@# egress proxy's net.connect) does a dual A+AAAA lookup and fails the whole resolution
+	@# with EAI_AGAIN, surfacing as ERR_TUNNEL_CONNECTION_FAILED in worker sessions.
+	@# Forwarding to a public resolver that answers AAAA cleanly avoids this. Cloud clusters
+	@# (staging/prod) use a well-behaved VPC resolver and never hit this, so it stays local.
+	@kubectl get configmap coredns -n kube-system -o yaml | \
+		sed 's#forward . /etc/resolv.conf#forward . 8.8.8.8 1.1.1.1#' | \
+		kubectl apply -f -
+	kubectl rollout restart deployment/coredns -n kube-system
+	kubectl rollout status deployment/coredns -n kube-system --timeout=60s
+	@echo "CoreDNS now forwards to public resolvers."
 
 .PHONY: kind-load-images
 kind-load-images: ## Load all Docker images into the Kind cluster
