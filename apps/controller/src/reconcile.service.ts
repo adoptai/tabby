@@ -38,6 +38,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   private readonly circuitCooldownMs: number;
   private readonly appCircuitFailureThreshold: number;
   private readonly tenantCircuitFailureThreshold: number;
+  private readonly disableNetworkPolicy: boolean;
 
   constructor(
     @InjectRepository(ApplicationEntity)
@@ -60,6 +61,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     this.tenantCircuitFailureThreshold = this.readPositiveInt('CIRCUIT_BREAKER_TENANT_FAILURE_THRESHOLD', 15);
     this.circuitWindowMs = this.readPositiveInt('CIRCUIT_BREAKER_WINDOW_SECONDS', 900) * 1000;
     this.circuitCooldownMs = this.readPositiveInt('CIRCUIT_BREAKER_COOLDOWN_SECONDS', 300) * 1000;
+    this.disableNetworkPolicy = process.env.DISABLE_NETWORK_POLICY === 'true';
   }
 
   async onModuleInit() {
@@ -218,12 +220,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
 
     // Keep egress allowlist synced for all currently active runtime sessions.
     const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+    const effectiveAllowAll = this.disableNetworkPolicy || allowAll;
     for (const session of activeSessions) {
       if (!session.pod_name) {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll, this.resolveResidential(session, app));
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, effectiveAllowAll, this.resolveResidential(session, app));
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -388,9 +391,13 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
         await this.podManager.createWorkerService(savedSession.id, podName);
       }
 
-      // Generate NetworkPolicy — open the 8091 ingress when the worker health
-      // Service exists (execute or recording drain).
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll, this.resolveResidential(savedSession, app));
+      if (this.disableNetworkPolicy) {
+        // Local dev: skip K8s NetworkPolicy, push allow_all to the egress proxy
+        await this.podManager.syncEgressAllowlist(savedSession.id, app.target_urls, extraAllowlist, true, this.resolveResidential(savedSession, app));
+        this.logger.log(`Skipped NetworkPolicy (DISABLE_NETWORK_POLICY=true), pushed allow_all for session ${savedSession.id}`);
+      } else {
+        await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll, this.resolveResidential(savedSession, app));
+      }
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {

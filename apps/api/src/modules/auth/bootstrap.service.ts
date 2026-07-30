@@ -1,7 +1,8 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { Not, Repository } from 'typeorm';
+import { RECORDING_POOL } from '@browser-hitl/shared';
 import { TenantEntity, UserEntity } from '../../entities';
 import { AuthService } from './auth.service';
 
@@ -26,7 +27,9 @@ export class BootstrapService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const tenantCount = await this.tenantRepo.count();
+    const tenantCount = await this.tenantRepo.count({
+      where: { id: Not(RECORDING_POOL.SYSTEM_TENANT_ID) },
+    });
     if (tenantCount > 0) {
       this.logger.log('Tenants exist, skipping bootstrap');
       return;

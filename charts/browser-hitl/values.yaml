@@ -484,6 +484,9 @@ config:
   reconcileBatchSize: "50"
   extractTabTimeoutMs: "15000"
   extractTabPollIntervalMs: "3000"
+  # Local dev: skip K8s NetworkPolicy creation and force egress allow_all.
+  # Leave "false" in staging/production — NPs are essential for isolation.
+  disableNetworkPolicy: "false"
 
 # =============================================================================
 # Secrets (sensitive values - override in production)

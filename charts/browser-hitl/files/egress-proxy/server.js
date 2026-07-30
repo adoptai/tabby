@@ -703,7 +703,12 @@ function proxyConnect(req, clientSocket, head) {
     clientSocket.pipe(upstreamSocket);
   });
 
-  upstreamSocket.on('error', () => {
+  upstreamSocket.on('error', (err) => {
+    if (!clientSocket.destroyed) {
+      try {
+        clientSocket.write(`HTTP/1.1 502 Bad Gateway\r\nX-Proxy-Error: ${String(err?.message || 'upstream connect failed').replace(/[\r\n]/g, ' ')}\r\nConnection: close\r\n\r\n`);
+      } catch {}
+    }
     clientSocket.destroy();
   });
 }

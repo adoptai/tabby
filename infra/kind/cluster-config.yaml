@@ -1,0 +1,15 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # Default 65535 breaks TLS handshakes with external sites (GitHub, LinkedIn CDN)
+  # whose certificates produce packets larger than the real internet path MTU.
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            "service-node-port-range": "1-65535"

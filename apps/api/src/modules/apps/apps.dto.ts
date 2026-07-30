@@ -56,19 +56,46 @@ export class CreateAppDto {
   @IsString({ each: true })
   extra_egress_allowlist?: string[];
 
-  @ApiProperty({ description: 'Login DSL configuration with URL, credential ref, and steps', example: { login_url: 'https://app.hubspot.com/login', credential_ref: 'k8s:secret/hubspot-creds', steps: [{ action: 'goto', url: 'https://app.hubspot.com/login' }, { action: 'fill', selector: '#username', value: '${USERNAME}' }, { action: 'click', selector: '#loginBtn' }] } })
+  @ApiProperty({
+    description: 'Login DSL configuration. Required fields: login_url, credential_ref (k8s:secret/{name} or manual:), steps (array with at least one goto action). Step actions: goto, fill, type, click, select, wait_for, wait_for_url, frame, main_frame, popup, keyboard, evaluate, sleep, screenshot, reload, request_human_input.',
+    example: {
+      login_url: 'https://app.hubspot.com/login',
+      credential_ref: 'k8s:secret/hubspot-creds',
+      steps: [
+        { action: 'goto', url: 'https://app.hubspot.com/login' },
+        { action: 'fill', selector: '#username', value: '${USERNAME}' },
+        { action: 'fill', selector: '#password', value: '${PASSWORD}' },
+        { action: 'click', selector: '#loginBtn' },
+      ],
+    },
+  })
   @IsObject()
   login_config: Record<string, unknown>;
 
-  @ApiProperty({ description: 'Health check configuration', example: { interval_seconds: 300, actions: [{ action: 'goto', url: 'https://app.hubspot.com/home' }], health_checks: [{ type: 'url_check', url: 'https://app.hubspot.com/home', expect_status: 200 }], policy: 'all' } })
+  @ApiProperty({
+    description: 'Health check configuration. Required fields: interval_seconds (>= 60), actions (array, can be empty), health_checks (non-empty array). Health check types: url_check (needs url + expect_status), dom_check (needs selector), network_check (needs url + expect_status). policy: all | any | quorum.',
+    example: {
+      interval_seconds: 300,
+      actions: [],
+      health_checks: [{ type: 'url_check', url: 'https://app.hubspot.com/home', expect_status: 200 }],
+      policy: 'all',
+    },
+  })
   @IsObject()
   keepalive_config: Record<string, unknown>;
 
-  @ApiProperty({ description: 'Credential export configuration', example: { artifact_types: ['cookies', 'headers', 'csrf_token'], encryption: { algo: 'AES-256-GCM', key_ref: 'k8s:secret/tenant-key' }, ttl_seconds: 3600 } })
+  @ApiProperty({
+    description: 'Credential export configuration. Required fields: artifact_types (non-empty array from: cookies, headers, csrf_token, local_storage, session_storage), encryption (algo must be AES-256-GCM), ttl_seconds (>= 300).',
+    example: {
+      artifact_types: ['cookies'],
+      encryption: { algo: 'AES-256-GCM' },
+      ttl_seconds: 3600,
+    },
+  })
   @IsObject()
   export_policy: Record<string, unknown>;
 
-  @ApiProperty({ description: 'Notification channels for HITL events. Omit for silent/agent-poll mode.', example: { channels: ['slack:#tabby-experiments'] }, required: false })
+  @ApiProperty({ description: 'Notification channels for HITL events. Omit entirely for silent/agent-poll mode. Channels format: {provider}:{reference} where provider is slack, teams, or agent.', example: { channels: [] }, required: false })
   @IsOptional()
   @IsObject()
   notification_config?: Record<string, unknown>;

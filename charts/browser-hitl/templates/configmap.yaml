@@ -100,3 +100,4 @@ data:
   DB_POOL_SIZE: {{ .Values.config.dbPoolSize | default "20" | quote }}
   EXTRACT_TAB_TIMEOUT_MS: {{ .Values.config.extractTabTimeoutMs | default "15000" | quote }}
   EXTRACT_TAB_POLL_INTERVAL_MS: {{ .Values.config.extractTabPollIntervalMs | default "3000" | quote }}
+  DISABLE_NETWORK_POLICY: {{ .Values.config.disableNetworkPolicy | default "false" | quote }}

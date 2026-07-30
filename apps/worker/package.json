@@ -11,7 +11,7 @@
   "dependencies": {
     "@browser-hitl/shared": "workspace:*",
     "@sentry/node": "^10.51.0",
-    "cloakbrowser": "^0.3.12",
+    "cloakbrowser": "^0.5.2",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.3",
     "helmet": "^8.1.0",

@@ -240,8 +240,21 @@ tilt: ## Start Tilt for live rebuild and deploy (replaces kind-reload-all)
 
 .PHONY: kind-create
 kind-create: ## Create a Kind cluster for local development
-	kind create cluster --name $(KIND_CLUSTER)
+	kind create cluster --name $(KIND_CLUSTER) --config infra/kind/cluster-config.yaml
+	$(MAKE) kind-fix-mtu
 	@echo "Kind cluster '$(KIND_CLUSTER)' created. Context: kind-$(KIND_CLUSTER)"
+
+.PHONY: kind-fix-mtu
+kind-fix-mtu: ## Fix Kind pod MTU from 65535 to 1500 (prevents TLS failures to external sites)
+	@echo "Patching kindnet MTU to 1500..."
+	@docker exec $(KIND_CLUSTER)-control-plane sh -c '\
+		CNI=/etc/cni/net.d/10-kindnet.conflist; \
+		if [ -s "$$CNI" ]; then \
+			sed -i "s/\"mtu\": *[0-9]*/\"mtu\": 1500/g" "$$CNI"; \
+		fi'
+	kubectl rollout restart daemonset/kindnet -n kube-system
+	kubectl rollout status daemonset/kindnet -n kube-system --timeout=30s
+	@echo "MTU fixed to 1500. Restart pods to pick up the new MTU."
 
 .PHONY: kind-load-images
 kind-load-images: ## Load all Docker images into the Kind cluster
