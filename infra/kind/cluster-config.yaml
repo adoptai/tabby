@@ -1,0 +1,11 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # NOTE: Kind exposes no MTU setting. The pod MTU (which defaults to 65535 and
+  # breaks TLS handshakes to external sites like GitHub / LinkedIn CDN whose certs
+  # produce large packets) is patched to 1500 *after* create by `make kind-fix-mtu`.
+  # These two subnets are Kind's own defaults, pinned here only to be explicit.
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+nodes:
+  - role: control-plane
