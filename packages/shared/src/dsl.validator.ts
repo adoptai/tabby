@@ -252,6 +252,15 @@ export function validateKeepaliveConfig(config: KeepaliveConfig): ValidationResu
         }
       }
 
+      if (check.type === 'network_check') {
+        if (check.body_contains !== undefined && typeof check.body_contains !== 'string') {
+          errors.push({ path: `${path}.body_contains`, message: 'network_check body_contains must be a string' });
+        }
+        if (check.body_not_contains !== undefined && typeof check.body_not_contains !== 'string') {
+          errors.push({ path: `${path}.body_not_contains`, message: 'network_check body_not_contains must be a string' });
+        }
+      }
+
       if (check.type === 'dom_check') {
         if (!check.selector || typeof check.selector !== 'string') {
           errors.push({ path: `${path}.selector`, message: 'dom_check requires a selector' });

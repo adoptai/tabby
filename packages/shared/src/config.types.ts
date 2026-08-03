@@ -43,7 +43,14 @@ export interface NetworkCheck {
   type: 'network_check';
   url: string;
   expect_status: number;
+  // Positive marker: the response body MUST contain this to be considered
+  // signed-in (absence => AUTH_FAIL).
   body_contains?: string;
+  // Negative marker: if the response body CONTAINS this, treat the session as
+  // signed-out (=> AUTH_FAIL), even on the expected status. This is how apps
+  // that report "not authenticated" as a business error inside a 200 (e.g.
+  // HSBCnet's PCS9500) surface as LOGIN_NEEDED instead of a false HEALTHY.
+  body_not_contains?: string;
 }
 
 export type HealthCheck = UrlCheck | DomCheck | NetworkCheck;

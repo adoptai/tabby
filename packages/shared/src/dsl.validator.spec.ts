@@ -195,6 +195,26 @@ describe('validateKeepaliveConfig', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('accepts network_check with body_not_contains (signed-out marker)', () => {
+    const result = validateKeepaliveConfig({
+      ...validConfig,
+      health_checks: [
+        { type: 'network_check', url: 'https://api.example.com/session', expect_status: 200, body_not_contains: 'PCS9500' },
+      ],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects non-string body_not_contains', () => {
+    const result = validateKeepaliveConfig({
+      ...validConfig,
+      health_checks: [
+        { type: 'network_check', url: 'https://api.example.com/session', expect_status: 200, body_not_contains: 123 as any },
+      ],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('requires quorum_n when policy is quorum', () => {
     const result = validateKeepaliveConfig({ ...validConfig, policy: 'quorum' });
     expect(result.valid).toBe(false);
