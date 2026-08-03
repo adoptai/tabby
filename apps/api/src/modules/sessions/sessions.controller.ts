@@ -65,7 +65,13 @@ export class SessionsController {
   }
 
   @Get('sessions/:id')
-  @Roles('Admin', 'Operator', 'Viewer', 'Agent')
+  // Editor belongs here too — it's allowed on every sibling session read
+  // (findAll, findInterventions) and on execute/fetch + agent/session-status,
+  // so an Editor member can run call_web_api but previously 403'd reading their
+  // own session. This endpoint backs the tabby-auth card's state poll and the
+  // viewer's liveness check; the 403 surfaced to the FE as a false
+  // "session terminated / poll-for-successor".
+  @Roles('Admin', 'Editor', 'Operator', 'Viewer', 'Agent')
   @ApiOperation({ summary: 'Get session details', description: 'Returns full session entity including state, health result, intervention counts, and timestamps.' })
   @ApiParam({ name: 'id', description: 'Session UUID' })
   @ApiResponse({ status: 200, description: 'Session details' })
