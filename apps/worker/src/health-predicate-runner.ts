@@ -177,10 +177,15 @@ export class HealthPredicateRunner {
         return { result: HealthResultType.TRANSIENT_FAIL, detail: `HTTP ${response.status()}` };
       }
 
-      if (check.body_contains) {
+      if (check.body_contains || check.body_not_contains) {
         const body = await response.text();
-        if (!body.includes(check.body_contains)) {
+        if (check.body_contains && !body.includes(check.body_contains)) {
           return { result: HealthResultType.AUTH_FAIL, detail: `Body missing: ${check.body_contains}` };
+        }
+        // A signed-out marker in an otherwise-OK response (e.g. HSBCnet PCS9500
+        // inside a 200) means the app session is not authenticated.
+        if (check.body_not_contains && body.includes(check.body_not_contains)) {
+          return { result: HealthResultType.AUTH_FAIL, detail: `Body has signed-out marker: ${check.body_not_contains}` };
         }
       }
 
