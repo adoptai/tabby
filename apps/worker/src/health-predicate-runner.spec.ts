@@ -4,9 +4,11 @@ import { HealthResultType } from '@browser-hitl/shared';
 /**
  * Page stub whose locator resolves waitFor() per requested state.
  *
- * `present` models whether the selector is on the page: Playwright resolves
- * `state: 'visible'` only when it is, and `state: 'hidden'` only when it is not
- * (detached counts as hidden).
+ * `present` models whether the selector is in the DOM: Playwright resolves
+ * `state: 'attached'` only when it is, and `state: 'detached'` only when it is
+ * not. The runner deliberately asks about DOM presence rather than CSS
+ * visibility — SPA portals render logged-in chrome that Playwright reports as
+ * hidden, which made signed-in sessions fail.
  */
 function makePage(present: boolean) {
   return {
@@ -15,7 +17,7 @@ function makePage(present: boolean) {
       // strict-mode violation when the selector matches several nodes.
       first: jest.fn().mockReturnValue({
         waitFor: jest.fn(async ({ state }: { state?: string }) => {
-          const wanted = state === 'hidden' ? !present : present;
+          const wanted = state === 'detached' ? !present : present;
           if (!wanted) throw new Error('Timeout waiting for selector');
         }),
       }),
@@ -65,20 +67,25 @@ describe('HealthPredicateRunner — dom_check', () => {
       type: 'dom_check', selector: 'text=Please click the login button', exists: false,
     }).evaluate();
     expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
-    expect(res.checks[0].detail).toMatch(/still visible/);
+    expect(res.checks[0].detail).toMatch(/still in DOM/);
   });
 
-  it('waits for the right Playwright state in each mode', async () => {
+  // Regression: asking for 'visible' made a fully signed-in ICICI dashboard
+  // report AUTH_FAIL — Playwright resolved its sidebar link to
+  // "hidden <a class=\"mb-0\">Payment & Transfer</a>" 20 times in a row while the
+  // user was looking at it on screen. The check is named `exists`; DOM presence
+  // is what it must test.
+  it('tests DOM presence, not CSS visibility', async () => {
     const page = makePage(true);
     await runner(page, { type: 'dom_check', selector: '#x', exists: true }).evaluate();
     expect(page.locator().first().waitFor).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'visible' }),
+      expect.objectContaining({ state: 'attached' }),
     );
 
     const page2 = makePage(false);
     await runner(page2, { type: 'dom_check', selector: '#x', exists: false }).evaluate();
     expect(page2.locator().first().waitFor).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'hidden' }),
+      expect.objectContaining({ state: 'detached' }),
     );
   });
 });

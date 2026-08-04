@@ -167,27 +167,38 @@ export class HealthPredicateRunner {
     // the right semantics for a presence check anyway.
     const first = locator.first();
 
+    // attached/detached, NOT visible/hidden. The check is named `exists`, and DOM
+    // presence is what it should mean — CSS visibility is a different question that
+    // SPA portals answer badly. Playwright reports the sidebar link of a fully
+    // logged-in ICICI dashboard as hidden:
+    //
+    //   20 x locator resolved to hidden <a class="mb-0">Payment & Transfer</a>
+    //
+    // ...so a signed-in session reported AUTH_FAIL. Salesforce Lightning and
+    // Workday do the same thing (see the gotchas in CLAUDE.md); it is the single
+    // most common cause of a false AUTH_FAIL on this platform. A marker rendered
+    // into the DOM at all is the signal worth having.
     if (check.exists) {
       try {
-        await first.waitFor({ state: 'visible', timeout });
+        await first.waitFor({ state: 'attached', timeout });
         return { result: HealthResultType.PASS };
       } catch (error) {
         return {
           result: HealthResultType.AUTH_FAIL,
-          detail: `Selector ${check.selector} not visible: ${error}`,
+          detail: `Selector ${check.selector} not in DOM: ${error}`,
         };
       }
     }
 
     try {
-      await first.waitFor({ state: 'hidden', timeout });
+      await first.waitFor({ state: 'detached', timeout });
       return { result: HealthResultType.PASS };
     } catch (error) {
       // Report WHY. A bare "found" hid the difference between the marker really
       // being on the page and the check itself misfiring.
       return {
         result: HealthResultType.AUTH_FAIL,
-        detail: `Selector ${check.selector} still visible: ${error}`,
+        detail: `Selector ${check.selector} still in DOM: ${error}`,
       };
     }
   }
