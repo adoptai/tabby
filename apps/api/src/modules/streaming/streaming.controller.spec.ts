@@ -121,9 +121,57 @@ describe('StreamingController — panel-state', () => {
       'utf-8',
     );
     expect(source).not.toContain("stHealth.textContent = data.health_result_type");
-    const calls = source.split('stHealth.textContent = healthLabel(data.state, data.health_result_type)').length - 1;
+    const calls = source.split(
+      'stHealth.textContent = healthLabel(data.state, data.health_result_type, recordingMode)',
+    ).length - 1;
     expect(calls).toBe(2); // VNC + CDP viewers
     expect(source).toContain("'Awaiting sign-in'");
+  });
+
+  it('does not claim "Signed in" for a recording session', () => {
+    // Recording sessions suppress health predicates and the worker stamps PASS once
+    // the browser is up, so PASS carries no auth meaning there. Reporting it as
+    // "Signed in" told users they were authenticated before they had typed anything —
+    // on a page that had not even loaded. Both viewers must pass their recordingMode
+    // flag through so the label can say so.
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'streaming.controller.ts'),
+      'utf-8',
+    );
+
+    // The guard must precede the unconditional PASS branch, or it never runs.
+    const recordingBranch = source.indexOf("if (recording && health === 'PASS')");
+    const passBranch = source.indexOf("if (health === 'PASS') return 'Signed in';");
+    expect(recordingBranch).toBeGreaterThan(-1);
+    expect(passBranch).toBeGreaterThan(-1);
+    expect(recordingBranch).toBeLessThan(passBranch);
+
+    // Both viewers must actually declare the flag they pass in.
+    const decls = source.split(
+      "var recordingMode = new URLSearchParams(window.location.search).get('mode') === 'recording';",
+    ).length - 1;
+    expect(decls).toBe(2);
+  });
+
+  it('healthLabel reports recording sessions as unchecked, not signed in', () => {
+    // Execute the real injected helper rather than asserting on source text, so a
+    // future edit to the branch logic is caught behaviourally.
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'streaming.controller.ts'),
+      'utf-8',
+    );
+    const body = source.match(/function healthLabel\(state, health, recording\) \{[\s\S]*?\n {8}\}/);
+    expect(body).not.toBeNull();
+    // eslint-disable-next-line no-new-func
+    const healthLabel = new Function(`${body![0]}; return healthLabel;`)() as
+      (state: string, health: string | null, recording?: boolean) => string;
+
+    expect(healthLabel('HEALTHY', 'PASS', true)).toBe('Not checked');
+    expect(healthLabel('HEALTHY', 'PASS', false)).toBe('Signed in');
+    expect(healthLabel('HEALTHY', 'PASS')).toBe('Signed in'); // non-recording viewers unchanged
+    // Real failures still surface while recording.
+    expect(healthLabel('LOGIN_NEEDED', 'AUTH_FAIL', true)).toBe('Awaiting sign-in');
+    expect(healthLabel('HEALTHY', 'AUTH_FAIL', true)).toBe('Sign-in required');
   });
 
   it('throws UnauthorizedException when token is missing', async () => {

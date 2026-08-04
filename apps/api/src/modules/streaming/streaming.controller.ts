@@ -28,6 +28,7 @@ import { RecordingStore } from '../recording/recording.store';
 import { AppsService } from '../apps/apps.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { randomUUID, randomBytes } from 'crypto';
 import { Not, IsNull, MoreThan } from 'typeorm';
 import { Throttle, SkipThrottle } from '@nestjs/throttler';
@@ -49,13 +50,24 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * like a failure. Map the enum to plain language, using the session state for
  * context so AUTH_FAIL only reads as a problem when it genuinely is one.
  *
+ * `recording` is required for the same reason in reverse: a recording session
+ * never runs a health check, so its PASS is not evidence of anything and must
+ * not be dressed up as "Signed in".
+ *
  * Written as a JS string interpolated into the templates so the two viewers
  * cannot drift apart. Must not contain `${` — the templates are TS template
  * literals.
  */
 const HEALTH_LABEL_JS = `
-        function healthLabel(state, health) {
+        function healthLabel(state, health, recording) {
           if (!health) return state === 'STARTING' ? 'Starting…' : '—';
+          // Recording sessions suppress keepalive actions and health predicates while a
+          // human drives, and the worker stamps PASS once the browser is up (see
+          // apps/worker/src/main.ts, recording branch). That PASS says "recorder
+          // attached", NOT "authenticated" — reporting it as "Signed in" told the user
+          // they were logged in before they had typed anything, on a page that had not
+          // even loaded. Nothing is evaluated here, so say exactly that.
+          if (recording && health === 'PASS') return 'Not checked';
           if (health === 'PASS') return 'Signed in';
           if (health === 'TRANSIENT_FAIL') return 'Checking…';
           if (health === 'AUTH_FAIL') {
@@ -928,7 +940,7 @@ ${HEALTH_LABEL_JS}
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
-              stHealth.textContent = healthLabel(data.state, data.health_result_type);
+              stHealth.textContent = healthLabel(data.state, data.health_result_type, recordingMode);
               stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
               stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
               if (data.started_at) {
@@ -1080,6 +1092,16 @@ ${HEALTH_LABEL_JS}
 @Controller('vnc')
 export class StreamingController {
   private static readonly noVncAssetCache = new Map<string, { body: string; contentType: string }>();
+  /**
+   * Where the noVNC ES-module tree lives inside the image. Dockerfile.api vendors
+   * GitHub's `core/` + `vendor/` here at build time so the viewer does not need
+   * outbound internet to load its client. Absent (e.g. running from a source
+   * checkout), asset loads fall back to the CDN below.
+   */
+  private static readonly noVncVendorRoot =
+    process.env.NOVNC_VENDOR_ROOT || resolvePath(process.cwd(), 'vendor/novnc');
+
+  /** Fallback only — see noVncVendorRoot. Keep the version in step with Dockerfile.api. */
   private static readonly noVncRootBaseUrl = 'https://cdn.jsdelivr.net/gh/novnc/noVNC@v1.5.0';
 
   constructor(
@@ -1820,7 +1842,7 @@ ${HEALTH_LABEL_JS}
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
-              stHealth.textContent = healthLabel(data.state, data.health_result_type);
+              stHealth.textContent = healthLabel(data.state, data.health_result_type, recordingMode);
               stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
               stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
               if (data.started_at) {
@@ -2067,8 +2089,22 @@ ${HEALTH_LABEL_JS}
     assetPath: string,
   ): Promise<{ body: string; contentType: string }> {
     try {
-      const modulePath = require.resolve(`@novnc/novnc/${section}/${assetPath}`);
-      const body = await readFile(modulePath, 'utf8');
+      // Serve the copy vendored into the image at build time (Dockerfile.api pulls the
+      // GitHub tree, which is what noVncRootBaseUrl points at).
+      //
+      // Do NOT swap this for `require.resolve('@novnc/novnc/...')`. The npm package
+      // publishes only `lib/`, and that build is CommonJS — Babel-transpiled, with
+      // `require()` and no `import`/`export`. The viewer loads the client with
+      // `import RFB from '/vnc/assets/rfb.js'`, so a browser ES-module import of those
+      // files fails outright; only the GitHub `core/` tree is ESM. The declared
+      // @novnc/novnc dependency is therefore not usable here.
+      //
+      // assetPath is validated by normalizeNoVncAssetPath (no '..', restricted charset)
+      // before it reaches this join.
+      const vendoredPath = resolvePath(
+        StreamingController.noVncVendorRoot, section, assetPath,
+      );
+      const body = await readFile(vendoredPath, 'utf8');
       return {
         body,
         contentType: this.resolveNoVncAssetContentType(assetPath),
