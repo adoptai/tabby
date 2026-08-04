@@ -176,4 +176,39 @@ describe('MinioOrphanSweepService', () => {
     expect(minioClient.bucketExists).not.toHaveBeenCalled();
     expect(minioClient.removeObjects).not.toHaveBeenCalled();
   });
+
+  it('never deletes recording bundles, even with no DB row and well past the cutoff', async () => {
+    // Recordings share the bucket but are not artifact bundles: RecordingStore
+    // writes them with no artifact_bundles row, so without the prefix skip the
+    // DB-row check classifies every recording as an orphan and deletes it after
+    // ~2h — which silently GC'd captured logins before capture_import ran.
+    const oldDate = new Date(Date.now() - 48 * 60 * 60 * 1000); // 2 days ago
+    const objects = [
+      { name: 'recordings/sess-abc.json.enc', lastModified: oldDate },
+      { name: 'some-real-orphan', lastModified: oldDate },
+    ];
+    const minioClient = makeMockMinioClient({ objects });
+    const tenantRepo = makeMockTenantRepo([{ id: 'tenant-1' }]);
+    const artifactRepo = makeMockArtifactRepo(null); // no rows for anything
+    const provisioner = makeMockProvisioner(minioClient);
+
+    const service = new MinioOrphanSweepService(
+      provisioner as any,
+      artifactRepo as any,
+      tenantRepo as any,
+    );
+
+    await service.sweepOrphans();
+
+    // The real orphan is removed; the recording is spared.
+    expect(minioClient.removeObjects).toHaveBeenCalledWith('artifact-bundles-tenant-1', [
+      'some-real-orphan',
+    ]);
+    // And the recording key was never even DB-checked (skipped before the query).
+    expect(artifactRepo.findOne).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ encrypted_payload_ref: 'recordings/sess-abc.json.enc' }),
+      }),
+    );
+  });
 });
