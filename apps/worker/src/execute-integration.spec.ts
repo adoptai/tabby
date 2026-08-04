@@ -17,9 +17,23 @@ function signToken(claims: Record<string, any> = {}, expiresIn: string = '2m'): 
   );
 }
 
-function mockPage(): any {
+function mockApiResponse(overrides: Record<string, any> = {}) {
+  return {
+    status: jest.fn().mockReturnValue(200),
+    headers: jest.fn().mockReturnValue({ 'content-type': 'application/json' }),
+    body: jest.fn().mockResolvedValue(Buffer.from('{"via":"context"}')),
+    ...overrides,
+  };
+}
+
+function mockPage(overrides: { contextFetch?: jest.Mock } = {}): any {
+  const contextFetch = overrides.contextFetch
+    ?? jest.fn().mockResolvedValue(mockApiResponse());
   return {
     evaluate: jest.fn().mockResolvedValue({ status: 200, headers: {}, body: 'ok' }),
+    // Cross-origin / CSP-refused fetches are served off-page through the
+    // BrowserContext's APIRequestContext, which shares its cookie jar.
+    context: jest.fn().mockReturnValue({ request: { fetch: contextFetch } }),
     goto: jest.fn().mockResolvedValue(undefined),
     url: jest.fn().mockReturnValue('https://example.com'),
     title: jest.fn().mockResolvedValue('Example'),
@@ -188,8 +202,9 @@ describe('execute handlers (integration)', () => {
     });
 
     it('returns 200 with page.evaluate result for valid request', async () => {
+      // Same-origin as page.url() so this still exercises the in-page path.
       const res = await request(server, 'POST', '/execute/fetch', {
-        url: 'https://api.example.com/data',
+        url: 'https://example.com/data',
         method: 'GET',
       }, auth());
       expect(res.status).toBe(200);
@@ -198,10 +213,14 @@ describe('execute handlers (integration)', () => {
       expect(page.evaluate).toHaveBeenCalled();
     });
 
-    it('returns 502 when page.evaluate throws', async () => {
+    it('returns 502 only when both the in-page and off-page fetches fail', async () => {
+      // A failed in-page fetch now retries through the BrowserContext (CSP /
+      // service-worker refusals are recoverable there), so 502 means both failed.
       page.evaluate.mockRejectedValueOnce(new Error('page crashed'));
+      (page.context().request.fetch as jest.Mock)
+        .mockRejectedValueOnce(new Error('context unreachable'));
       const res = await request(server, 'POST', '/execute/fetch', {
-        url: 'https://api.example.com/data',
+        url: 'https://example.com/data',
       }, auth());
       expect(res.status).toBe(502);
       expect(res.body.error).toMatch(/Browser fetch failed/);
@@ -216,7 +235,7 @@ describe('execute handlers (integration)', () => {
         truncated: false,
       });
       const res = await request(server, 'POST', '/execute/fetch', {
-        url: 'https://api.example.com/statement.pdf',
+        url: 'https://example.com/statement.pdf',
       }, auth());
       expect(res.status).toBe(200);
       expect(res.body.encoding).toBe('base64');
@@ -284,6 +303,78 @@ describe('execute handlers (integration)', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(false);
       expect(res.body.error).toMatch(/not allowed/);
+    });
+  });
+
+
+  // ─── Cross-origin routing ────────────────────────────────────────
+
+  describe('cross-origin routing', () => {
+    // An in-page fetch() carries the page's origin, so a target that sends no CORS
+    // headers fails as "TypeError: Failed to fetch" even with a perfectly valid
+    // session. Multi-origin apps are the norm for bank portals (ICICI serves its
+    // dashboard from retailnetbanking.icici.bank.in and its statement APIs from
+    // infinity.icici.bank.in), so those calls must go off-page through the
+    // BrowserContext, which shares cookies but attaches no origin.
+    let contextFetch: jest.Mock;
+
+    beforeEach(() => {
+      contextFetch = page.context().request.fetch as jest.Mock;
+      contextFetch.mockReset();
+      contextFetch.mockResolvedValue(mockApiResponse());
+      (page.evaluate as jest.Mock).mockReset();
+      (page.evaluate as jest.Mock).mockResolvedValue({
+        status: 200, headers: {}, body: 'in-page', encoding: 'utf-8', truncated: false,
+      });
+      (page.url as jest.Mock).mockReturnValue('https://example.com/dashboard');
+    });
+
+    it('routes a cross-origin target off-page so CORS cannot block it', async () => {
+      const res = await request(
+        server, 'POST', '/execute/fetch',
+        { url: 'https://other-host.example/v1/statement' },
+        { Authorization: `Bearer ${signToken()}` },
+      );
+      expect(res.status).toBe(200);
+      expect(contextFetch).toHaveBeenCalledTimes(1);
+      expect(page.evaluate).not.toHaveBeenCalled();
+      expect(res.body.body).toBe('{"via":"context"}');
+    });
+
+    it('keeps same-origin calls in the page so JS interceptors still run', async () => {
+      const res = await request(
+        server, 'POST', '/execute/fetch',
+        { url: 'https://example.com/dashboardAPI/summary' },
+        { Authorization: `Bearer ${signToken()}` },
+      );
+      expect(res.status).toBe(200);
+      expect(page.evaluate).toHaveBeenCalledTimes(1);
+      expect(contextFetch).not.toHaveBeenCalled();
+      expect(res.body.body).toBe('in-page');
+    });
+
+    it('falls back off-page when a same-origin fetch is refused (CSP, service worker)', async () => {
+      (page.evaluate as jest.Mock).mockRejectedValue(new Error('TypeError: Failed to fetch'));
+      const res = await request(
+        server, 'POST', '/execute/fetch',
+        { url: 'https://example.com/dashboardAPI/summary' },
+        { Authorization: `Bearer ${signToken()}` },
+      );
+      expect(res.status).toBe(200);
+      expect(contextFetch).toHaveBeenCalledTimes(1);
+      expect(res.body.body).toBe('{"via":"context"}');
+    });
+
+    it('reports the target status instead of throwing on 4xx', async () => {
+      // Callers need to see a 401/403 to react to it; failOnStatusCode must stay off.
+      contextFetch.mockResolvedValue(mockApiResponse({ status: jest.fn().mockReturnValue(403) }));
+      const res = await request(
+        server, 'POST', '/execute/fetch',
+        { url: 'https://other-host.example/v1/statement' },
+        { Authorization: `Bearer ${signToken()}` },
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe(403);
     });
   });
 });
