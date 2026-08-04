@@ -11,9 +11,13 @@ import { HealthResultType } from '@browser-hitl/shared';
 function makePage(present: boolean) {
   return {
     locator: jest.fn().mockReturnValue({
-      waitFor: jest.fn(async ({ state }: { state?: string }) => {
-        const wanted = state === 'hidden' ? !present : present;
-        if (!wanted) throw new Error('Timeout waiting for selector');
+      // .first() is what the runner actually waits on — a bare locator throws a
+      // strict-mode violation when the selector matches several nodes.
+      first: jest.fn().mockReturnValue({
+        waitFor: jest.fn(async ({ state }: { state?: string }) => {
+          const wanted = state === 'hidden' ? !present : present;
+          if (!wanted) throw new Error('Timeout waiting for selector');
+        }),
       }),
     }),
     url: jest.fn().mockReturnValue('https://app.test/dashboard'),
@@ -61,19 +65,19 @@ describe('HealthPredicateRunner — dom_check', () => {
       type: 'dom_check', selector: 'text=Please click the login button', exists: false,
     }).evaluate();
     expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
-    expect(res.checks[0].detail).toMatch(/found/);
+    expect(res.checks[0].detail).toMatch(/still visible/);
   });
 
   it('waits for the right Playwright state in each mode', async () => {
     const page = makePage(true);
     await runner(page, { type: 'dom_check', selector: '#x', exists: true }).evaluate();
-    expect(page.locator().waitFor).toHaveBeenCalledWith(
+    expect(page.locator().first().waitFor).toHaveBeenCalledWith(
       expect.objectContaining({ state: 'visible' }),
     );
 
     const page2 = makePage(false);
     await runner(page2, { type: 'dom_check', selector: '#x', exists: false }).evaluate();
-    expect(page2.locator().waitFor).toHaveBeenCalledWith(
+    expect(page2.locator().first().waitFor).toHaveBeenCalledWith(
       expect.objectContaining({ state: 'hidden' }),
     );
   });

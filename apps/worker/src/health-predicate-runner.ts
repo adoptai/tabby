@@ -64,6 +64,14 @@ export class HealthPredicateRunner {
         detail,
         duration_ms: Date.now() - start,
       });
+
+      // A failing health check drives the whole session lifecycle (AUTH_FAIL ->
+      // LOGIN_NEEDED, and every consumer that reads session health), so the reason
+      // must be visible in the pod log. Debugging a wrong verdict without it means
+      // guessing at the selector.
+      if (result !== HealthResultType.PASS) {
+        console.log(`[Health] ${check.type} -> ${result}${detail ? `: ${detail}` : ''}`);
+      }
     }
 
     const overall = evaluateHealthPolicy(results, policy, quorumN);
@@ -152,20 +160,35 @@ export class HealthPredicateRunner {
     // Wait for the state each mode actually wants. Playwright's 'hidden' resolves
     // when the element is detached OR present-but-invisible, which is what "not
     // showing the logged-out marker" means in practice.
+    // .first() throughout: a selector matching several nodes (very easy with a
+    // text= selector on a rich page) makes a bare locator.waitFor throw a strict-mode
+    // violation, and the catch below cannot tell that apart from the element genuinely
+    // being there — so a logged-IN page reported AUTH_FAIL. Matching the first node is
+    // the right semantics for a presence check anyway.
+    const first = locator.first();
+
     if (check.exists) {
       try {
-        await locator.waitFor({ state: 'visible', timeout });
+        await first.waitFor({ state: 'visible', timeout });
         return { result: HealthResultType.PASS };
-      } catch {
-        return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.selector} not found` };
+      } catch (error) {
+        return {
+          result: HealthResultType.AUTH_FAIL,
+          detail: `Selector ${check.selector} not visible: ${error}`,
+        };
       }
     }
 
     try {
-      await locator.waitFor({ state: 'hidden', timeout });
+      await first.waitFor({ state: 'hidden', timeout });
       return { result: HealthResultType.PASS };
-    } catch {
-      return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.selector} found` };
+    } catch (error) {
+      // Report WHY. A bare "found" hid the difference between the marker really
+      // being on the page and the check itself misfiring.
+      return {
+        result: HealthResultType.AUTH_FAIL,
+        detail: `Selector ${check.selector} still visible: ${error}`,
+      };
     }
   }
 
