@@ -112,6 +112,20 @@ describe('StreamingController — panel-state', () => {
     expect(result.app_id).toBe('app-1');
   });
 
+  it('viewer panels render a human health label, never the raw enum', () => {
+    // AUTH_FAIL on a fresh session is EXPECTED (it drives STARTING ->
+    // LOGIN_NEEDED), so showing the raw enum made a normal sign-in look like a
+    // failure. Both viewers (VNC + CDP) must go through healthLabel().
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, 'streaming.controller.ts'),
+      'utf-8',
+    );
+    expect(source).not.toContain("stHealth.textContent = data.health_result_type");
+    const calls = source.split('stHealth.textContent = healthLabel(data.state, data.health_result_type)').length - 1;
+    expect(calls).toBe(2); // VNC + CDP viewers
+    expect(source).toContain("'Awaiting sign-in'");
+  });
+
   it('throws UnauthorizedException when token is missing', async () => {
     await expect(controller.getPanelState('sess-1', undefined)).rejects.toThrow(UnauthorizedException);
   });

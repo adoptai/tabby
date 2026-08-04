@@ -40,6 +40,36 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'http://localhost:18080'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * Browser-side helper injected into both viewer templates (VNC + CDP).
+ *
+ * The status panel used to print the raw `health_result_type` enum. That reads
+ * as an error to a human — but AUTH_FAIL on a fresh session is the EXPECTED
+ * signal (it is what drives STARTING -> LOGIN_NEEDED, i.e. "not signed in
+ * yet"), so users opening the viewer to sign in were greeted by what looked
+ * like a failure. Map the enum to plain language, using the session state for
+ * context so AUTH_FAIL only reads as a problem when it genuinely is one.
+ *
+ * Written as a JS string interpolated into the templates so the two viewers
+ * cannot drift apart. Must not contain `${` — the templates are TS template
+ * literals.
+ */
+const HEALTH_LABEL_JS = `
+        function healthLabel(state, health) {
+          if (!health) return state === 'STARTING' ? 'Starting…' : '—';
+          if (health === 'PASS') return 'Signed in';
+          if (health === 'TRANSIENT_FAIL') return 'Checking…';
+          if (health === 'AUTH_FAIL') {
+            // Expected while the human is being asked to sign in.
+            if (state === 'LOGIN_NEEDED' || state === 'LOGIN_IN_PROGRESS' || state === 'STARTING') {
+              return 'Awaiting sign-in';
+            }
+            return 'Sign-in required';
+          }
+          return health;
+        }
+`;
+
+/**
  * Resolve the email the gate should match for a session owner.
  *
  * owner_user_id is a users.id uuid for password/OAuth users, but
@@ -887,7 +917,7 @@ export class CdpStreamingController {
         var restartConfirm = document.getElementById('restart-confirm');
         var restartYes = document.getElementById('restart-yes');
         var tokenExpired = false;
-
+${HEALTH_LABEL_JS}
         function poll() {
           if (sessionTerminated || tokenExpired || !TOKEN) return;
           fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
@@ -898,7 +928,7 @@ export class CdpStreamingController {
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
-              stHealth.textContent = data.health_result_type || '—';
+              stHealth.textContent = healthLabel(data.state, data.health_result_type);
               stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
               stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
               if (data.started_at) {
@@ -1779,6 +1809,7 @@ export class StreamingController {
         var tokenExpired = false;
 
         // ── Poll panel-state ──────────────────────────────────────────────────
+${HEALTH_LABEL_JS}
         function poll() {
           if (sessionTerminated || tokenExpired || !TOKEN) return;
           fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
@@ -1789,7 +1820,7 @@ export class StreamingController {
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
-              stHealth.textContent = data.health_result_type || '—';
+              stHealth.textContent = healthLabel(data.state, data.health_result_type);
               stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
               stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
               if (data.started_at) {
