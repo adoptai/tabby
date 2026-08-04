@@ -138,22 +138,34 @@ export class HealthPredicateRunner {
    * DOM check: verify selector exists on current page (spec section 9.9).
    */
   private async runDomCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
+    const locator = this.page.locator(check.selector);
+    const timeout = check.timeout_ms ?? 5000;
+
+    // `exists: false` asserts the selector is ABSENT — which is the whole point of
+    // a negative check: assert the logged-out marker (a login form, an auth error
+    // page) is gone. The previous implementation always waited for the element to
+    // appear and treated the resulting timeout as AUTH_FAIL, so an absent selector
+    // — the passing condition — reported failure. A negative check could therefore
+    // never pass, and the only way to detect "signed out" on an SPA portal was
+    // unavailable.
+    //
+    // Wait for the state each mode actually wants. Playwright's 'hidden' resolves
+    // when the element is detached OR present-but-invisible, which is what "not
+    // showing the logged-out marker" means in practice.
+    if (check.exists) {
+      try {
+        await locator.waitFor({ state: 'visible', timeout });
+        return { result: HealthResultType.PASS };
+      } catch {
+        return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.selector} not found` };
+      }
+    }
+
     try {
-      const locator = this.page.locator(check.selector);
-      await locator.waitFor({ timeout: 5000 });
-
-      const visible = await locator.isVisible();
-      if (check.exists && visible) {
-        return { result: HealthResultType.PASS };
-      }
-      if (!check.exists && !visible) {
-        return { result: HealthResultType.PASS };
-      }
-
-      return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.exists ? 'not found' : 'found'}` };
+      await locator.waitFor({ state: 'hidden', timeout });
+      return { result: HealthResultType.PASS };
     } catch {
-      // Timeout or page loading
-      return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.selector} not found` };
+      return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.selector} found` };
     }
   }
 
