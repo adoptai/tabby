@@ -69,7 +69,16 @@ export class AppTemplatesService {
   async update(tenantId: string | undefined, id: string, data: Partial<AppTemplateEntity>, actorId: string) {
     const template = await this.findOne(tenantId, id);
     Object.assign(template, data);
-    const saved = await this.templateRepo.save(template);
+    await this.templateRepo.save(template);
+
+    // Re-read the persisted row instead of propagating from save()'s return value.
+    // save() resolves to an object carrying only the properties it was handed, so on a
+    // PATCH it comes back holding just the patched fields. Propagation then reads
+    // template.login_config as undefined and inserts a profile row with a NULL
+    // login_config, which trips the NOT NULL constraint and 500s the whole request —
+    // after appRepo.update() has already written, leaving a partial update behind.
+    // A fresh read guarantees every PROPAGATED_FIELD is present regardless of payload shape.
+    const saved = await this.templateRepo.findOneOrFail({ where: { id: template.id } });
 
     await this.auditService.log({
       tenant_id: template.tenant_id,
