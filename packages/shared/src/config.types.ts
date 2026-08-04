@@ -31,6 +31,17 @@ export interface UrlCheck {
   type: 'url_check';
   url: string;
   expect_status: number;
+  /**
+   * Regex (case-insensitive) tested against the final URL after redirects. A match
+   * means the target bounced us to its login flow → AUTH_FAIL (triggers the HITL
+   * re-login) rather than a generic failure. Set this whenever the target redirects
+   * to something the built-in heuristic misses — it only matches /login|signin|sso|
+   * oauth|saml|authgw|identity/ in the host+path, so a bounce to a bare `/` root
+   * (common for SPAs) goes undetected without an explicit pattern.
+   */
+  auth_redirect_pattern?: string;
+  /** Per-check request timeout. Default 15000. */
+  timeout_ms?: number;
 }
 
 export interface DomCheck {
@@ -44,6 +55,8 @@ export interface NetworkCheck {
   url: string;
   expect_status: number;
   body_contains?: string;
+  /** Per-check request timeout. Default 15000. */
+  timeout_ms?: number;
 }
 
 export type HealthCheck = UrlCheck | DomCheck | NetworkCheck;
