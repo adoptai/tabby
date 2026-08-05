@@ -319,6 +319,8 @@ egressProxy:
     - ".icici.bank.in"
     - ".icicibank.com"
     - ".hsbcnet.com"
+    # --- HDFC Life (myaccount portal) ---
+    - ".hdfclife.com"
     # --- Dev/test ---
     - ".dontpad.com"
     - ".api.dontpad.com"
