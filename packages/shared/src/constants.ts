@@ -15,6 +15,13 @@ export const CHROMIUM_FLAGS = [
   '--remote-debugging-port=9222',
   '--disable-dev-shm-usage',
   '--disable-gpu',
+  // Force all egress over TCP so it goes through the HTTP CONNECT egress-proxy.
+  // Chrome uses QUIC/HTTP-3 (UDP) for sites that support it (e.g. Akamai-fronted
+  // banks like ICICI), and QUIC CANNOT traverse an HTTP CONNECT proxy — Chrome
+  // sends it DIRECTLY from the pod, bypassing the egress allowlist AND the
+  // residential upstream (the "Chrome ignores residential proxy" symptom). This
+  // makes the browser fall back to HTTP/1.1+2 over TCP, which the proxy tunnels.
+  '--disable-quic',
   // NOTE: '--enable-automation' is deliberately OMITTED. It sets
   // navigator.webdriver = true and the "controlled by automated software"
   // signals, which re-expose automation even under CloakBrowser stealth and get
