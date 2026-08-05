@@ -46,6 +46,11 @@ function createMockPage() {
     evaluate: jest.fn().mockResolvedValue(undefined),
     screenshot: jest.fn().mockResolvedValue(undefined),
     reload: jest.fn().mockResolvedValue(undefined),
+    viewportSize: jest.fn().mockReturnValue({ width: 1200, height: 800 }),
+    mouse: {
+      move: jest.fn().mockResolvedValue(undefined),
+      wheel: jest.fn().mockResolvedValue(undefined),
+    },
     _locator: locator,
     _frameLocatorObj: frameLocatorObj,
   };
@@ -561,5 +566,27 @@ describe('LoginDslRunner', () => {
 
       expect(page.goto).toHaveBeenCalledWith('https://example.com/quote/abc123', expect.any(Object));
     });
+  });
+});
+
+describe('activity keepalive action', () => {
+  it('nudges the mouse and scrolls (trusted events) without clicking or navigating', async () => {
+    const { runner, page } = buildRunner();
+    await runner.execute([{ action: 'activity' } as any], { username: '', password: '' });
+    // real Playwright input → trusted events a bank's idle listener resets on
+    expect(page.mouse.move).toHaveBeenCalled();
+    expect(page.mouse.wheel).toHaveBeenCalled();
+    // and it must NOT reload / navigate (that is what expires the session)
+    expect(page.goto).not.toHaveBeenCalled();
+    expect(page.reload).not.toHaveBeenCalled();
+  });
+
+  it('never throws even if input fails (must not break the keepalive loop)', async () => {
+    const page = createMockPage();
+    (page.mouse.move as jest.Mock).mockRejectedValue(new Error('detached'));
+    const { runner } = buildRunner({ page });
+    await expect(
+      runner.execute([{ action: 'activity' } as any], { username: '', password: '' }),
+    ).resolves.not.toThrow();
   });
 });
