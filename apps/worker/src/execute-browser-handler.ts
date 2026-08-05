@@ -45,7 +45,7 @@ export function registerBrowserHandler(app: Express, page: Page): void {
   });
 }
 
-async function dispatchCommand(
+export async function dispatchCommand(
   page: Page,
   command: string,
   params: Record<string, any>,
@@ -70,8 +70,7 @@ async function dispatchCommand(
 
     case 'click_by_text': {
       const text = requireParam(params, 'text', 'string');
-      const exact = params.exact !== false;
-      await page.getByText(text, { exact }).click({ timeout: timeoutMs });
+      await clickByText(page, params, text, timeoutMs);
       return {};
     }
 
@@ -166,6 +165,45 @@ async function dispatchCommand(
     default:
       throw new Error(`Unhandled command: ${command}`);
   }
+}
+
+/**
+ * Click an element by its visible text, tolerant of the two things that make a
+ * naive `getByText(text, { exact: true }).click()` fail on real SPA portals:
+ *
+ *  1. Duplicate text. A nav label like "Cards" is rendered in several nodes —
+ *     the visible sidebar item plus hidden copies (analytics/telemetry trackers,
+ *     off-screen scroll clones). A plain locator click throws a Playwright
+ *     strict-mode violation on >1 match. We prefer the VISIBLE match(es) and
+ *     click the nth (first by default), which is what a human does.
+ *  2. Near-miss labels. The exact text a skill recorded ("Credit Cards") often
+ *     differs slightly from the DOM ("Credit Card"); exact matching then times
+ *     out. We default to Playwright's natural substring + normalized-whitespace
+ *     matching. Callers can still force exact with `exact: true`.
+ *
+ * Optional params: `exact` (default false), `within` (CSS selector to scope the
+ * search to a container — e.g. a specific sidenav), `nth` (0-based index among
+ * the visible matches, default 0).
+ */
+async function clickByText(
+  page: Page,
+  params: Record<string, any>,
+  text: string,
+  timeoutMs: number,
+): Promise<void> {
+  const exact = params.exact === true;
+  const within = typeof params.within === 'string' && params.within ? params.within : '';
+  const nth = Number.isInteger(params.nth) ? params.nth : 0;
+
+  const scope = within ? page.locator(within) : page;
+  const matches = scope.getByText(text, { exact });
+
+  // Prefer visible matches so the hidden analytics/off-screen copies never cause
+  // a strict-mode violation. Only fall back to all matches when nothing is
+  // currently visible, so a genuinely-missing target still errors clearly.
+  const visible = matches.filter({ visible: true });
+  const target = (await visible.count()) > 0 ? visible.nth(nth) : matches.nth(nth);
+  await target.click({ timeout: timeoutMs });
 }
 
 function requireParam(params: Record<string, any>, name: string, type: string): any {
