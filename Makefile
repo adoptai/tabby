@@ -204,7 +204,7 @@ k8s-logs-controller: ## Tail controller logs
 	kubectl logs -n $(HELM_NAMESPACE) -l app.kubernetes.io/component=controller -f --tail=100
 
 .PHONY: k8s-port-forward
-k8s-port-forward: ## Port-forward all services for local development
+k8s-port-forward: kind-guard ## Port-forward all services for local development
 	@echo "API:        http://localhost:18080        (Swagger: http://localhost:18080/api/docs)"
 	@echo "Admin UI:   http://localhost:13000"
 	@echo "PostgreSQL: localhost:25432"
@@ -214,12 +214,12 @@ k8s-port-forward: ## Port-forward all services for local development
 	@echo ""
 	@echo "Stop all: pkill -f 'kubectl port-forward'"
 	@echo ""
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8000 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-admin-ui 13000:8000 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-postgres 25432:5432 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-redis 16379:6379 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-minio 19000:9000 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-nats 4222:4222 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8000 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-admin-ui 13000:8000 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-postgres 25432:5432 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-redis 16379:6379 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-minio 19000:9000 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-nats 4222:4222 &
 	@wait
 
 # ============================================================
