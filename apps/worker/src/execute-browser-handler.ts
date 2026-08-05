@@ -7,6 +7,7 @@ import {
   type ExecuteBrowserResponse,
 } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, getHarStatus, cleanupHarListeners } from './har-capture';
+import { listDownloads, getDownload } from './download-capture';
 
 export { cleanupHarListeners };
 
@@ -160,6 +161,15 @@ export async function dispatchCommand(
 
     case 'har_status': {
       return getHarStatus(page);
+    }
+
+    case 'list_downloads': {
+      return listDownloads(page);
+    }
+
+    case 'get_download': {
+      const id = typeof params.id === 'string' && params.id ? params.id : undefined;
+      return getDownload(page, id);
     }
 
     default:

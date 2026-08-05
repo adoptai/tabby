@@ -82,6 +82,7 @@ describe('execute-browser-handler validation', () => {
         'get_page_summary', 'get_page_info', 'screenshot',
         'wait_for_selector', 'scroll_page',
         'har_start', 'har_stop', 'har_status',
+        'list_downloads', 'get_download',
       ];
       for (const cmd of expectedCommands) {
         expect(BROWSER_COMMANDS.includes(cmd as any)).toBe(true);

@@ -22,6 +22,7 @@ import { SessionDb } from './session-db';
 import { RecyclingMonitor } from './recycling-monitor';
 import { ScreenshotFallback } from './screenshot-fallback';
 import { resolveCredentials } from './credential-resolver';
+import { enableDownloadCapture } from './download-capture';
 import { RecordingRunner } from './recording-runner';
 import type { RecordingMode } from '@browser-hitl/shared';
 
@@ -172,19 +173,28 @@ async function main() {
       browser = await chromium.launch(launchOptions);
     }
 
+    // Read policy before creating the context: acceptDownloads must be set at
+    // context-creation time for Playwright to save downloads at all.
+    const browserPolicy = appConfig.browser_policy || { downloads: false, clipboard: false, file_chooser: false };
+    const recordingMode = (browserPolicy as { recording_mode?: RecordingMode }).recording_mode;
+    const downloadsEnabled = browserPolicy.downloads === true;
+
     context = await browser.newContext({
       // VNC: null viewport => the page fills the actual browser window (which we
       // sized to the Xvfb display), so the human sees a full, properly-sized
       // page. CDP/headless keeps a fixed 1920x1080 viewport.
       viewport: streamingMode === 'cdp' ? { width: 1920, height: 1080 } : null,
+      // Without this Playwright silently cancels every download.
+      acceptDownloads: downloadsEnabled,
     });
 
-    // Disable downloads, clipboard, file chooser per browser_policy
-    const browserPolicy = appConfig.browser_policy || { downloads: false, clipboard: false, file_chooser: false };
-    const recordingMode = (browserPolicy as { recording_mode?: RecordingMode }).recording_mode;
-    if (!browserPolicy.downloads) {
-      // Playwright doesn't have a direct "disable downloads" API,
-      // but we intercept and cancel download events
+    // Downloads, clipboard, file chooser per browser_policy.
+    if (downloadsEnabled) {
+      // Opt-in: capture downloads to temp files + an index the /execute/browser
+      // `list_downloads`/`get_download` commands read (see download-capture.ts).
+      enableDownloadCapture(context);
+    } else {
+      // Default: Playwright has no "disable downloads" API, so intercept + cancel.
       context.on('page', (page) => {
         page.on('download', (download) => download.cancel());
       });

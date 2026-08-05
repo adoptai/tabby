@@ -30,6 +30,7 @@ export const BROWSER_COMMANDS = [
   'get_page_summary', 'get_page_info', 'screenshot',
   'wait_for_selector', 'scroll_page',
   'har_start', 'har_stop', 'har_status',
+  'list_downloads', 'get_download',
 ] as const;
 
 export type BrowserCommandName = typeof BROWSER_COMMANDS[number];
