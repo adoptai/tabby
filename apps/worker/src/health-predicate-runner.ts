@@ -91,6 +91,28 @@ export class HealthPredicateRunner {
   private async runUrlCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
     const timeoutMs = check.timeout_ms ?? 15000;
 
+    // Where the LIVE browser actually is, checked FIRST. An SPA enforces session
+    // expiry client-side: the JS detects a dead session and route-changes to a
+    // /session-expire page, but the server still serves the app shell with HTTP
+    // 200 on every route. So the APIRequestContext GET below can't see it — it
+    // gets 200 and PASSes while the user is staring at "Your session has
+    // expired" (observed on ICICI: HEALTHY/PASS on /session-expire). If the
+    // browser page itself is already sitting on an auth/expiry URL, that is
+    // ground truth the HTTP probe cannot override.
+    if (check.auth_redirect_pattern) {
+      try {
+        const liveUrl = this.page.url();
+        if (new RegExp(check.auth_redirect_pattern, 'i').test(liveUrl)) {
+          return {
+            result: HealthResultType.AUTH_FAIL,
+            detail: `Live page is on an auth/expiry URL: ${liveUrl}`,
+          };
+        }
+      } catch {
+        // page.url() should never throw, but never let it break the check.
+      }
+    }
+
     try {
       // Use Playwright's APIRequestContext — it inherits the browser's proxy
       // and cookies, so it can reach external URLs through the egress proxy.

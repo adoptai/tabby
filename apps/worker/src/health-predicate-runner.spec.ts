@@ -32,6 +32,46 @@ function runner(page: any, check: Record<string, unknown>) {
   return new HealthPredicateRunner(page, CONTEXT, { health_checks: [check], policy: 'all' });
 }
 
+/** Page + context stubs for url_check: page.url() is the LIVE browser URL; the
+ *  APIRequestContext GET returns a fixed 200 (the SPA shell, served on every
+ *  route regardless of auth). */
+function makeUrlCheckPage(liveUrl: string) {
+  const page = { url: jest.fn().mockReturnValue(liveUrl) } as any;
+  const context = {
+    request: {
+      get: jest.fn(async () => ({ url: () => liveUrl, status: () => 200 })),
+    },
+  } as any;
+  return { page, context };
+}
+
+describe('HealthPredicateRunner — url_check live-page detection', () => {
+  const CHECK = {
+    type: 'url_check',
+    url: 'https://bank.test/credit-card',
+    expect_status: 200,
+    auth_redirect_pattern: '/login|/session-expire|/logout',
+  };
+
+  it('AUTH_FAIL when the live browser is on an auth/expiry URL, even though the HTTP probe 200s', async () => {
+    // The ICICI case: SPA route-changed the browser to /session-expire client-
+    // side, but the server still serves the shell with 200 on every route, so
+    // the APIRequestContext GET alone would wrongly PASS.
+    const { page, context } = makeUrlCheckPage('https://bank.test/session-expire');
+    const r = new HealthPredicateRunner(page, context, { health_checks: [CHECK], policy: 'all' });
+    const res = await r.evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
+    expect(res.checks[0].detail).toMatch(/Live page is on an auth/);
+  });
+
+  it('PASS when the live page is on a normal authenticated route', async () => {
+    const { page, context } = makeUrlCheckPage('https://bank.test/credit-card');
+    const r = new HealthPredicateRunner(page, context, { health_checks: [CHECK], policy: 'all' });
+    const res = await r.evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.PASS);
+  });
+});
+
 describe('HealthPredicateRunner — dom_check', () => {
   it('passes when an expected selector is present', async () => {
     const res = await runner(makePage(true), {
