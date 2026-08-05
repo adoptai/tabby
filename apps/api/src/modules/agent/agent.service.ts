@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { SessionState, requireEnv, REDIS_KEYS } from '@browser-hitl/shared';
-import { Repository } from 'typeorm';
+import { Repository, Not, In } from 'typeorm';
 import Redis from 'ioredis';
 import { createHash } from 'crypto';
 import { SessionEntity, InterventionEntity } from '../../entities';
@@ -91,14 +91,22 @@ export class AgentService implements OnModuleDestroy {
     if (ownerUserId) {
       where.owner_user_id = ownerUserId;
     }
+    // Prefer a LIVE session. Ordering by started_at alone returns the newest row
+    // regardless of state, so a just-expired TERMINATED/FAILED session is handed
+    // back as "current" — and the harness then mints a sign-in card pointing at a
+    // dead session, so the user clicks the link and lands on "session terminated"
+    // (a recurring ICICI failure). A terminal session is not a usable session:
+    // exclude it so the caller sees "none" and provisions a fresh one instead.
     const session = await this.sessionRepo.findOne({
-      where,
+      where: { ...where, state: Not(In([SessionState.TERMINATED, SessionState.FAILED])) },
       order: { started_at: 'DESC' },
       relations: ['application'],
     });
 
     if (!session) {
-      throw new NotFoundException('No session found for profile');
+      // No live session — the only rows are terminal. Report "none" so the agent
+      // path provisions fresh, rather than surfacing a dead session id.
+      throw new NotFoundException('No live session found for profile');
     }
 
     const hitlActive = session.state === 'LOGIN_IN_PROGRESS' || session.state === 'LOGIN_NEEDED';
