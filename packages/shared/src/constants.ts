@@ -14,7 +14,17 @@ export const CHROMIUM_FLAGS = [
   '--remote-debugging-address=127.0.0.1',
   '--remote-debugging-port=9222',
   '--disable-dev-shm-usage',
-  '--disable-gpu',
+  // Software WebGL via ANGLE+SwiftShader instead of '--disable-gpu'. Plain
+  // --disable-gpu leaves the page with NO WebGL context at all ("Canvas has no
+  // webgl context" on bot.sannysoft.com) — a real Chrome ALWAYS has a WebGL
+  // context, so "no context" is a hard bot signature that reCAPTCHA v3 /
+  // fingerprint SDKs flag, and it also leaves CloakBrowser nothing to spoof.
+  // These give a working software WebGL context (Chrome gates SwiftShader behind
+  // --enable-unsafe-swiftshader in recent builds) that CloakBrowser can then
+  // present with a plausible vendor/renderer.
+  '--use-gl=angle',
+  '--use-angle=swiftshader',
+  '--enable-unsafe-swiftshader',
   // Force all egress over TCP so it goes through the HTTP CONNECT egress-proxy.
   // Chrome uses QUIC/HTTP-3 (UDP) for sites that support it (e.g. Akamai-fronted
   // banks like ICICI), and QUIC CANNOT traverse an HTTP CONNECT proxy — Chrome
