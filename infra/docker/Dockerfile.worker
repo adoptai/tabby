@@ -14,6 +14,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xclip autocutsel && \
     rm -rf /var/lib/apt/lists/*
 
+# Windows core fonts for CloakBrowser's Windows spoof. A Windows-claiming browser
+# that enumerates only Linux fonts is an anti-bot fingerprint tell — bank login
+# risk engines decline it ("Unable to process your request"). ttf-mscorefonts-
+# installer provides the real MS font *names* (Arial, Times New Roman, Verdana,
+# Georgia, Courier New, Trebuchet, ...) that font probing checks for;
+# fonts-liberation adds metric-compatible fallbacks. Enable multiverse (Noble
+# deb822 format) and auto-accept the EULA. See CloakBrowser font-setup-on-linux.
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+      sed -i -E 's/^(Components:.*)$/\1 multiverse/; s/multiverse( multiverse)+/multiverse/' /etc/apt/sources.list.d/ubuntu.sources; \
+    else \
+      echo "deb http://archive.ubuntu.com/ubuntu noble multiverse" > /etc/apt/sources.list.d/multiverse.list; \
+    fi; \
+    apt-get update; \
+    echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections; \
+    apt-get install -y --no-install-recommends \
+      ttf-mscorefonts-installer fonts-liberation fontconfig cabextract; \
+    fc-cache -f; \
+    rm -rf /var/lib/apt/lists/*
+
 # Install pnpm
 RUN npm install -g pnpm@10
 

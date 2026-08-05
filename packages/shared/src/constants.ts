@@ -15,7 +15,13 @@ export const CHROMIUM_FLAGS = [
   '--remote-debugging-port=9222',
   '--disable-dev-shm-usage',
   '--disable-gpu',
-  '--enable-automation',
+  // NOTE: '--enable-automation' is deliberately OMITTED. It sets
+  // navigator.webdriver = true and the "controlled by automated software"
+  // signals, which re-expose automation even under CloakBrowser stealth and get
+  // bank/anti-bot login risk engines to decline the session ("Unable to process
+  // your request"). Disabling the AutomationControlled blink feature instead
+  // keeps navigator.webdriver falsey. See gotcha #8.
+  '--disable-blink-features=AutomationControlled',
   '--password-store=basic',
   '--disable-component-extensions-with-background-pages',
   '--disable-client-side-phishing-detection',
