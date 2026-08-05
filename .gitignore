@@ -143,3 +143,6 @@ docs/zero-to-hero-test-workflow.md
 docs/zero-to-hero-tabby-platform-setup.md
 docs/adopt-org-templates-backup.json
 docs/tabby-platform-setup-consolidation.md
+
+# Local-only Kind secrets override (never commit — real credentials)
+charts/browser-hitl/values-local.secret.yaml

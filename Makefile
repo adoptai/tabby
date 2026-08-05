@@ -232,6 +232,13 @@ ifneq (,$(wildcard $(DOTENV_FILE)))
   HELM_DOTENV_SETS := $(shell ./scripts/dotenv-to-helm-sets.sh $(DOTENV_FILE))
 endif
 
+# Optional gitignored local secrets override, auto-included in every local helm
+# upgrade when present. A values FILE (not --set) so credentials with dots/braces
+# — e.g. the residential EGRESS_UPSTREAM_PROXY_URL Oxylabs URL with its
+# {sessionId} template — don't trip helm's --set parser. Copy the committed
+# values-local.secret.yaml.example to values-local.secret.yaml and fill it in.
+LOCAL_SECRET_VALUES := $(if $(wildcard charts/browser-hitl/values-local.secret.yaml),-f charts/browser-hitl/values-local.secret.yaml)
+
 KIND_CLUSTER ?= tabby-dev
 
 .PHONY: tilt
@@ -337,6 +344,7 @@ kind-deploy: kind-guard ## Full local deploy: load images + helm install with lo
 	kubectl --context $(KIND_CONTEXT) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl --context $(KIND_CONTEXT) apply -f -
 	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) \
 		--wait --timeout 5m
 	@echo "Stack deployed. Run: kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8080"
@@ -348,6 +356,7 @@ kind-reload-api: kind-guard docker-build-api ## Rebuild API and reload into Kind
 	kind load docker-image $(IMG_API) --name $(KIND_CLUSTER)
 	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "API reloaded."
@@ -357,6 +366,7 @@ kind-reload-controller: kind-guard docker-build-controller ## Rebuild controller
 	kind load docker-image $(IMG_CONTROLLER) --name $(KIND_CLUSTER)
 	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "Controller reloaded."
@@ -366,6 +376,7 @@ kind-reload-worker: kind-guard docker-build-worker ## Rebuild worker and reload 
 	kind load docker-image $(IMG_WORKER) --name $(KIND_CLUSTER)
 	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "Worker reloaded."
@@ -375,6 +386,7 @@ kind-reload-admin-ui: kind-guard docker-build-admin-ui ## Rebuild admin-ui and r
 	kind load docker-image $(IMG_ADMIN_UI) --name $(KIND_CLUSTER)
 	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "Admin UI reloaded."
@@ -389,6 +401,7 @@ kind-reload-all: kind-guard clean build docker-build ## Clean + build source + i
 	$(MAKE) kind-load-images
 	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
 		$(HELM_DOTENV_SETS) \
 		--wait --timeout 5m
