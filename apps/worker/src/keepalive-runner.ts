@@ -22,6 +22,12 @@ export class KeepaliveRunner {
   private running = false;
   private extracting = false;
   private redis: Redis | null = null;
+  // Last health verdict, used to gate the human-simulation 'activity' nudge:
+  // once a session bounces to a login/expired page (health != PASS), we must
+  // stop feeding it robotic mouse/scroll input, or reCAPTCHA v3 / fingerprint
+  // SDKs score the page as a bot before the human can re-login. null until the
+  // first cycle's health check (session enters keepalive already logged in).
+  private lastHealthOverall: string | null = null;
 
   constructor(
     private readonly page: Page,
@@ -93,8 +99,21 @@ export class KeepaliveRunner {
     try {
       await this.refreshConfig();
 
-      // Step 1: Execute keepalive actions (suppressed in recording mode)
-      const actions = this.recordingMode ? [] : (this.appConfig.keepalive_config?.actions || []);
+      // Step 1: Execute keepalive actions (suppressed in recording mode).
+      let actions = this.recordingMode ? [] : (this.appConfig.keepalive_config?.actions || []);
+      // HEALTHY-gate the 'activity' nudge: if the previous cycle found the
+      // session NOT healthy (it has likely bounced to the app's login/expired
+      // page), skip the trusted mouse-move + scroll — robotic input on a page
+      // reCAPTCHA v3 / a fingerprint SDK is scoring reads as a bot and tanks the
+      // score before the human can re-login. Non-interactive actions (e.g. goto
+      // for header capture) are unaffected, and health checks below still run.
+      if (this.lastHealthOverall !== null && this.lastHealthOverall !== 'PASS') {
+        const before = actions.length;
+        actions = actions.filter((a: { action?: string }) => a.action !== 'activity');
+        if (actions.length < before) {
+          console.log(`Keepalive: skipping 'activity' nudge (last health ${this.lastHealthOverall}, likely on login page)`);
+        }
+      }
       if (actions.length > 0) {
         try {
           await this.dslRunner.execute(actions, this.credentials);
@@ -108,6 +127,9 @@ export class KeepaliveRunner {
 
       // Step 3-4: Execute health predicates and write results
       const healthResult = await this.healthRunner.evaluate();
+      // Remember the verdict so the NEXT cycle can gate the 'activity' nudge
+      // (see Step 1) — a not-PASS session is likely sitting on a login page.
+      this.lastHealthOverall = healthResult.overall;
       await this.db.updateHealthResult(this.sessionId, healthResult.overall);
 
       console.log(`Health check: ${healthResult.overall} (${healthResult.checks.length} checks)`);
