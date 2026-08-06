@@ -107,11 +107,16 @@ export class KeepaliveRunner {
       // reCAPTCHA v3 / a fingerprint SDK is scoring reads as a bot and tanks the
       // score before the human can re-login. Non-interactive actions (e.g. goto
       // for header capture) are unaffected, and health checks below still run.
-      if (this.lastHealthOverall !== null && this.lastHealthOverall !== 'PASS') {
+      // AUTH_FAIL only, NOT any non-PASS. TRANSIENT_FAIL is a 5xx / probe
+      // timeout / egress blip — the session is still signed in, so suppressing
+      // the nudge there lets the portal's own idle timer run out and converts a
+      // recoverable blip into a real expiry, the exact outcome 'activity' exists
+      // to prevent. The bot-scoring rationale only applies to a login page.
+      if (this.lastHealthOverall === 'AUTH_FAIL') {
         const before = actions.length;
         actions = actions.filter((a: { action?: string }) => a.action !== 'activity');
         if (actions.length < before) {
-          console.log(`Keepalive: skipping 'activity' nudge (last health ${this.lastHealthOverall}, likely on login page)`);
+          console.log(`Keepalive: skipping 'activity' nudge (last health AUTH_FAIL, likely on login page)`);
         }
       }
       if (actions.length > 0) {

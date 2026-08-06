@@ -10,6 +10,7 @@ function makeLocator(overrides: Record<string, any> = {}): any {
     filter: jest.fn(),
     nth: jest.fn(),
     getByText: jest.fn(),
+    first: jest.fn(),
     scrollIntoViewIfNeeded: jest.fn().mockResolvedValue(undefined),
     dispatchEvent: jest.fn().mockResolvedValue(undefined),
   };
@@ -17,6 +18,7 @@ function makeLocator(overrides: Record<string, any> = {}): any {
     loc._lastFilter = opts;
     return overrides.filtered ?? loc;
   });
+  loc.first.mockImplementation(() => loc);
   loc.nth.mockImplementation((i: number) => {
     loc._lastNth = i;
     return loc;
@@ -25,19 +27,55 @@ function makeLocator(overrides: Record<string, any> = {}): any {
 }
 
 describe('execute-browser-handler click_by_text resolution', () => {
-  it('defaults to non-exact matching and clicks the first VISIBLE match', async () => {
+  it('prefers an EXACT match by default, and clicks the first VISIBLE one', async () => {
+    // Defaulting straight to substring silently widened every already-compiled
+    // skill that omits `exact`: a sidebar with "Log out" and "Log out of all
+    // devices" made click_by_text('Log out') ambiguous, and nth(0) then picks DOM
+    // order. Exact is tried first; substring is only a rescue (below).
     const visible = makeLocator({ count: 1 });
     const matches = makeLocator({ count: 3, filtered: visible });
     const page: any = { getByText: jest.fn().mockReturnValue(matches) };
 
     await dispatchCommand(page, 'click_by_text', { text: 'Cards' }, 30000);
 
-    // exact defaults to false (Playwright's natural substring match)
-    expect(page.getByText).toHaveBeenCalledWith('Cards', { exact: false });
+    expect(page.getByText).toHaveBeenCalledWith('Cards', { exact: true });
     // duplicate matches → filter to visible, take the first, then click
     expect(matches.filter).toHaveBeenCalledWith({ visible: true });
     expect(visible.nth).toHaveBeenCalledWith(0);
     expect(visible.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to substring when no exact match exists (near-miss labels)', async () => {
+    // The reason substring matching exists: a skill records "Credit Cards" but
+    // the DOM says "Credit Card".
+    const visible = makeLocator({ count: 1 });
+    const exactMatches = makeLocator({ count: 0 });
+    const looseMatches = makeLocator({ count: 2, filtered: visible });
+    const page: any = {
+      getByText: jest.fn().mockImplementation((_t: string, opts: any) =>
+        opts?.exact ? exactMatches : looseMatches,
+      ),
+    };
+
+    await dispatchCommand(page, 'click_by_text', { text: 'Credit Cards' }, 30000);
+
+    expect(page.getByText).toHaveBeenCalledWith('Credit Cards', { exact: true });
+    expect(page.getByText).toHaveBeenCalledWith('Credit Cards', { exact: false });
+    expect(visible.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('click_element prefers visible matches and clicks through an overlay', async () => {
+    const visible = makeLocator({ count: 1 });
+    visible.click.mockRejectedValueOnce(
+      new Error('locator.click: Timeout 30000ms exceeded.\n<div class="newsNotification"> intercepts pointer events'),
+    );
+    const all = makeLocator({ count: 3, filtered: visible });
+    const page: any = { locator: jest.fn().mockReturnValue(all) };
+
+    await dispatchCommand(page, 'click_element', { selector: '.stmt a.dl' }, 30000);
+
+    expect(all.filter).toHaveBeenCalledWith({ visible: true });
+    expect(visible.dispatchEvent).toHaveBeenCalledWith('click');
   });
 
   it('honors exact:true, a within-scope, and an nth index', async () => {

@@ -70,3 +70,16 @@ describe('KeepaliveRunner activity HEALTHY-gate', () => {
     expect(dslRunner.execute).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('KeepaliveRunner activity gate is AUTH_FAIL-only', () => {
+  it('keeps nudging through a TRANSIENT_FAIL', async () => {
+    // A 5xx / probe timeout / egress blip does not mean the session is signed
+    // out. Suppressing the nudge there lets the portal's own idle timer run out
+    // and turns a recoverable blip into a real expiry — the outcome 'activity'
+    // exists to prevent. Only a login page (AUTH_FAIL) should stop it.
+    const { runner, dslRunner } = build(['TRANSIENT_FAIL', 'TRANSIENT_FAIL']);
+    await (runner as any).runCycle();
+    await (runner as any).runCycle();
+    expect(dslRunner.execute).toHaveBeenCalledTimes(2);
+  });
+});

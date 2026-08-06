@@ -2088,6 +2088,16 @@ ${HEALTH_LABEL_JS}
     section: 'core' | 'vendor',
     assetPath: string,
   ): Promise<{ body: string; contentType: string }> {
+    // Resolve + contain BEFORE the try. Inside it, the bare `catch` below would
+    // swallow the rejection and then fetch the same unvalidated path from the
+    // public CDN — the guard would re-route rather than deny.
+    const base = resolvePath(StreamingController.noVncVendorRoot, section);
+    const vendoredPath = resolvePath(base, assetPath);
+    const rel = relativePath(base, vendoredPath);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      throw new NotFoundException('Invalid noVNC asset path');
+    }
+
     try {
       // Serve the copy vendored into the image at build time (Dockerfile.api pulls the
       // GitHub tree, which is what noVncRootBaseUrl points at).
@@ -2103,18 +2113,17 @@ ${HEALTH_LABEL_JS}
       // before it reaches this join. Defense-in-depth: confirm the resolved file
       // stays under the vendored root/section before reading it, so a future change
       // to the validator can't reopen a path-traversal read.
-      const base = resolvePath(StreamingController.noVncVendorRoot, section);
-      const vendoredPath = resolvePath(base, assetPath);
-      const rel = relativePath(base, vendoredPath);
-      if (rel.startsWith('..') || isAbsolute(rel)) {
-        throw new NotFoundException('Invalid noVNC asset path');
-      }
       const body = await readFile(vendoredPath, 'utf8');
       return {
         body,
         contentType: this.resolveNoVncAssetContentType(assetPath),
       };
     } catch {
+      // The Dockerfile vendors noVNC so the viewer needs no outbound internet;
+      // falling back to the CDN silently defeats that, so say it happened.
+      console.warn(
+        `noVNC asset ${section}/${assetPath} not in the vendored tree — falling back to the CDN`,
+      );
       const upstream = await fetch(`${StreamingController.noVncRootBaseUrl}/${section}/${assetPath}`);
       if (!upstream.ok) {
         if (upstream.status === 404) {

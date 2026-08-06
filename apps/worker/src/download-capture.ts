@@ -36,6 +36,11 @@ const downloadsByContext = new WeakMap<BrowserContext, DownloadRecord[]>();
 const MAX_DOWNLOADS = 20; // keep only the most recent N per context
 // Every captured file is saved under this dir; get_download reads only from here.
 const DOWNLOADS_DIR = path.join(os.tmpdir(), 'tabby-downloads');
+// Monotonic so ids stay unique once the index caps: `records.length` is read
+// BEFORE the push, so past MAX_DOWNLOADS it is always the cap and two downloads
+// in the same millisecond collided — get_download(id) then returned whichever
+// find() hit first.
+let downloadSeq = 0;
 
 function mimeFromName(name: string): string {
   const ext = path.extname(name || '').toLowerCase();
@@ -80,7 +85,7 @@ export function enableDownloadCapture(context: BrowserContext): void {
     page.on('download', async (download: Download) => {
       const suggested = download.suggestedFilename() || 'download';
       const rec: DownloadRecord = {
-        id: `dl-${Date.now()}-${records.length}`,
+        id: `dl-${Date.now()}-${++downloadSeq}`,
         suggested_filename: suggested,
         url: download.url(),
         mime_type: mimeFromName(suggested),
@@ -91,7 +96,15 @@ export function enableDownloadCapture(context: BrowserContext): void {
       };
       records.push(rec);
       if (records.length > MAX_DOWNLOADS) {
-        records.splice(0, records.length - MAX_DOWNLOADS);
+        // Delete the evicted files too. Dropping only the index entry leaked the
+        // bytes: nothing else unlinks them, so a long-lived worker with downloads
+        // enabled accumulated every export on the pod's ephemeral disk until the
+        // kubelet evicted it.
+        for (const dropped of records.splice(0, records.length - MAX_DOWNLOADS)) {
+          if (dropped.path) {
+            fs.unlink(dropped.path).catch(() => undefined);
+          }
+        }
       }
       try {
         await fs.mkdir(dir, { recursive: true });

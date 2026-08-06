@@ -609,9 +609,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
           // otherwise leave desired alone so reconcile provisions a fresh session
           // for the waiting user. A WARM pool spare never stands its (shared) pool
           // app down — that would drain the pool (mirrors the max-age path above).
-          const app = appById.get(session.app_id);
-          const template = app?.template_id ? templateById.get(app.template_id) : undefined;
-          const idleSeconds = template?.idle_shutdown_seconds ?? globalIdleShutdownSeconds;
+          // The global value, deliberately: appById/templateById are built only
+          // from the apps of HEALTHY sessions, and this branch only acts when the
+          // app has NO live session — so the per-template lookup always missed and
+          // silently fell back here anyway. Say what it does instead of implying a
+          // per-template override that never applied.
+          const idleSeconds = globalIdleShutdownSeconds;
           const idleMs = idleSeconds * 1000;
           const lastUsed =
             session.last_activity_at || session.last_credential_request_at || session.started_at;

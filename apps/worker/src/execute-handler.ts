@@ -75,7 +75,18 @@ export function registerExecuteHandler(app: Express, page: Page): void {
       // context (interceptors that mint per-request tokens still run).
       const context = page.context();
       const pageOrigin = (() => {
-        try { return new URL(page.url()).origin; } catch { return null; }
+        try {
+          const origin = new URL(page.url()).origin;
+          // about:blank and other opaque origins serialize to the STRING "null"
+          // rather than throwing, so this used to be "cross-origin" only by
+          // accident (the string never equals a real origin). Keep that routing —
+          // an in-page fetch from an opaque origin cannot pass CORS anyway — but
+          // say so explicitly. Note the consequence: while the page sits on
+          // about:blank (worker boot, warm-pool spare, post-crash) every fetch
+          // goes off-page, and off-page traffic never fires page.on('request'),
+          // so har_start/har_stop records nothing for it.
+          return origin === 'null' ? null : origin;
+        } catch { return null; }
       })();
       const isCrossOrigin = pageOrigin === null || pageOrigin !== parsed.origin;
 

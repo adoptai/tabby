@@ -65,7 +65,13 @@ export async function dispatchCommand(
 
     case 'click_element': {
       const selector = requireParam(params, 'selector', 'string');
-      await page.locator(selector).click({ timeout: timeoutMs });
+      // Same visible-first + overlay handling as click_by_text: a selector can
+      // match hidden analytics/off-screen copies (strict-mode violation), and the
+      // sticky-banner interception is not text-specific.
+      const all = page.locator(selector);
+      const vis = all.filter({ visible: true });
+      const el = (await vis.count()) > 0 ? vis.first() : all.first();
+      await clickThroughOverlays(el, timeoutMs);
       return {};
     }
 
@@ -222,6 +228,39 @@ export async function dispatchCommand(
 }
 
 /**
+ * Click a resolved locator, falling back to a DOM-dispatched click when a real
+ * mouse click cannot be delivered.
+ *
+ * Real SPA/bank portals overlay sticky banners (news / service-update
+ * notifications, cookie notices) that cover a target's click point. Playwright
+ * correctly refuses a click it cannot deliver ("<div …> intercepts pointer
+ * events") and times out — even though THIS is the right, visible element and a
+ * human clicking it directly works (observed on HSBCnet: a `newsNotification`
+ * widget obscured the per-row statement "Download" link, so the click never
+ * landed and no download fired). The DOM dispatch bypasses the pointer-event
+ * hit-test, the same effect as the manual click.
+ *
+ * Only for a genuine OVERLAY interception — Playwright always includes
+ * "intercepts pointer events" in that error. A plain "Timeout exceeded" means
+ * the element was never found/actionable (e.g. a wrong selector or label), where
+ * a DOM dispatch cannot help and would just burn a second timeout, so those
+ * re-throw unchanged.
+ */
+async function clickThroughOverlays(target: any, timeoutMs: number): Promise<void> {
+  try {
+    await target.click({ timeout: timeoutMs });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/intercepts pointer events/i.test(msg)) {
+      await target.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
+      await target.dispatchEvent('click');
+    } else {
+      throw err;
+    }
+  }
+}
+
+/**
  * Click an element by its visible text, tolerant of the two things that make a
  * naive `getByText(text, { exact: true }).click()` fail on real SPA portals:
  *
@@ -245,45 +284,35 @@ async function clickByText(
   text: string,
   timeoutMs: number,
 ): Promise<void> {
-  const exact = params.exact === true;
+  const explicitExact = typeof params.exact === 'boolean' ? params.exact : undefined;
   const within = typeof params.within === 'string' && params.within ? params.within : '';
   const nth = Number.isInteger(params.nth) ? params.nth : 0;
 
   const scope = within ? page.locator(within) : page;
-  const matches = scope.getByText(text, { exact });
 
   // Prefer visible matches so the hidden analytics/off-screen copies never cause
   // a strict-mode violation. Only fall back to all matches when nothing is
   // currently visible, so a genuinely-missing target still errors clearly.
-  const visible = matches.filter({ visible: true });
-  const target = (await visible.count()) > 0 ? visible.nth(nth) : matches.nth(nth);
-  try {
-    await target.click({ timeout: timeoutMs });
-  } catch (err) {
-    // Real SPA/bank portals overlay sticky banners (news / service-update
-    // notifications, cookie notices) that cover a target's click point.
-    // Playwright correctly refuses a real mouse click it cannot deliver
-    // ("<div …> intercepts pointer events") and times out — even though THIS is
-    // the right, visible element and a human clicking the link directly works
-    // (observed on HSBCnet: a `newsNotification` widget obscured the per-row
-    // statement "Download" link, so the click never landed and no download
-    // fired). Fall back to a DOM-level click dispatched straight to the element,
-    // which bypasses the pointer-event hit-test — the same effect as the manual
-    // click. Only for interception/stability timeouts; a genuinely missing or
-    // detached target still surfaces its original error.
-    // Only fall back for a genuine OVERLAY interception — Playwright always
-    // includes "intercepts pointer events" in that error. A plain "Timeout
-    // exceeded" instead means the element was never found/actionable (e.g. a
-    // wrong text label), where a DOM dispatch can't help and would just burn a
-    // second timeout — so re-throw those unchanged.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/intercepts pointer events/i.test(msg)) {
-      await target.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
-      await target.dispatchEvent('click');
-    } else {
-      throw err;
-    }
+  const resolve = async (exact: boolean) => {
+    const matches = scope.getByText(text, { exact });
+    const visible = matches.filter({ visible: true });
+    return (await visible.count()) > 0 ? visible.nth(nth) : matches.nth(nth);
+  };
+
+  // Default is EXACT-first, substring only as a rescue. Defaulting straight to
+  // substring silently widened every already-compiled skill that omits `exact`:
+  // a sidebar with "Log out" and "Log out of all devices" made click_by_text
+  // "Log out" ambiguous, and nth(0) then picks DOM order. Trying exact first
+  // keeps those precise while still rescuing the near-miss labels substring
+  // matching exists for ("Credit Cards" recorded, "Credit Card" in the DOM).
+  let target;
+  if (explicitExact !== undefined) {
+    target = await resolve(explicitExact);
+  } else {
+    const exactCount = await scope.getByText(text, { exact: true }).count();
+    target = await resolve(exactCount > 0);
   }
+  await clickThroughOverlays(target, timeoutMs);
 }
 
 function requireParam(params: Record<string, any>, name: string, type: string): any {
