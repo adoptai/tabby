@@ -104,15 +104,58 @@ export async function dispatchCommand(
 
     case 'get_page_summary': {
       const summary = await page.evaluate(() => {
+        // Only report what the USER can actually see. The raw DOM keeps
+        // display:none / aria-hidden / zero-size leftovers — e.g. a modal from
+        // an earlier navigation that was closed but not removed. Feeding those
+        // to the model makes it "see" phantom UI (blocking modals, stale
+        // overlays) that isn't on screen and chase it. Mirror click_by_text,
+        // which already prefers visible matches, so summary and clicks agree.
+        const isVisible = (el: Element): boolean => {
+          const e = el as HTMLElement;
+          try {
+            // checkVisibility() covers display:none, visibility:hidden/collapse,
+            // content-visibility, and (with the flag) opacity:0. It is TRUE for
+            // elements merely scrolled out of view, which is what we want —
+            // "rendered", not "in the current viewport".
+            const cv = (e as unknown as {
+              checkVisibility?: (opts?: Record<string, boolean>) => boolean;
+            }).checkVisibility;
+            if (typeof cv === 'function') {
+              if (!cv.call(e, { checkVisibilityCSS: true, checkOpacity: true, contentVisibilityAuto: true })) {
+                return false;
+              }
+            } else {
+              const s = window.getComputedStyle(e);
+              if (
+                s.display === 'none' ||
+                s.visibility === 'hidden' ||
+                s.visibility === 'collapse' ||
+                parseFloat(s.opacity || '1') === 0
+              ) {
+                return false;
+              }
+              if (!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)) return false;
+            }
+            // aria-hidden subtree = intentionally removed from the accessibility
+            // tree; treat as not-shown so hidden dialogs don't leak through.
+            if (e.closest('[aria-hidden="true"]')) return false;
+            return true;
+          } catch {
+            return true; // never let a visibility probe drop a real element
+          }
+        };
         const title = document.title;
         const url = window.location.href;
         const links = Array.from(document.querySelectorAll('a[href]'))
+          .filter(isVisible)
           .slice(0, 50)
           .map(a => ({ text: (a as HTMLAnchorElement).textContent?.trim() || '', href: (a as HTMLAnchorElement).href }));
         const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
+          .filter(isVisible)
           .slice(0, 50)
           .map(b => ({ text: (b as HTMLElement).textContent?.trim() || '', tag: b.tagName.toLowerCase() }));
         const inputs = Array.from(document.querySelectorAll('input, textarea, select'))
+          .filter(isVisible)
           .slice(0, 50)
           .map(i => ({
             tag: i.tagName.toLowerCase(),
@@ -122,6 +165,7 @@ export async function dispatchCommand(
             placeholder: (i as HTMLInputElement).placeholder || '',
           }));
         const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
+          .filter(isVisible)
           .slice(0, 20)
           .map(h => ({ level: h.tagName, text: (h as HTMLElement).textContent?.trim() || '' }));
         return { title, url, links, buttons, inputs, headings };
@@ -213,7 +257,33 @@ async function clickByText(
   // currently visible, so a genuinely-missing target still errors clearly.
   const visible = matches.filter({ visible: true });
   const target = (await visible.count()) > 0 ? visible.nth(nth) : matches.nth(nth);
-  await target.click({ timeout: timeoutMs });
+  try {
+    await target.click({ timeout: timeoutMs });
+  } catch (err) {
+    // Real SPA/bank portals overlay sticky banners (news / service-update
+    // notifications, cookie notices) that cover a target's click point.
+    // Playwright correctly refuses a real mouse click it cannot deliver
+    // ("<div …> intercepts pointer events") and times out — even though THIS is
+    // the right, visible element and a human clicking the link directly works
+    // (observed on HSBCnet: a `newsNotification` widget obscured the per-row
+    // statement "Download" link, so the click never landed and no download
+    // fired). Fall back to a DOM-level click dispatched straight to the element,
+    // which bypasses the pointer-event hit-test — the same effect as the manual
+    // click. Only for interception/stability timeouts; a genuinely missing or
+    // detached target still surfaces its original error.
+    // Only fall back for a genuine OVERLAY interception — Playwright always
+    // includes "intercepts pointer events" in that error. A plain "Timeout
+    // exceeded" instead means the element was never found/actionable (e.g. a
+    // wrong text label), where a DOM dispatch can't help and would just burn a
+    // second timeout — so re-throw those unchanged.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/intercepts pointer events/i.test(msg)) {
+      await target.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
+      await target.dispatchEvent('click');
+    } else {
+      throw err;
+    }
+  }
 }
 
 function requireParam(params: Record<string, any>, name: string, type: string): any {
