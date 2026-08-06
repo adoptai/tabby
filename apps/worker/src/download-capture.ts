@@ -34,6 +34,8 @@ export type DownloadMeta = Omit<DownloadRecord, 'path'>;
 
 const downloadsByContext = new WeakMap<BrowserContext, DownloadRecord[]>();
 const MAX_DOWNLOADS = 20; // keep only the most recent N per context
+// Every captured file is saved under this dir; get_download reads only from here.
+const DOWNLOADS_DIR = path.join(os.tmpdir(), 'tabby-downloads');
 
 function mimeFromName(name: string): string {
   const ext = path.extname(name || '').toLowerCase();
@@ -72,7 +74,7 @@ export function enableDownloadCapture(context: BrowserContext): void {
   }
   const records: DownloadRecord[] = [];
   downloadsByContext.set(context, records);
-  const dir = path.join(os.tmpdir(), 'tabby-downloads');
+  const dir = DOWNLOADS_DIR;
 
   const attach = (page: Page) => {
     page.on('download', async (download: Download) => {
@@ -147,6 +149,13 @@ export async function getDownload(
     throw new Error(
       `get_download: "${rec.suggested_filename}" is ${rec.size_bytes} bytes, over the ${EXECUTE_LIMITS.MAX_RESPONSE_BODY_BYTES}-byte inline limit`,
     );
+  }
+  // Defense-in-depth: rec.path is always a saveAs() destination we built under
+  // DOWNLOADS_DIR from a generated id + sanitize()-d name, but confirm it stays
+  // inside that dir before reading (path-traversal containment).
+  const rel = path.relative(DOWNLOADS_DIR, rec.path);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('get_download: refusing to read a path outside the download directory');
   }
   const buf = await fs.readFile(rec.path);
   return {

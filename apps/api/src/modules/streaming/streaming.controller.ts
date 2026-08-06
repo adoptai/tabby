@@ -28,7 +28,7 @@ import { RecordingStore } from '../recording/recording.store';
 import { AppsService } from '../apps/apps.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, relative as relativePath, isAbsolute } from 'node:path';
 import { randomUUID, randomBytes } from 'crypto';
 import { Not, IsNull, MoreThan } from 'typeorm';
 import { Throttle, SkipThrottle } from '@nestjs/throttler';
@@ -2100,10 +2100,15 @@ ${HEALTH_LABEL_JS}
       // @novnc/novnc dependency is therefore not usable here.
       //
       // assetPath is validated by normalizeNoVncAssetPath (no '..', restricted charset)
-      // before it reaches this join.
-      const vendoredPath = resolvePath(
-        StreamingController.noVncVendorRoot, section, assetPath,
-      );
+      // before it reaches this join. Defense-in-depth: confirm the resolved file
+      // stays under the vendored root/section before reading it, so a future change
+      // to the validator can't reopen a path-traversal read.
+      const base = resolvePath(StreamingController.noVncVendorRoot, section);
+      const vendoredPath = resolvePath(base, assetPath);
+      const rel = relativePath(base, vendoredPath);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        throw new NotFoundException('Invalid noVNC asset path');
+      }
       const body = await readFile(vendoredPath, 'utf8');
       return {
         body,
