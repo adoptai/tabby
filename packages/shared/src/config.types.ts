@@ -48,6 +48,18 @@ export interface DomCheck {
   type: 'dom_check';
   selector: string;
   exists: boolean;
+  /**
+   * What `exists` tests. Default 'attached' (DOM presence) — SPA portals render
+   * logged-in chrome that Playwright reports as hidden, so requiring CSS
+   * visibility is the most common cause of a false AUTH_FAIL here.
+   *
+   * Use 'visible' for portals that HIDE rather than unmount their logged-in
+   * markers on sign-out: there the marker stays attached on the login page, so
+   * 'attached' would report PASS on a dead session.
+   */
+  match?: 'attached' | 'visible';
+  /** Per-check timeout in ms. Default 5000. */
+  timeout_ms?: number;
 }
 
 export interface NetworkCheck {

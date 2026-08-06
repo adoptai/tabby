@@ -128,4 +128,40 @@ describe('HealthPredicateRunner — dom_check', () => {
       expect.objectContaining({ state: 'detached' }),
     );
   });
+
+  // DOM presence is right for SPA portals, but it silently redefined `exists`
+  // for every stored config: a portal that HIDES rather than unmounts its
+  // logged-in chrome on sign-out keeps the marker attached on the login page, so
+  // 'attached' reports PASS on a dead session and it never reaches LOGIN_NEEDED.
+  // `match: 'visible'` is the opt-out for those.
+  it('honors match:visible as an opt-out to strict CSS visibility', async () => {
+    const page = makePage(true);
+    await runner(page, {
+      type: 'dom_check', selector: '#x', exists: true, match: 'visible',
+    }).evaluate();
+    expect(page.locator().first().waitFor).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'visible' }),
+    );
+  });
+
+  // Under strict visibility, "the logged-out marker is gone" means Playwright's
+  // 'hidden' (detached OR present-but-invisible) — which is what the comment at
+  // the top of runDomCheck always claimed, while the code used 'detached'.
+  it('uses hidden (not detached) for a negative check under match:visible', async () => {
+    const page = makePage(false);
+    await runner(page, {
+      type: 'dom_check', selector: '#x', exists: false, match: 'visible',
+    }).evaluate();
+    expect(page.locator().first().waitFor).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'hidden' }),
+    );
+  });
+
+  it('reports which mode failed so a false AUTH_FAIL is diagnosable', async () => {
+    const res = await runner(makePage(false), {
+      type: 'dom_check', selector: '#dashboard', exists: true, match: 'visible',
+    }).evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
+    expect(res.checks[0].detail).toMatch(/not visible/);
+  });
 });

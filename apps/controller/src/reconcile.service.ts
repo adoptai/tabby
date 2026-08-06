@@ -215,14 +215,43 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       s => s.state !== SessionState.TERMINATED
     );
 
-    // FAILED sessions hold no live pod and are swept by the FAILED-cleanup pass
-    // below, but that runs only after a grace TTL (up to IDLE_SHUTDOWN/2). Until
-    // then a FAILED session must NOT count toward the app's session capacity —
+    // A FAILED session must NOT count toward the app's session capacity —
     // otherwise it blocks its own replacement and the app cannot provision on
     // demand for the whole cleanup window (a user requesting credentials just
     // waits and gets "no session"). Provisioning counts only sessions that are
     // live or on their way up; the circuit breaker (Step 3) bounds retries if
     // the replacements keep failing.
+    //
+    // Because it no longer holds capacity, its pod MUST be released here rather
+    // than waiting for the FAILED-cleanup pass: that pass is gated on
+    // IDLE_SHUTDOWN_SECONDS, which defaults to 0 (disabled), so on a default
+    // deployment it never runs at all — the pod would outlive the session
+    // forever while reconcile kept creating replacements on top of it, leaking
+    // one pod per failure. reconcileRuntimeDrift doesn't cover this either (it
+    // only reaps pods whose session is missing or TERMINATED).
+    //
+    // State-driven rather than hooked to the FAILED transition, so it self-heals
+    // no matter who marked the session failed (controller, worker, or API), and
+    // idempotent: pod_name is cleared once the runtime is gone.
+    for (const session of activeSessions) {
+      if (session.state !== SessionState.FAILED || !session.pod_name) {
+        continue;
+      }
+      try {
+        this.logger.log(
+          `Releasing runtime for FAILED session ${session.id} (pod ${session.pod_name})`,
+        );
+        await this.releaseSessionRuntime(session);
+        await this.sessionRepo.update(session.id, { pod_name: null as any });
+        session.pod_name = null as any;
+      } catch (error) {
+        // Never let a stuck reap block provisioning — the next tick retries.
+        this.logger.warn(
+          `Failed to release runtime for FAILED session ${session.id}: ${error}`,
+        );
+      }
+    }
+
     const liveSessions = activeSessions.filter(
       s => s.state !== SessionState.FAILED
     );
@@ -459,7 +488,17 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     // Transition to TERMINATED
     await this.stateMachine.transition(session, SessionState.TERMINATED);
 
-    // Delete pod and NetworkPolicy
+    await this.releaseSessionRuntime(session);
+
+    this.logger.log(`Terminated session ${session.id}`);
+  }
+
+  /**
+   * Delete a session's Kubernetes runtime (pod, streaming services, NetworkPolicy)
+   * WITHOUT changing its state. Split out of terminateSession so a FAILED session
+   * can give its pod back while its row stays FAILED for the grace TTL.
+   */
+  private async releaseSessionRuntime(session: SessionEntity): Promise<void> {
     if (session.pod_name) {
       await this.podManager.deleteWorkerPod(session.pod_name);
     }
@@ -468,8 +507,6 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     await this.podManager.deleteCdpService(session.id, session.pod_name || undefined);
     await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
     await this.podManager.deleteNetworkPolicy(session.id);
-
-    this.logger.log(`Terminated session ${session.id}`);
   }
 
   /**

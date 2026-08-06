@@ -660,3 +660,145 @@ describe('ReconcileService checkRecycling', () => {
     expect(stateMachine.transition).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// FAILED sessions must give their pod back immediately
+// ---------------------------------------------------------------------------
+
+describe('ReconcileService FAILED session runtime reap', () => {
+  const originalEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  function makeFailedApp() {
+    return {
+      id: 'app-f',
+      tenant_id: 'tenant-f',
+      desired_session_count: 1,
+      target_urls: ['https://example.com'],
+      extra_egress_allowlist: [],
+      execute_enabled: false,
+      residential_proxy_enabled: false,
+      browser_policy: {},
+      export_policy: {},
+    };
+  }
+
+  function podManagerMock() {
+    return {
+      createWorkerPod: jest.fn().mockResolvedValue('pod-new'),
+      createNoVncService: jest.fn().mockResolvedValue(undefined),
+      createCdpService: jest.fn().mockResolvedValue(undefined),
+      createWorkerService: jest.fn().mockResolvedValue(undefined),
+      createNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+      deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+      deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
+      deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      listWorkerPods: jest.fn().mockResolvedValue([]),
+      podExists: jest.fn().mockResolvedValue(true),
+      resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
+    };
+  }
+
+  it('deletes the pod of a FAILED session with IDLE_SHUTDOWN disabled (the default)', async () => {
+    // The FAILED-cleanup pass is gated on IDLE_SHUTDOWN_SECONDS, which defaults
+    // to 0 — so without this reap the pod outlives the session forever while
+    // reconcile creates replacements on top of it (one leaked pod per failure).
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '0' };
+
+    const failed = {
+      id: 'sess-failed',
+      tenant_id: 'tenant-f',
+      app_id: 'app-f',
+      state: 'FAILED',
+      pod_name: 'worker-sess-failed',
+      started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockImplementation(async (v: any) => ({ id: 'sess-new', ...v })),
+    };
+    const podManager = podManagerMock();
+    const batonRepo = {
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const service = buildService({ sessionRepo, podManager, batonRepo });
+
+    await (service as any).reconcileApp(makeFailedApp());
+
+    expect(podManager.deleteWorkerPod).toHaveBeenCalledWith('worker-sess-failed');
+    expect(podManager.deleteNetworkPolicy).toHaveBeenCalledWith('sess-failed');
+    // pod_name cleared so the reap is idempotent across ticks
+    expect(sessionRepo.update).toHaveBeenCalledWith('sess-failed', { pod_name: null });
+  });
+
+  it('still provisions a replacement — the FAILED session must not hold capacity', async () => {
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '0' };
+
+    const failed = {
+      id: 'sess-failed-2',
+      tenant_id: 'tenant-f',
+      app_id: 'app-f',
+      state: 'FAILED',
+      pod_name: 'worker-sess-failed-2',
+      started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockImplementation(async (v: any) => ({ id: 'sess-new', ...v })),
+    };
+    const podManager = podManagerMock();
+    const batonRepo = {
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const service = buildService({ sessionRepo, podManager, batonRepo });
+
+    await (service as any).reconcileApp(makeFailedApp());
+
+    expect(podManager.deleteWorkerPod).toHaveBeenCalledWith('worker-sess-failed-2');
+    expect(sessionRepo.save).toHaveBeenCalled(); // a fresh session was created
+  });
+
+  it('does not touch a FAILED session whose runtime was already released', async () => {
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '0' };
+
+    const failed = {
+      id: 'sess-failed-3',
+      tenant_id: 'tenant-f',
+      app_id: 'app-f',
+      state: 'FAILED',
+      pod_name: null, // already reaped on an earlier tick
+      started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockImplementation(async (v: any) => ({ id: 'sess-new', ...v })),
+    };
+    const podManager = podManagerMock();
+    const batonRepo = {
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const service = buildService({ sessionRepo, podManager, batonRepo });
+
+    await (service as any).reconcileApp(makeFailedApp());
+
+    expect(podManager.deleteWorkerPod).not.toHaveBeenCalled();
+    expect(sessionRepo.update).not.toHaveBeenCalledWith('sess-failed-3', { pod_name: null });
+  });
+});
