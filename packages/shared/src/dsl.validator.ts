@@ -18,7 +18,7 @@ export interface ValidationResult {
 const VALID_ACTIONS: DslActionType[] = [
   'goto', 'fill', 'type', 'click', 'select',
   'wait_for', 'wait_for_url', 'frame', 'main_frame',
-  'popup', 'keyboard', 'evaluate', 'sleep', 'screenshot', 'reload',
+  'popup', 'keyboard', 'evaluate', 'sleep', 'screenshot', 'reload', 'activity',
   'request_human_input',
 ];
 
@@ -154,6 +154,7 @@ function validateStep(step: DslStep, index: number, prefix: string): ValidationE
 
     case 'screenshot':
     case 'reload':
+    case 'activity':
       // No params needed
       break;
 

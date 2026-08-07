@@ -40,6 +40,14 @@ export class MinioOrphanSweepService {
 
         for await (const obj of stream) {
           if (!obj.lastModified || obj.lastModified >= cutoff) continue;
+          // Recording bundles share this bucket but are NOT artifact bundles:
+          // RecordingStore writes them via a bare putObject and creates no
+          // artifact_bundles row, so the DB-row check below would classify every
+          // recording as an orphan and delete it after MINIO_ORPHAN_MAX_AGE_HOURS
+          // (default 2h). That silently GC'd captured login recordings before
+          // capture_import could compile them. The sweep only owns credential
+          // artifact bundles; skip the recordings/ prefix entirely.
+          if ((obj.name as string).startsWith('recordings/')) continue;
           // Check if DB row exists
           const dbRow = await this.artifactRepo.findOne({
             where: { encrypted_payload_ref: obj.name, tenant_id: tenant.id },

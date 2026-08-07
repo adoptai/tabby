@@ -395,6 +395,77 @@ describe('ReconcileService DISABLE_NETWORK_POLICY', () => {
 });
 
 // ---------------------------------------------------------------------------
+// reconcileApp capacity — FAILED sessions must not occupy the app's slot
+// ---------------------------------------------------------------------------
+
+describe('ReconcileService reconcileApp capacity', () => {
+  const originalEnv = { ...process.env };
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  function makeApp(overrides: Record<string, any> = {}) {
+    return {
+      id: 'app-1',
+      tenant_id: 'tenant-1',
+      name: 'some-app',
+      target_urls: ['https://example.com'],
+      desired_session_count: 1,
+      browser_policy: {},
+      extra_egress_allowlist: [],
+      ...overrides,
+    };
+  }
+
+  it('creates a replacement when the only session is FAILED (FAILED is not live capacity)', async () => {
+    // The core of the incident: desired=1 with a single FAILED session. The old
+    // code counted FAILED as occupying the slot (actual=1==desired) and never
+    // provisioned a replacement, so on-demand provisioning silently no-op'd for
+    // the whole cleanup window. FAILED must not count → a fresh session is made.
+    const failed = {
+      id: 'failed-1', app_id: 'app-1', tenant_id: 'tenant-1',
+      state: 'FAILED', pod_name: null, started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn(),
+    };
+    const service = buildService({ sessionRepo });
+    jest.spyOn(service as any, 'isProvisioningCircuitOpen').mockResolvedValue(false);
+    const createSpy = jest
+      .spyOn(service as any, 'createSession')
+      .mockResolvedValue(undefined);
+
+    await (service as any).reconcileApp(makeApp());
+
+    expect(createSpy).toHaveBeenCalledTimes(1); // one replacement for the dead slot
+  });
+
+  it('does NOT create when the circuit breaker is open, even with only a FAILED session', async () => {
+    // Fix A relies on the breaker to bound retries when replacements keep failing.
+    const failed = {
+      id: 'failed-1', app_id: 'app-1', tenant_id: 'tenant-1',
+      state: 'FAILED', pod_name: null, started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn(),
+    };
+    const service = buildService({ sessionRepo });
+    jest.spyOn(service as any, 'isProvisioningCircuitOpen').mockResolvedValue(true);
+    const createSpy = jest
+      .spyOn(service as any, 'createSession')
+      .mockResolvedValue(undefined);
+
+    await (service as any).reconcileApp(makeApp());
+
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkRecycling — idle shutdown + FAILED session cleanup
 // ---------------------------------------------------------------------------
 
@@ -424,7 +495,7 @@ describe('ReconcileService checkRecycling', () => {
   function buildForRecycling() {
     const sessionRepo = {
       find: jest.fn(),
-      count: jest.fn(),
+      count: jest.fn().mockResolvedValue(0), // default: no other live session for the app
       update: jest.fn(),
     };
     const appRepo = { update: jest.fn(), find: jest.fn(), findByIds: jest.fn().mockResolvedValue([]) };
@@ -443,23 +514,73 @@ describe('ReconcileService checkRecycling', () => {
     return { service, sessionRepo, appRepo, stateMachine, podManager };
   }
 
-  it('terminates FAILED sessions older than half the idle TTL and zeroes desired_session_count', async () => {
+  it('terminates FAILED sessions older than half the idle TTL and, when the app is idle, zeroes desired_session_count', async () => {
     process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '120', MAX_SESSION_AGE_HOURS: '24' };
     const { service, sessionRepo, appRepo, stateMachine } = buildForRecycling();
 
     const failed = makeSession({
       id: 'failed-1',
       state: 'FAILED',
-      started_at: new Date(Date.now() - 120_000),
+      started_at: new Date(Date.now() - 120_000), // last used 120s ago >= idle threshold → idle
     });
     sessionRepo.find
       .mockResolvedValueOnce([])       // HEALTHY
       .mockResolvedValueOnce([failed]); // FAILED
+    sessionRepo.count.mockResolvedValue(0); // no other live session for the app
 
     await (service as any).checkRecycling();
 
     expect(appRepo.update).toHaveBeenCalledWith('app-1', { desired_session_count: 0 });
     expect(stateMachine.transition).toHaveBeenCalledWith(failed, expect.anything());
+  });
+
+  it('reaps a FAILED session WITHOUT zeroing desired when the app has recent demand', async () => {
+    // The incident this fixes: a user is actively driving the app, its session
+    // fails (e.g. bank session expired), and the old code zeroed desired on
+    // cleanup — so the user's next call found no session and no way to make one.
+    // With recent activity, cleanup must reap the corpse but leave desired so
+    // reconcile provisions a fresh session for the waiting user.
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '600', MAX_SESSION_AGE_HOURS: '24' };
+    const { service, sessionRepo, appRepo, stateMachine } = buildForRecycling();
+
+    const failed = makeSession({
+      id: 'failed-active',
+      state: 'FAILED',
+      started_at: new Date(Date.now() - 400_000), // old enough to reap (> 300s half-TTL)
+      last_activity_at: new Date(Date.now() - 5_000), // but used 5s ago → recent demand
+    });
+    sessionRepo.find
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([failed]);
+    sessionRepo.count.mockResolvedValue(0);
+
+    await (service as any).checkRecycling();
+
+    expect(stateMachine.transition).toHaveBeenCalledWith(failed, expect.anything()); // corpse reaped
+    expect(appRepo.update).not.toHaveBeenCalled(); // but desired preserved
+  });
+
+  it('reaps a FAILED session WITHOUT zeroing desired when the app still has a live session', async () => {
+    // A replacement session already came up (reconcile created it because FAILED
+    // no longer counts as capacity). Reaping the old corpse must not scale the
+    // app to 0 — that would kill the live replacement.
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '120', MAX_SESSION_AGE_HOURS: '24' };
+    const { service, sessionRepo, appRepo, stateMachine } = buildForRecycling();
+
+    const failed = makeSession({
+      id: 'failed-with-replacement',
+      state: 'FAILED',
+      started_at: new Date(Date.now() - 120_000), // idle by activity, but…
+    });
+    sessionRepo.find
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([failed]);
+    sessionRepo.count.mockResolvedValue(1); // …a live replacement exists
+
+    await (service as any).checkRecycling();
+
+    expect(stateMachine.transition).toHaveBeenCalledWith(failed, expect.anything());
+    expect(appRepo.update).not.toHaveBeenCalled();
   });
 
   it('leaves FAILED sessions younger than half TTL alone', async () => {
@@ -537,5 +658,147 @@ describe('ReconcileService checkRecycling', () => {
 
     expect(appRepo.update).not.toHaveBeenCalled();
     expect(stateMachine.transition).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FAILED sessions must give their pod back immediately
+// ---------------------------------------------------------------------------
+
+describe('ReconcileService FAILED session runtime reap', () => {
+  const originalEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  function makeFailedApp() {
+    return {
+      id: 'app-f',
+      tenant_id: 'tenant-f',
+      desired_session_count: 1,
+      target_urls: ['https://example.com'],
+      extra_egress_allowlist: [],
+      execute_enabled: false,
+      residential_proxy_enabled: false,
+      browser_policy: {},
+      export_policy: {},
+    };
+  }
+
+  function podManagerMock() {
+    return {
+      createWorkerPod: jest.fn().mockResolvedValue('pod-new'),
+      createNoVncService: jest.fn().mockResolvedValue(undefined),
+      createCdpService: jest.fn().mockResolvedValue(undefined),
+      createWorkerService: jest.fn().mockResolvedValue(undefined),
+      createNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+      deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+      deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
+      deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      listWorkerPods: jest.fn().mockResolvedValue([]),
+      podExists: jest.fn().mockResolvedValue(true),
+      resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
+    };
+  }
+
+  it('deletes the pod of a FAILED session with IDLE_SHUTDOWN disabled (the default)', async () => {
+    // The FAILED-cleanup pass is gated on IDLE_SHUTDOWN_SECONDS, which defaults
+    // to 0 — so without this reap the pod outlives the session forever while
+    // reconcile creates replacements on top of it (one leaked pod per failure).
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '0' };
+
+    const failed = {
+      id: 'sess-failed',
+      tenant_id: 'tenant-f',
+      app_id: 'app-f',
+      state: 'FAILED',
+      pod_name: 'worker-sess-failed',
+      started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockImplementation(async (v: any) => ({ id: 'sess-new', ...v })),
+    };
+    const podManager = podManagerMock();
+    const batonRepo = {
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const service = buildService({ sessionRepo, podManager, batonRepo });
+
+    await (service as any).reconcileApp(makeFailedApp());
+
+    expect(podManager.deleteWorkerPod).toHaveBeenCalledWith('worker-sess-failed');
+    expect(podManager.deleteNetworkPolicy).toHaveBeenCalledWith('sess-failed');
+    // pod_name cleared so the reap is idempotent across ticks
+    expect(sessionRepo.update).toHaveBeenCalledWith('sess-failed', { pod_name: null });
+  });
+
+  it('still provisions a replacement — the FAILED session must not hold capacity', async () => {
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '0' };
+
+    const failed = {
+      id: 'sess-failed-2',
+      tenant_id: 'tenant-f',
+      app_id: 'app-f',
+      state: 'FAILED',
+      pod_name: 'worker-sess-failed-2',
+      started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockImplementation(async (v: any) => ({ id: 'sess-new', ...v })),
+    };
+    const podManager = podManagerMock();
+    const batonRepo = {
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const service = buildService({ sessionRepo, podManager, batonRepo });
+
+    await (service as any).reconcileApp(makeFailedApp());
+
+    expect(podManager.deleteWorkerPod).toHaveBeenCalledWith('worker-sess-failed-2');
+    expect(sessionRepo.save).toHaveBeenCalled(); // a fresh session was created
+  });
+
+  it('does not touch a FAILED session whose runtime was already released', async () => {
+    process.env = { ...originalEnv, IDLE_SHUTDOWN_SECONDS: '0' };
+
+    const failed = {
+      id: 'sess-failed-3',
+      tenant_id: 'tenant-f',
+      app_id: 'app-f',
+      state: 'FAILED',
+      pod_name: null, // already reaped on an earlier tick
+      started_at: new Date(),
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([failed]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockImplementation(async (v: any) => ({ id: 'sess-new', ...v })),
+    };
+    const podManager = podManagerMock();
+    const batonRepo = {
+      create: jest.fn().mockImplementation((v: any) => v),
+      save: jest.fn().mockResolvedValue({}),
+    };
+    const service = buildService({ sessionRepo, podManager, batonRepo });
+
+    await (service as any).reconcileApp(makeFailedApp());
+
+    expect(podManager.deleteWorkerPod).not.toHaveBeenCalled();
+    expect(sessionRepo.update).not.toHaveBeenCalledWith('sess-failed-3', { pod_name: null });
   });
 });

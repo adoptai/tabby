@@ -204,6 +204,30 @@ export class LoginDslRunner {
         await this.page.reload({ timeout });
         break;
 
+      case 'activity': {
+        // Human-like idle-reset keepalive. Banks typically detect idle via DOM
+        // interaction events (mousemove / scroll / keypress reset a client-side
+        // countdown that redirects to /session-expire), NOT via HTTP activity —
+        // which is why an open page still expires and a fetch heartbeat may not
+        // help. Playwright's mouse input generates TRUSTED events (isTrusted =
+        // true), indistinguishable from a real user, so a small move + a scroll
+        // nudge resets that timer the way a human would. No clicks, no keys, no
+        // navigation — safe on any page (including the login/expiry page).
+        try {
+          const vp = this.page.viewportSize() || { width: 1200, height: 800 };
+          const cx = Math.floor(vp.width / 2);
+          const cy = Math.floor(vp.height / 2);
+          await this.page.mouse.move(cx, cy, { steps: 3 });
+          await this.page.mouse.move(cx + 25, cy + 18, { steps: 3 });
+          await this.page.mouse.wheel(0, 40);
+          await this.page.mouse.wheel(0, -40);
+        } catch (error) {
+          // Never let a keepalive nudge fail the loop.
+          console.warn(`[DSL] activity keepalive nudge failed: ${error}`);
+        }
+        break;
+      }
+
       case 'request_human_input':
         await this.handleHumanInputRequest(step, stepIndex);
         break;

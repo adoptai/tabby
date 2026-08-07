@@ -28,6 +28,7 @@ import { RecordingStore } from '../recording/recording.store';
 import { AppsService } from '../apps/apps.service';
 import { Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath, relative as relativePath, isAbsolute } from 'node:path';
 import { randomUUID, randomBytes } from 'crypto';
 import { Not, IsNull, MoreThan } from 'typeorm';
 import { Throttle, SkipThrottle } from '@nestjs/throttler';
@@ -38,6 +39,47 @@ import { parseCookie } from '../../common/utils/cookie';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'http://localhost:18080').replace(/\/+$/, '');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Browser-side helper injected into both viewer templates (VNC + CDP).
+ *
+ * The status panel used to print the raw `health_result_type` enum. That reads
+ * as an error to a human — but AUTH_FAIL on a fresh session is the EXPECTED
+ * signal (it is what drives STARTING -> LOGIN_NEEDED, i.e. "not signed in
+ * yet"), so users opening the viewer to sign in were greeted by what looked
+ * like a failure. Map the enum to plain language, using the session state for
+ * context so AUTH_FAIL only reads as a problem when it genuinely is one.
+ *
+ * `recording` is required for the same reason in reverse: a recording session
+ * never runs a health check, so its PASS is not evidence of anything and must
+ * not be dressed up as "Signed in".
+ *
+ * Written as a JS string interpolated into the templates so the two viewers
+ * cannot drift apart. Must not contain `${` — the templates are TS template
+ * literals.
+ */
+const HEALTH_LABEL_JS = `
+        function healthLabel(state, health, recording) {
+          if (!health) return state === 'STARTING' ? 'Starting…' : '—';
+          // Recording sessions suppress keepalive actions and health predicates while a
+          // human drives, and the worker stamps PASS once the browser is up (see
+          // apps/worker/src/main.ts, recording branch). That PASS says "recorder
+          // attached", NOT "authenticated" — reporting it as "Signed in" told the user
+          // they were logged in before they had typed anything, on a page that had not
+          // even loaded. Nothing is evaluated here, so say exactly that.
+          if (recording && health === 'PASS') return 'Not checked';
+          if (health === 'PASS') return 'Signed in';
+          if (health === 'TRANSIENT_FAIL') return 'Checking…';
+          if (health === 'AUTH_FAIL') {
+            // Expected while the human is being asked to sign in.
+            if (state === 'LOGIN_NEEDED' || state === 'LOGIN_IN_PROGRESS' || state === 'STARTING') {
+              return 'Awaiting sign-in';
+            }
+            return 'Sign-in required';
+          }
+          return health;
+        }
+`;
 
 /**
  * Resolve the email the gate should match for a session owner.
@@ -887,7 +929,7 @@ export class CdpStreamingController {
         var restartConfirm = document.getElementById('restart-confirm');
         var restartYes = document.getElementById('restart-yes');
         var tokenExpired = false;
-
+${HEALTH_LABEL_JS}
         function poll() {
           if (sessionTerminated || tokenExpired || !TOKEN) return;
           fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
@@ -898,7 +940,7 @@ export class CdpStreamingController {
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
-              stHealth.textContent = data.health_result_type || '—';
+              stHealth.textContent = healthLabel(data.state, data.health_result_type, recordingMode);
               stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
               stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
               if (data.started_at) {
@@ -1050,6 +1092,16 @@ export class CdpStreamingController {
 @Controller('vnc')
 export class StreamingController {
   private static readonly noVncAssetCache = new Map<string, { body: string; contentType: string }>();
+  /**
+   * Where the noVNC ES-module tree lives inside the image. Dockerfile.api vendors
+   * GitHub's `core/` + `vendor/` here at build time so the viewer does not need
+   * outbound internet to load its client. Absent (e.g. running from a source
+   * checkout), asset loads fall back to the CDN below.
+   */
+  private static readonly noVncVendorRoot =
+    process.env.NOVNC_VENDOR_ROOT || resolvePath(process.cwd(), 'vendor/novnc');
+
+  /** Fallback only — see noVncVendorRoot. Keep the version in step with Dockerfile.api. */
   private static readonly noVncRootBaseUrl = 'https://cdn.jsdelivr.net/gh/novnc/noVNC@v1.5.0';
 
   constructor(
@@ -1779,6 +1831,7 @@ export class StreamingController {
         var tokenExpired = false;
 
         // ── Poll panel-state ──────────────────────────────────────────────────
+${HEALTH_LABEL_JS}
         function poll() {
           if (sessionTerminated || tokenExpired || !TOKEN) return;
           fetch('/vnc/' + SESSION_ID + '/panel-state?token=' + encodeURIComponent(TOKEN))
@@ -1789,7 +1842,7 @@ export class StreamingController {
             .then(function(data) {
               if (!data) return;
               stState.textContent = data.state || '—';
-              stHealth.textContent = data.health_result_type || '—';
+              stHealth.textContent = healthLabel(data.state, data.health_result_type, recordingMode);
               stInterventions.textContent = data.intervention_count != null ? String(data.intervention_count) : '—';
               stRetries.textContent = data.retry_count != null ? String(data.retry_count) : '—';
               if (data.started_at) {
@@ -2035,14 +2088,42 @@ export class StreamingController {
     section: 'core' | 'vendor',
     assetPath: string,
   ): Promise<{ body: string; contentType: string }> {
+    // Resolve + contain BEFORE the try. Inside it, the bare `catch` below would
+    // swallow the rejection and then fetch the same unvalidated path from the
+    // public CDN — the guard would re-route rather than deny.
+    const base = resolvePath(StreamingController.noVncVendorRoot, section);
+    const vendoredPath = resolvePath(base, assetPath);
+    const rel = relativePath(base, vendoredPath);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      throw new NotFoundException('Invalid noVNC asset path');
+    }
+
     try {
-      const modulePath = require.resolve(`@novnc/novnc/${section}/${assetPath}`);
-      const body = await readFile(modulePath, 'utf8');
+      // Serve the copy vendored into the image at build time (Dockerfile.api pulls the
+      // GitHub tree, which is what noVncRootBaseUrl points at).
+      //
+      // Do NOT swap this for `require.resolve('@novnc/novnc/...')`. The npm package
+      // publishes only `lib/`, and that build is CommonJS — Babel-transpiled, with
+      // `require()` and no `import`/`export`. The viewer loads the client with
+      // `import RFB from '/vnc/assets/rfb.js'`, so a browser ES-module import of those
+      // files fails outright; only the GitHub `core/` tree is ESM. The declared
+      // @novnc/novnc dependency is therefore not usable here.
+      //
+      // assetPath is validated by normalizeNoVncAssetPath (no '..', restricted charset)
+      // before it reaches this join. Defense-in-depth: confirm the resolved file
+      // stays under the vendored root/section before reading it, so a future change
+      // to the validator can't reopen a path-traversal read.
+      const body = await readFile(vendoredPath, 'utf8');
       return {
         body,
         contentType: this.resolveNoVncAssetContentType(assetPath),
       };
     } catch {
+      // The Dockerfile vendors noVNC so the viewer needs no outbound internet;
+      // falling back to the CDN silently defeats that, so say it happened.
+      console.warn(
+        `noVNC asset ${section}/${assetPath} not in the vendored tree — falling back to the CDN`,
+      );
       const upstream = await fetch(`${StreamingController.noVncRootBaseUrl}/${section}/${assetPath}`);
       if (!upstream.ok) {
         if (upstream.status === 404) {

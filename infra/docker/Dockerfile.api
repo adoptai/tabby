@@ -19,6 +19,21 @@ COPY apps/api/src ./apps/api/src
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @browser-hitl/shared build && pnpm --filter @browser-hitl/api build
 
+# Vendor the noVNC browser client so the VNC viewer does not fetch it at page load.
+# It must come from the GitHub tree, not the @novnc/novnc npm package: npm publishes
+# only `lib/`, which is a CommonJS (Babel) build, and the viewer loads the client with
+# `import RFB from '/vnc/assets/rfb.js'` — a browser ES-module import of CommonJS fails.
+# Only GitHub's `core/` is ESM. Keep NOVNC_VERSION in step with noVncRootBaseUrl in
+# streaming.controller.ts, which stays as the runtime fallback.
+# Downloaded with node's global fetch since this base image has no curl/wget.
+ARG NOVNC_VERSION=1.5.0
+RUN node -e "const fs=require('fs');fetch('https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz').then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer()}).then(b=>fs.writeFileSync('/tmp/novnc.tgz',Buffer.from(b)))" \
+    && tar -xzf /tmp/novnc.tgz -C /tmp \
+    && mkdir -p /app/vendor/novnc \
+    && cp -r /tmp/noVNC-${NOVNC_VERSION}/core /tmp/noVNC-${NOVNC_VERSION}/vendor /app/vendor/novnc/ \
+    && rm -rf /tmp/novnc.tgz /tmp/noVNC-${NOVNC_VERSION} \
+    && test -f /app/vendor/novnc/core/rfb.js
+
 EXPOSE 8000
 
 USER node

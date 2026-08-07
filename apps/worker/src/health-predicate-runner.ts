@@ -64,6 +64,14 @@ export class HealthPredicateRunner {
         detail,
         duration_ms: Date.now() - start,
       });
+
+      // A failing health check drives the whole session lifecycle (AUTH_FAIL ->
+      // LOGIN_NEEDED, and every consumer that reads session health), so the reason
+      // must be visible in the pod log. Debugging a wrong verdict without it means
+      // guessing at the selector.
+      if (result !== HealthResultType.PASS) {
+        console.log(`[Health] ${check.type} -> ${result}${detail ? `: ${detail}` : ''}`);
+      }
     }
 
     const overall = evaluateHealthPolicy(results, policy, quorumN);
@@ -82,6 +90,28 @@ export class HealthPredicateRunner {
    */
   private async runUrlCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
     const timeoutMs = check.timeout_ms ?? 15000;
+
+    // Where the LIVE browser actually is, checked FIRST. An SPA enforces session
+    // expiry client-side: the JS detects a dead session and route-changes to a
+    // /session-expire page, but the server still serves the app shell with HTTP
+    // 200 on every route. So the APIRequestContext GET below can't see it — it
+    // gets 200 and PASSes while the user is staring at "Your session has
+    // expired" (observed on ICICI: HEALTHY/PASS on /session-expire). If the
+    // browser page itself is already sitting on an auth/expiry URL, that is
+    // ground truth the HTTP probe cannot override.
+    if (check.auth_redirect_pattern) {
+      try {
+        const liveUrl = this.page.url();
+        if (new RegExp(check.auth_redirect_pattern, 'i').test(liveUrl)) {
+          return {
+            result: HealthResultType.AUTH_FAIL,
+            detail: `Live page is on an auth/expiry URL: ${liveUrl}`,
+          };
+        }
+      } catch {
+        // page.url() should never throw, but never let it break the check.
+      }
+    }
 
     try {
       // Use Playwright's APIRequestContext — it inherits the browser's proxy
@@ -138,22 +168,75 @@ export class HealthPredicateRunner {
    * DOM check: verify selector exists on current page (spec section 9.9).
    */
   private async runDomCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
+    const locator = this.page.locator(check.selector);
+    const timeout = check.timeout_ms ?? 5000;
+
+    // `exists: false` asserts the selector is ABSENT — which is the whole point of
+    // a negative check: assert the logged-out marker (a login form, an auth error
+    // page) is gone. The previous implementation always waited for the element to
+    // appear and treated the resulting timeout as AUTH_FAIL, so an absent selector
+    // — the passing condition — reported failure. A negative check could therefore
+    // never pass, and the only way to detect "signed out" on an SPA portal was
+    // unavailable.
+    //
+    // Wait for the state each mode actually wants. Playwright's 'hidden' resolves
+    // when the element is detached OR present-but-invisible, which is what "not
+    // showing the logged-out marker" means in practice.
+    // .first() throughout: a selector matching several nodes (very easy with a
+    // text= selector on a rich page) makes a bare locator.waitFor throw a strict-mode
+    // violation, and the catch below cannot tell that apart from the element genuinely
+    // being there — so a logged-IN page reported AUTH_FAIL. Matching the first node is
+    // the right semantics for a presence check anyway.
+    const first = locator.first();
+
+    // What `exists` means is selectable via `match`, defaulting to DOM presence:
+    //
+    //   'attached' (default) — the marker is in the DOM at all. CSS visibility is
+    //     a different question that SPA portals answer badly: Playwright reports
+    //     the sidebar link of a fully logged-in ICICI dashboard as hidden
+    //     (`20 x locator resolved to hidden <a class="mb-0">Payment & Transfer</a>`),
+    //     so a signed-in session reported AUTH_FAIL. Salesforce Lightning and
+    //     Workday do the same (see the gotchas in CLAUDE.md); it is the single
+    //     most common cause of a false AUTH_FAIL on this platform.
+    //
+    //   'visible' — opt back in to strict CSS visibility. Needed by portals that
+    //     HIDE rather than unmount their logged-in chrome on sign-out: there the
+    //     marker stays attached on the login page, so 'attached' would report
+    //     PASS on a dead session and it would never transition to LOGIN_NEEDED.
+    //     Opt-in rather than default, because defaulting to it reintroduces the
+    //     dominant false-AUTH_FAIL above for every SPA app.
+    const strictVisibility = check.match === 'visible';
+
+    if (check.exists) {
+      try {
+        await first.waitFor({ state: strictVisibility ? 'visible' : 'attached', timeout });
+        return { result: HealthResultType.PASS };
+      } catch (error) {
+        return {
+          result: HealthResultType.AUTH_FAIL,
+          detail: strictVisibility
+            ? `Selector ${check.selector} not visible: ${error}`
+            : `Selector ${check.selector} not in DOM: ${error}`,
+        };
+      }
+    }
+
+    // Negative check: assert the logged-OUT marker is gone. Mirror the mode —
+    // under strict visibility "gone" means Playwright's 'hidden' (detached OR
+    // present-but-invisible), which is what "not showing the marker" means to a
+    // user; under DOM presence it means fully detached.
     try {
-      const locator = this.page.locator(check.selector);
-      await locator.waitFor({ timeout: 5000 });
-
-      const visible = await locator.isVisible();
-      if (check.exists && visible) {
-        return { result: HealthResultType.PASS };
-      }
-      if (!check.exists && !visible) {
-        return { result: HealthResultType.PASS };
-      }
-
-      return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.exists ? 'not found' : 'found'}` };
-    } catch {
-      // Timeout or page loading
-      return { result: HealthResultType.AUTH_FAIL, detail: `Selector ${check.selector} not found` };
+      await first.waitFor({ state: strictVisibility ? 'hidden' : 'detached', timeout });
+      return { result: HealthResultType.PASS };
+    } catch (error) {
+      // Report WHY. A bare "found" hid the difference between the marker really
+      // being on the page and the check itself misfiring.
+      return {
+        result: HealthResultType.AUTH_FAIL,
+        detail: strictVisibility
+          ? `Selector ${check.selector} still showing: ${error}`
+          : `Selector ${check.selector} still in DOM: ${error}`,
+      };
     }
   }
 

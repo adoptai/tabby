@@ -365,6 +365,12 @@ egressProxy:
     tag: "20.18.1-alpine"
     pullPolicy: IfNotPresent
   port: 3128
+  # Per-address-family connect budget for Node's Happy Eyeballs (default 250ms).
+  # Must exceed the slowest legitimate target RTT: when a host publishes an AAAA
+  # this cluster cannot route, the v6 attempt fails instantly and the v4 fallback
+  # is cancelled at this deadline, surfacing as ERR_TUNNEL_CONNECTION_FAILED.
+  # 2000ms comfortably covers intercontinental targets.
+  familyAutoselectionTimeoutMs: 2000
   adminPort: 8095
   allowInsecureAdmin: false
   allowInsecureSessionAllowlist: false

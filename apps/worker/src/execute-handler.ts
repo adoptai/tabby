@@ -57,6 +57,94 @@ export function registerExecuteHandler(app: Express, page: Page): void {
       const fetchBody = body.body ?? null;
       const maxResponseBytes = EXECUTE_LIMITS.MAX_RESPONSE_BODY_BYTES;
 
+      // An in-page fetch() is bound by the page's origin and the target's CORS
+      // policy. Multi-origin apps therefore cannot be driven from a single page:
+      // ICICI, for example, serves its dashboard from retailnetbanking.icici.bank.in
+      // but its statement APIs from infinity.icici.bank.in, which sends no CORS
+      // headers — the call dies as "TypeError: Failed to fetch" even though the
+      // session is perfectly valid. That shape (auth portal + separate core-banking
+      // host) is the norm for bank portals, not an ICICI quirk.
+      //
+      // Playwright's APIRequestContext is the way out: it shares the BrowserContext's
+      // cookie jar and proxy (same primitive health-predicate-runner uses) but is not
+      // a page fetch, so no origin is attached and CORS never applies. It also lifts
+      // the browser's forbidden-header rules, so a captured Cookie/Authorization can
+      // be sent explicitly.
+      //
+      // Same-origin calls keep using the in-page fetch, which preserves the page's JS
+      // context (interceptors that mint per-request tokens still run).
+      const context = page.context();
+      const pageOrigin = (() => {
+        try {
+          const origin = new URL(page.url()).origin;
+          // about:blank and other opaque origins serialize to the STRING "null"
+          // rather than throwing, so this used to be "cross-origin" only by
+          // accident (the string never equals a real origin). Keep that routing —
+          // an in-page fetch from an opaque origin cannot pass CORS anyway — but
+          // say so explicitly. Note the consequence: while the page sits on
+          // about:blank (worker boot, warm-pool spare, post-crash) every fetch
+          // goes off-page, and off-page traffic never fires page.on('request'),
+          // so har_start/har_stop records nothing for it.
+          return origin === 'null' ? null : origin;
+        } catch { return null; }
+      })();
+      const isCrossOrigin = pageOrigin === null || pageOrigin !== parsed.origin;
+
+      const fetchViaContext = async (): Promise<ExecuteFetchResponse> => {
+        const resp = await context.request.fetch(fetchUrl, {
+          method,
+          headers,
+          ...(fetchBody !== null && method !== 'GET' && method !== 'HEAD'
+            ? { data: fetchBody }
+            : {}),
+          timeout: timeoutMs,
+          maxRedirects: 10,
+          // Report the target's own status rather than throwing on 4xx/5xx — callers
+          // need to see a 401/403 to react to it.
+          failOnStatusCode: false,
+        });
+
+        const respHeaders = resp.headers();
+        const contentType = (respHeaders['content-type'] || '').toLowerCase();
+        const isTextual =
+          contentType === '' ||
+          contentType.startsWith('text/') ||
+          contentType.includes('json') ||
+          contentType.includes('xml') ||
+          contentType.includes('javascript') ||
+          contentType.includes('x-www-form-urlencoded') ||
+          contentType.includes('svg');
+
+        const buf = await resp.body();
+        if (isTextual) {
+          const text = buf.toString('utf-8');
+          const wasTruncated = text.length > maxResponseBytes;
+          return {
+            status: resp.status(),
+            headers: respHeaders,
+            body: wasTruncated ? text.slice(0, maxResponseBytes) : text,
+            encoding: 'utf-8',
+            truncated: wasTruncated,
+          };
+        }
+        const wasTruncated = buf.length > maxResponseBytes;
+        return {
+          status: resp.status(),
+          headers: respHeaders,
+          body: (wasTruncated ? buf.subarray(0, maxResponseBytes) : buf).toString('base64'),
+          encoding: 'base64',
+          truncated: wasTruncated,
+        };
+      };
+
+      if (isCrossOrigin) {
+        const response = await fetchViaContext().catch((err: Error) => {
+          throw new ExecuteError(502, `Cross-origin fetch failed: ${err.message}`);
+        });
+        res.json(response);
+        return;
+      }
+
       const result = await page.evaluate(
         async ({
           url, method: m, headers: h, body: b, maxBytes,
@@ -134,8 +222,15 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           body: fetchBody,
           maxBytes: maxResponseBytes,
         },
-      ).catch((err: Error) => {
-        throw new ExecuteError(502, `Browser fetch failed: ${err.message}`);
+      ).catch(async (err: Error) => {
+        // Same-origin fetches can still be refused by the page — a CSP connect-src
+        // rule, or a service worker. Retry off-page before giving up, for the same
+        // reason cross-origin goes there directly.
+        try {
+          return await fetchViaContext();
+        } catch {
+          throw new ExecuteError(502, `Browser fetch failed: ${err.message}`);
+        }
       });
 
       const response: ExecuteFetchResponse = result;
