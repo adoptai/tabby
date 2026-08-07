@@ -4,6 +4,7 @@ import type {
   RecordingMode,
   RecordedInteractionEvent,
   RecordedUrlEvent,
+  RecordedDownloadEvent,
 } from '@browser-hitl/shared';
 import { RECORDING_SCHEMA_VERSION } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, cleanupHarListeners } from './har-capture';
@@ -40,9 +41,31 @@ export class RecordingRunner {
   // document (or a subframe's recorder), so the base moves past everything
   // numbered so far. URL events draw from the same counter, giving consumers one
   // total order over interactions and navigations.
+  //
+  // Popups make documents CONCURRENT rather than sequential, which the rebase
+  // handles but only down to arrival order: each switch between the main page
+  // and a popup looks like a restarted counter and moves the base forward, so
+  // seq stays strictly increasing and still totally orders the bundle — it just
+  // orders by when the worker saw the event rather than by any cross-document
+  // clock. There is no better answer available; the two documents share no
+  // counter.
   private seqMax = 0;
   private seqBase = 0;
   private lastRawSeq = 0;
+
+  // --- workflow-mode capture -------------------------------------------------
+  // Only armed when recordingMode === 'workflow'. In 'login' mode none of these
+  // listeners are attached and no workflow-only key reaches the bundle.
+  private readonly downloadEvents: RecordedDownloadEvent[] = [];
+  /** Popup pages and their listeners, so detach() can unwind them. */
+  private readonly popupTeardowns: Array<() => void> = [];
+  private onPopup: ((page: Page) => void) | null = null;
+  /** 0 is the page the human started on; popups get 1, 2, ... in open order. */
+  private nextPageId = 1;
+
+  private get isWorkflow(): boolean {
+    return this.recordingMode === 'workflow';
+  }
 
   constructor(
     private readonly page: Page,
@@ -89,33 +112,7 @@ export class RecordingRunner {
     // CDP channel that survives the stealth Chromium build (exposeBinding and
     // console forwarding are both suppressed). The beacon never reaches the
     // network (host doesn't resolve); the request-initiation event is enough.
-    this.onRequest = (req: any) => {
-      let url: string;
-      try {
-        url = typeof req?.url === 'function' ? req.url() : '';
-      } catch {
-        return;
-      }
-      if (!url.startsWith(REC_BEACON)) return;
-      if (url.startsWith(REC_INSTALL_PATH)) {
-        if (!this.installSeen) {
-          this.installSeen = true;
-          console.log('[Recording] DOM recorder installed in page');
-        }
-        return;
-      }
-      try {
-        const body = typeof req.postData === 'function' ? req.postData() : '';
-        if (!body) return;
-        const ev = JSON.parse(body) as RecordedInteractionEvent;
-        if (ev && typeof ev === 'object') {
-          ev.seq = this.rebaseSeq(ev.seq);
-          this.events.push(ev);
-        }
-      } catch {
-        /* malformed beacon — ignore */
-      }
-    };
+    this.onRequest = this.makeBeaconHandler();
     this.page.on('request', this.onRequest);
 
     // Inject the recorder two ways for resilience against stealth Chromium:
@@ -153,7 +150,142 @@ export class RecordingRunner {
     };
     this.page.on('framenavigated', this.onFrameNavigated);
 
+    // Workflow-only capture. A browser skill's terminal step is usually "a file
+    // arrived" or "the thing opened in a new tab", and neither is visible to the
+    // capture above: a blob: download never touches the network, and every
+    // listener so far is bound to a single Page.
+    if (this.isWorkflow) {
+      this.attachDownloadCapture(this.page, 0);
+      this.onPopup = (popup: Page) => this.attachPopupCapture(popup);
+      this.context.on('page', this.onPopup);
+    }
+
     console.log(`[Recording] started: session=${this.sessionId}, mode=${this.recordingMode}`);
+  }
+
+  /**
+   * Handler for the injected recorder's sentinel-fetch beacon. Built per page so
+   * popups report through the same channel as the main page — the events land in
+   * one ordered list, which is what the compiler needs to reconstruct the path.
+   */
+  private makeBeaconHandler(): (req: any) => void {
+    return (req: any) => {
+      let url: string;
+      try {
+        url = typeof req?.url === 'function' ? req.url() : '';
+      } catch {
+        return;
+      }
+      if (!url.startsWith(REC_BEACON)) return;
+      if (url.startsWith(REC_INSTALL_PATH)) {
+        if (!this.installSeen) {
+          this.installSeen = true;
+          console.log('[Recording] DOM recorder installed in page');
+        }
+        return;
+      }
+      try {
+        const body = typeof req.postData === 'function' ? req.postData() : '';
+        if (!body) return;
+        const ev = JSON.parse(body) as RecordedInteractionEvent;
+        if (ev && typeof ev === 'object') {
+          // Rebase the page-local ordinal onto the session-global counter. Runs
+          // for popups as well as the main page, so one total order covers every
+          // document in the recording.
+          ev.seq = this.rebaseSeq(ev.seq);
+          this.events.push(ev);
+        }
+      } catch {
+        /* malformed beacon — ignore */
+      }
+    };
+  }
+
+  /**
+   * Record downloads as metadata, without awaiting the transfer.
+   *
+   * Deliberately never touches download.path() or .failure(): both wait for the
+   * transfer to finish, and a recorder must never make the human wait or hold a
+   * handle on a file the human may cancel. Name + URL + origin page is all the
+   * compiler needs to emit a success condition.
+   */
+  private attachDownloadCapture(page: Page, pageId: number): void {
+    const handler = (download: any) => {
+      try {
+        this.downloadEvents.push({
+          url: typeof download?.url === 'function' ? download.url() : '',
+          suggested_filename:
+            typeof download?.suggestedFilename === 'function' ? download.suggestedFilename() : '',
+          page_url: this.safeUrl(page),
+          page_id: pageId,
+          timestamp: new Date().toISOString(),
+        });
+      } catch {
+        /* a download object that won't answer is not worth failing a recording */
+      }
+    };
+    page.on('download', handler);
+    this.popupTeardowns.push(() => page.removeListener('download', handler));
+  }
+
+  /**
+   * Attach the full capture set to a popup / new tab.
+   *
+   * Bank portals routinely open statements, confirmations and secondary flows in
+   * a new window. Without this the human's clicks there are invisible and the
+   * compiled skill simply stops at the click that opened it.
+   */
+  private attachPopupCapture(popup: Page): void {
+    const pageId = this.nextPageId++;
+
+    const beacon = this.makeBeaconHandler();
+    popup.on('request', beacon);
+    this.popupTeardowns.push(() => popup.removeListener('request', beacon));
+
+    // The recorder reaches popups via context.addInitScript, but stealth builds
+    // do not reliably honour it — mirror the main page's re-inject on every
+    // document.
+    const domReady = () => {
+      popup.evaluate(domRecorderScript).catch(() => undefined);
+    };
+    popup.on('domcontentloaded', domReady);
+    this.popupTeardowns.push(() => popup.removeListener('domcontentloaded', domReady));
+    domReady();
+
+    let lastUrl = this.safeUrl(popup);
+    const navigated = (frame: any) => {
+      try {
+        if (frame !== popup.mainFrame()) return;
+        const to = frame.url();
+        if (!to || to === lastUrl) return;
+        this.urlEvents.push({
+          from_url: lastUrl,
+          to_url: to,
+          // Same session-global counter as the main page, so interactions and
+          // navigations across every document stay in one total order.
+          seq: this.nextSeq(),
+          timestamp: new Date().toISOString(),
+          page_id: pageId,
+        });
+        lastUrl = to;
+      } catch {
+        /* frame detached mid-navigation — ignore */
+      }
+    };
+    popup.on('framenavigated', navigated);
+    this.popupTeardowns.push(() => popup.removeListener('framenavigated', navigated));
+
+    this.attachDownloadCapture(popup, pageId);
+
+    console.log(`[Recording] popup attached: page_id=${pageId}, url=${lastUrl}`);
+  }
+
+  private safeUrl(page: Page): string {
+    try {
+      return page.url();
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -172,6 +304,7 @@ export class RecordingRunner {
     if (!this.started) return;
     this.events.length = 0;
     this.urlEvents.length = 0;
+    this.downloadEvents.length = 0;
     this.lastUrl = '';
     this.seqMax = 0;
     this.seqBase = 0;
@@ -226,7 +359,7 @@ export class RecordingRunner {
         `cookies=${cookies?.length ?? 0}, recorder_installed=${this.installSeen}`,
     );
 
-    return {
+    const bundle: RecordingBundle = {
       schema_version: RECORDING_SCHEMA_VERSION,
       session_id: this.sessionId,
       recording_mode: this.recordingMode,
@@ -237,10 +370,30 @@ export class RecordingRunner {
       url_events: this.urlEvents,
       cookies,
     };
+
+    // Workflow-only addition. A 'login' bundle never carries download_events, so
+    // the login compiler sees no new collection to reason about.
+    if (this.isWorkflow) {
+      bundle.download_events = this.downloadEvents;
+    }
+
+    return bundle;
   }
 
   /** Detach all listeners. Safe to call on SIGTERM and after drain(). */
   detach(): void {
+    if (this.onPopup) {
+      this.context.removeListener('page', this.onPopup);
+      this.onPopup = null;
+    }
+    // Popup + download listeners, including the main page's download handler.
+    while (this.popupTeardowns.length > 0) {
+      try {
+        this.popupTeardowns.pop()?.();
+      } catch {
+        /* page already closed — its listeners died with it */
+      }
+    }
     if (this.onFrameNavigated) {
       this.page.removeListener('framenavigated', this.onFrameNavigated);
       this.onFrameNavigated = null;

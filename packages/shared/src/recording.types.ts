@@ -93,6 +93,34 @@ export interface RecordedUrlEvent {
   seq?: number;
   /** Emitted inline at navigation, so this is also the interaction time. */
   timestamp: string;
+  /**
+   * Which page the transition happened in: 0 is the page the human started on,
+   * >0 are popups/new tabs opened during the session. Only emitted for
+   * `workflow` recordings; absent on `login` bundles, which are single-page and
+   * whose shape must not move.
+   */
+  page_id?: number;
+}
+
+/**
+ * A file download started during the recording (`workflow` mode only).
+ *
+ * The terminal step of most browser skills is "a file arrived", and it is the
+ * one event the rest of the capture cannot see: a `blob:` download never
+ * touches the network so HAR misses it, and the click that triggered it looks
+ * like any other click. Without this the compiler has no success condition to
+ * compile.
+ *
+ * Metadata only, and captured without awaiting the transfer — the recorder must
+ * never make the human wait.
+ */
+export interface RecordedDownloadEvent {
+  url: string;
+  suggested_filename: string;
+  /** URL of the page the download was triggered from. */
+  page_url: string;
+  page_id: number;
+  timestamp: string;
 }
 
 /** HAR 1.2 log (subset Tabby assembles). */
@@ -125,8 +153,10 @@ export interface RecordedCookie {
  * Bundle schema revision. Bumped only when the event contract changes.
  *   1 — implicit (absent). Events carry no `seq`/`event_time`.
  *   2 — every event carries `seq`; interaction events also carry `event_time`.
+ *   3 — workflow recordings additionally capture downloads (`download_events`)
+ *       and attach to popups/new tabs (`page_id` on url events).
  */
-export const RECORDING_SCHEMA_VERSION = 2;
+export const RECORDING_SCHEMA_VERSION = 3;
 
 /** The bundle drained on "Finish & export" and pulled by NoUI. */
 export interface RecordingBundle {
@@ -149,4 +179,11 @@ export interface RecordingBundle {
   url_events: RecordedUrlEvent[];
   /** Session cookies captured at drain (login recordings) for session reuse. */
   cookies?: RecordedCookie[];
+
+  /**
+   * Downloads observed during the recording. `workflow` mode only — a `login`
+   * bundle never carries this key at all, so the login compiler sees no new
+   * collection to reason about.
+   */
+  download_events?: RecordedDownloadEvent[];
 }

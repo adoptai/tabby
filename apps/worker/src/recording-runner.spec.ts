@@ -1,5 +1,5 @@
 import { RecordingRunner } from './recording-runner';
-import type { RecordedInteractionEvent } from '@browser-hitl/shared';
+import { RECORDING_SCHEMA_VERSION, type RecordedInteractionEvent } from '@browser-hitl/shared';
 
 /**
  * Fakes for Playwright Page/Context. We capture the console + framenavigated
@@ -10,6 +10,7 @@ import type { RecordedInteractionEvent } from '@browser-hitl/shared';
 function makeFakes(initialUrl: string) {
   let requestListener: ((req: unknown) => void) | null = null;
   let navListener: ((frame: unknown) => void) | null = null;
+  let downloadListener: ((d: unknown) => void) | null = null;
   let currentUrl = initialUrl;
 
   const mainFrame = {
@@ -22,19 +23,57 @@ function makeFakes(initialUrl: string) {
     on: (event: string, fn: (arg: unknown) => void) => {
       if (event === 'framenavigated') navListener = fn as typeof navListener;
       if (event === 'request') requestListener = fn as typeof requestListener;
+      if (event === 'download') downloadListener = fn as typeof downloadListener;
       // 'domcontentloaded' (recorder re-injection) is accepted and ignored.
     },
     evaluate: jest.fn(async () => undefined),
     removeListener: jest.fn(),
   } as unknown as import('playwright').Page;
 
+  let pageListener: ((p: unknown) => void) | null = null;
   const context = {
     addInitScript: jest.fn(async () => undefined),
     cookies: jest.fn(async () => []),
+    on: jest.fn((event: string, fn: (arg: unknown) => void) => {
+      if (event === 'page') pageListener = fn as typeof pageListener;
+    }),
+    removeListener: jest.fn(),
   } as unknown as import('playwright').BrowserContext;
 
   // Simulate the sentinel fetch() beacon the injected recorder would issue.
   const beaconReq = (url: string, body: string | null) => ({ url: () => url, postData: () => body });
+
+  /** A popup/new tab, driven the same way as the main page. */
+  function makePopup(popupUrl: string) {
+    let popRequest: ((req: unknown) => void) | null = null;
+    let popNav: ((frame: unknown) => void) | null = null;
+    let popDownload: ((d: unknown) => void) | null = null;
+    let url = popupUrl;
+    const frame = { url: () => url };
+    const p = {
+      url: () => url,
+      mainFrame: () => frame,
+      on: (event: string, fn: (arg: unknown) => void) => {
+        if (event === 'request') popRequest = fn as typeof popRequest;
+        if (event === 'framenavigated') popNav = fn as typeof popNav;
+        if (event === 'download') popDownload = fn as typeof popDownload;
+      },
+      evaluate: jest.fn(async () => undefined),
+      removeListener: jest.fn(),
+    } as unknown as import('playwright').Page;
+    return {
+      page: p,
+      emit: (ev: RecordedInteractionEvent) =>
+        popRequest?.(beaconReq('https://tabby-rec.local/e', JSON.stringify(ev))),
+      navigate: (to: string) => {
+        url = to;
+        popNav?.(frame);
+      },
+      download: (name: string, dlUrl: string) =>
+        popDownload?.({ url: () => dlUrl, suggestedFilename: () => name }),
+      removeListener: p.removeListener as unknown as jest.Mock,
+    };
+  }
 
   return {
     page,
@@ -46,6 +85,16 @@ function makeFakes(initialUrl: string) {
       currentUrl = to;
       navListener?.(mainFrame);
     },
+    download: (name: string, dlUrl: string) =>
+      downloadListener?.({ url: () => dlUrl, suggestedFilename: () => name }),
+    hasDownloadListener: () => downloadListener !== null,
+    /** Simulate the browser opening a popup, as context.on('page') would. */
+    openPopup: (popupUrl: string) => {
+      const popup = makePopup(popupUrl);
+      pageListener?.(popup.page);
+      return popup;
+    },
+    hasPageListener: () => pageListener !== null,
   };
 }
 
@@ -120,8 +169,10 @@ describe('RecordingRunner', () => {
     expect(bundle.har.log.version).toBe('1.2');
     expect(bundle.started_at).toBeTruthy();
     expect(bundle.stopped_at).toBeTruthy();
-    // Marks the event contract as the one that carries seq/event_time.
-    expect(bundle.schema_version).toBe(2);
+    // Stamped with the current contract revision. Asserted against the constant
+    // rather than a literal: the point is that drain() stamps what the worker
+    // actually produced, and pinning a number here just breaks on every bump.
+    expect(bundle.schema_version).toBe(RECORDING_SCHEMA_VERSION);
   });
 
   it('reset() drops pre-bind capture so the bundle starts at the real target', async () => {
@@ -217,5 +268,147 @@ describe('RecordingRunner', () => {
     await runner.drain();
 
     expect(f.page.removeListener).toHaveBeenCalledWith('framenavigated', expect.any(Function));
+  });
+});
+
+/**
+ * The login / HAR-replay recording path is frozen. Everything the workflow
+ * capture adds is gated on recording_mode, and a login bundle must come out with
+ * exactly the keys it always had — so the existing login compiler needs no
+ * branch and cannot regress.
+ */
+describe('RecordingRunner — login mode is untouched', () => {
+  it('attaches no popup or download listeners', async () => {
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    expect(f.hasPageListener()).toBe(false);
+    expect(f.hasDownloadListener()).toBe(false);
+    expect(f.context.on).not.toHaveBeenCalled();
+  });
+
+  it('drains a bundle with no workflow-only keys', async () => {
+    // schema_version IS present on login bundles — it describes what the worker
+    // produced, not which mode ran, and `seq`/`event_time` were added to both
+    // paths additively (with `timestamp` frozen in value and meaning). What must
+    // never appear on a login bundle is a workflow-only collection.
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+    f.emit(clickEvent);
+    f.navigate('https://example.com/dashboard');
+
+    const bundle = await runner.drain();
+
+    expect('download_events' in bundle).toBe(false);
+    expect(Object.keys(bundle).sort()).toEqual(
+      ['click_events', 'cookies', 'har', 'recording_mode', 'schema_version', 'session_id', 'started_at', 'stopped_at', 'url_events'].sort(),
+    );
+  });
+
+  it('does not stamp page_id on url events', async () => {
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+    f.navigate('https://example.com/dashboard');
+
+    const bundle = await runner.drain();
+    expect(bundle.url_events[0].page_id).toBeUndefined();
+  });
+});
+
+describe('RecordingRunner — workflow capture', () => {
+  const workflowRunner = (f: ReturnType<typeof makeFakes>) =>
+    new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+
+  it('records downloads, the terminal step most browser skills need', async () => {
+    // A blob: download never touches the network, so HAR cannot see it and the
+    // click that triggered it looks like any other click.
+    const f = makeFakes('https://bank.test/statements');
+    const runner = workflowRunner(f);
+    await runner.start();
+    f.download('statement-jan.pdf', 'blob:https://bank.test/9f2c');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.download_events).toEqual([
+      expect.objectContaining({
+        suggested_filename: 'statement-jan.pdf',
+        url: 'blob:https://bank.test/9f2c',
+        page_url: 'https://bank.test/statements',
+        page_id: 0,
+      }),
+    ]);
+  });
+
+  it('captures interactions and navigations inside a popup', async () => {
+    // Bank portals routinely open statements in a new window. Without this the
+    // compiled skill stops at the click that opened it.
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+
+    const popup = f.openPopup('https://bank.test/statement-viewer');
+    popup.emit({ ...clickEvent, selector: '#export', url: 'https://bank.test/statement-viewer' });
+    popup.navigate('https://bank.test/statement-viewer?fmt=pdf');
+    popup.download('jan.pdf', 'https://bank.test/dl/jan.pdf');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events.map(e => e.selector)).toContain('#export');
+    expect(bundle.url_events).toContainEqual(
+      expect.objectContaining({ to_url: 'https://bank.test/statement-viewer?fmt=pdf', page_id: 1 }),
+    );
+    expect(bundle.download_events).toEqual([expect.objectContaining({ page_id: 1 })]);
+  });
+
+  it('numbers popups in open order so the compiler can tell them apart', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+
+    const first = f.openPopup('https://bank.test/a');
+    const second = f.openPopup('https://bank.test/b');
+    first.navigate('https://bank.test/a2');
+    second.navigate('https://bank.test/b2');
+
+    const bundle = await runner.drain();
+    expect(bundle.url_events.find(e => e.to_url === 'https://bank.test/a2')?.page_id).toBe(1);
+    expect(bundle.url_events.find(e => e.to_url === 'https://bank.test/b2')?.page_id).toBe(2);
+  });
+
+  it('stamps a schema version so old and new recordings stay distinguishable', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+
+    const bundle = await runner.drain();
+    expect(bundle.schema_version).toBe(RECORDING_SCHEMA_VERSION);
+  });
+
+  it('detaches popup listeners on drain', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+    const popup = f.openPopup('https://bank.test/a');
+
+    await runner.drain();
+
+    expect(f.context.removeListener).toHaveBeenCalledWith('page', expect.any(Function));
+    expect(popup.removeListener).toHaveBeenCalledWith('request', expect.any(Function));
+    expect(popup.removeListener).toHaveBeenCalledWith('download', expect.any(Function));
+  });
+
+  it('drops popup capture on reset so a warm spare cannot pollute the bundle', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+    f.download('warmup.pdf', 'https://bank.test/warmup.pdf');
+
+    runner.reset();
+    const bundle = await runner.drain();
+
+    expect(bundle.download_events).toEqual([]);
   });
 });
