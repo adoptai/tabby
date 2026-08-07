@@ -44,10 +44,14 @@ const sampleBundle: RecordingBundle = {
       value: '[REDACTED]',
       field_role: 'password',
       is_redacted: true,
-      timestamp: '2026-06-15T00:01:00.000Z',
+      seq: 1,
+      event_time: '2026-06-15T00:01:00.000Z',
+      timestamp: '2026-06-15T00:01:00.500Z',
     },
   ],
-  url_events: [{ from_url: 'https://example.com/login', to_url: 'https://example.com/home', timestamp: 'x' }],
+  url_events: [
+    { from_url: 'https://example.com/login', to_url: 'https://example.com/home', seq: 2, timestamp: 'x' },
+  ],
 };
 
 describe('RecordingStore', () => {

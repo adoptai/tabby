@@ -36,6 +36,42 @@ export interface RecordedInteractionEvent {
   aria_label?: string | null;
   role_attr?: string | null;
   data_attrs_json?: string | null;
+  /**
+   * Total-order key across ALL events in the bundle (interactions and URL
+   * transitions share one counter). Strictly increasing in interaction order;
+   * gaps are normal and carry no meaning.
+   *
+   * Order by this, not by `timestamp`. The injected recorder debounces `input`
+   * by 500ms, so a field filled and submitted inside that window flushes its
+   * input event AFTER the click — and `timestamp` records that flush (see
+   * below), which puts the click first. `seq` is assigned at interaction time
+   * and is also immune to the beacon channel's delivery order and to clock
+   * granularity.
+   *
+   * Added additively — bundles recorded before it have no `seq`, so consumers
+   * must detect its presence rather than assume it.
+   */
+  seq: number;
+  /**
+   * Wall clock of the interaction itself. For `input` this is the first
+   * keystroke of the debounce burst; for every other event type it is the same
+   * clock read as `timestamp` to within a statement. Read this when you need the
+   * time an interaction happened, and `seq` when you need order. Added
+   * additively alongside `seq`.
+   */
+  event_time: string;
+  /**
+   * Wall clock at which the event payload was BUILT — for the debounced `input`
+   * handler that is the flush, up to 500ms after the keystroke; for every other
+   * event type it is the interaction itself.
+   *
+   * Semantics AND value are frozen: this field predates `seq`/`event_time` and
+   * existing consumers (notably the NoUI login compiler) read it, so each handler
+   * keeps its own original clock read in its original position rather than
+   * copying `event_time`. Never assume `event_time === timestamp`; only
+   * `event_time <= timestamp` holds. New code wanting interaction time should
+   * read `event_time`, and wanting order, `seq`.
+   */
   timestamp: string;
 }
 
@@ -43,6 +79,12 @@ export interface RecordedInteractionEvent {
 export interface RecordedUrlEvent {
   from_url: string;
   to_url: string;
+  /**
+   * Same counter as RecordedInteractionEvent.seq — clicks and navigations
+   * interleave in one total order. Added additively.
+   */
+  seq: number;
+  /** Emitted inline at navigation, so this is also the interaction time. */
   timestamp: string;
 }
 
@@ -72,8 +114,25 @@ export interface RecordedCookie {
   sameSite?: 'Strict' | 'Lax' | 'None';
 }
 
+/**
+ * Bundle schema revision. Bumped only when the event contract changes.
+ *   1 — implicit (absent). Events carry no `seq`/`event_time`.
+ *   2 — every event carries `seq`; interaction events also carry `event_time`.
+ */
+export const RECORDING_SCHEMA_VERSION = 2;
+
 /** The bundle drained on "Finish & export" and pulled by NoUI. */
 export interface RecordingBundle {
+  /**
+   * See RECORDING_SCHEMA_VERSION. Absent on bundles drained before it existed,
+   * which is what "version 1" means.
+   *
+   * Informational: it describes what the WORKER produced. Consumers should still
+   * detect `seq` per event rather than dispatch on this, because a bundle can
+   * lose the field in transit — NoUI's `/clicks` ingestion projects events onto
+   * a fixed column list, and anything not in it is dropped.
+   */
+  schema_version?: number;
   session_id: string;
   recording_mode: RecordingMode;
   started_at: string;

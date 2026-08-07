@@ -56,8 +56,17 @@ const clickEvent: RecordedInteractionEvent = {
   class_name: null,
   selector: '#submit',
   url: 'https://example.com/login',
+  seq: 1,
+  event_time: '2026-06-15T00:00:00.000Z',
   timestamp: '2026-06-15T00:00:00.000Z',
 };
+
+/** A page-side event carrying the per-document ordinal the recorder assigned. */
+const pageEvent = (seq: number, selector: string): RecordedInteractionEvent => ({
+  ...clickEvent,
+  selector,
+  seq,
+});
 
 describe('RecordingRunner', () => {
   it('injects the recorder on start', async () => {
@@ -103,6 +112,8 @@ describe('RecordingRunner', () => {
     expect(bundle.har.log.version).toBe('1.2');
     expect(bundle.started_at).toBeTruthy();
     expect(bundle.stopped_at).toBeTruthy();
+    // Marks the event contract as the one that carries seq/event_time.
+    expect(bundle.schema_version).toBe(2);
   });
 
   it('reset() drops pre-bind capture so the bundle starts at the real target', async () => {
@@ -128,6 +139,50 @@ describe('RecordingRunner', () => {
     expect(bundle.url_events).toEqual([
       expect.objectContaining({ from_url: '', to_url: 'https://www.airbnb.com/' }),
     ]);
+  });
+
+  it('rebases per-document ordinals onto one increasing session-global order', async () => {
+    // A two-page login: the recorder's counter restarts at 1 on the second
+    // document, so the raw ordinals alone would interleave the pages.
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    f.emit(pageEvent(1, '#user'));
+    f.emit(pageEvent(2, '#next'));
+    f.navigate('https://example.com/login/password');
+    f.emit(pageEvent(1, '#password')); // new document — counter restarted
+    f.emit(pageEvent(2, '#signin'));
+
+    const bundle = await runner.drain();
+
+    const timeline = [...bundle.click_events, ...bundle.url_events].sort((a, b) => a.seq - b.seq);
+    expect(timeline.map((e) => ('selector' in e ? e.selector : e.to_url))).toEqual([
+      '#user',
+      '#next',
+      'https://example.com/login/password',
+      '#password',
+      '#signin',
+    ]);
+    const seqs = timeline.map((e) => e.seq);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(new Set(seqs).size).toBe(seqs.length);
+  });
+
+  it('falls back to arrival order for events with no page-side ordinal', async () => {
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    f.emit({ ...clickEvent, seq: undefined as unknown as number, selector: '#a' });
+    f.emit(pageEvent(1, '#b'));
+
+    const bundle = await runner.drain();
+    expect(bundle.click_events.map((e: RecordedInteractionEvent) => e.selector)).toEqual([
+      '#a',
+      '#b',
+    ]);
+    expect(bundle.click_events[0].seq).toBeLessThan(bundle.click_events[1].seq);
   });
 
   it('does not record a url event when the url is unchanged', async () => {
