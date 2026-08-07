@@ -243,7 +243,9 @@ async function main() {
     healthServer.setRecordingMode(Boolean(recordingMode));
 
     // Register execute endpoint on the health server
-    healthServer.setPage(page);
+    healthServer.setPage(page, {
+      blockNavigate: Boolean((browserPolicy as { block_navigate?: boolean }).block_navigate),
+    });
 
     // The browser window is now up and rendering in Xvfb (VNC mode) / headless
     // (CDP). Mark the pod Ready so its noVNC Service gets endpoints immediately,

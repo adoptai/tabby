@@ -154,6 +154,22 @@ export interface BrowserPolicy {
    * browser skill, or the app is one replay is known to fail on.
    */
   browser_driven?: boolean;
+  /**
+   * Refuse `navigate` on this app's /execute/browser sessions.
+   *
+   * A full-page navigation is a RELOAD, and refresh-sensitive portals destroy
+   * the session on one: the next call lands on their signed-out screen and the
+   * human is asked to log in again mid-task. ICICI and HSBCnet both behave this
+   * way. The skill is told never to navigate, but prose is not a guardrail —
+   * an agent that gets stuck reaches for it anyway, and that is exactly how the
+   * observed ICICI run ended.
+   *
+   * In-app clicks are client-side route changes and preserve the session, so
+   * the refusal says so rather than just failing.
+   *
+   * Defaults to false: navigation stays available, which most apps need.
+   */
+  block_navigate?: boolean;
 }
 
 export const DEFAULT_BROWSER_POLICY: BrowserPolicy = {

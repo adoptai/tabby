@@ -1,5 +1,5 @@
 import { BROWSER_COMMANDS, EXECUTE_LIMITS } from '@browser-hitl/shared';
-import { dispatchCommand } from './execute-browser-handler';
+import { dispatchCommand, registerBrowserHandler } from './execute-browser-handler';
 
 // A minimal Playwright Locator/Page mock that records how click_by_text resolves
 // its target. getByText → filter({visible}) → nth → click is the chain we assert.
@@ -214,5 +214,62 @@ describe('execute-browser-handler validation', () => {
       const truncated = longBody.slice(0, maxBytes);
       expect(truncated.length).toBe(maxBytes);
     });
+  });
+});
+
+/**
+ * `navigate` is a RELOAD, and refresh-sensitive portals destroy the session on
+ * one — the next call lands on their signed-out screen and the human is asked to
+ * sign in again mid-task. SKILL.md tells the agent never to navigate; in the
+ * observed ICICI run the agent got stuck and did it anyway, ending the session.
+ * Prose is not a guardrail.
+ */
+describe('execute-browser-handler navigate blocking', () => {
+  const req = (command: string, params: Record<string, unknown> = {}) => ({
+    body: { command, params },
+  });
+  function harness(blockNavigate: boolean) {
+    let handler: any;
+    const app: any = { post: (_p: string, h: any) => { handler = h; } };
+    const page: any = {
+      goto: jest.fn(async () => undefined),
+      url: () => 'https://bank.test/accounts',
+      title: async () => 'Accounts',
+    };
+    registerBrowserHandler(app, page, { blockNavigate });
+    return { run: (r: any) => new Promise<any>((resolve) => {
+      handler(r, { json: resolve, status: () => ({ json: resolve }) });
+    }), page };
+  }
+
+  it('refuses navigate when the app cannot survive a reload', async () => {
+    const h = harness(true);
+    const out = await h.run(req('navigate', { url: 'https://bank.test/statements' }));
+
+    expect(out.success).toBe(false);
+    expect(h.page.goto).not.toHaveBeenCalled();
+  });
+
+  it('names the alternative, so the refusal is actionable', async () => {
+    // A refusal an agent cannot act on is just a different dead end.
+    const h = harness(true);
+    const out = await h.run(req('navigate', { url: 'https://bank.test/x' }));
+
+    expect(out.error).toMatch(/click_element|click_by_text/);
+    expect(out.error).toMatch(/session/i);
+  });
+
+  it('leaves every other command alone', async () => {
+    const h = harness(true);
+    const out = await h.run(req('get_page_info'));
+    expect(out.success).toBe(true);
+  });
+
+  it('allows navigate by default, which most apps need', async () => {
+    const h = harness(false);
+    const out = await h.run(req('navigate', { url: 'https://bank.test/statements' }));
+
+    expect(out.success).toBe(true);
+    expect(h.page.goto).toHaveBeenCalled();
   });
 });

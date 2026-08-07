@@ -93,7 +93,7 @@ export class HealthServer {
    * Call after the browser page is created. The execute route is added
    * to the already-running Express app.
    */
-  setPage(page: Page): void {
+  setPage(page: Page, opts: { blockNavigate?: boolean } = {}): void {
     this.page = page;
     if (!this.app) return;
     if (this.recording) {
@@ -107,7 +107,7 @@ export class HealthServer {
     if (process.env.EXECUTE_ENABLED === 'true') {
       this.app.use('/execute', executeAuthMiddleware);
       registerExecuteHandler(this.app, page);
-      registerBrowserHandler(this.app, page);
+      registerBrowserHandler(this.app, page, { blockNavigate: opts.blockNavigate });
       console.log('Execute handlers registered on /execute/fetch and /execute/browser');
     }
   }

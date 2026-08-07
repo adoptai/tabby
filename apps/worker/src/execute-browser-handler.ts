@@ -13,7 +13,16 @@ import { pageSummaryScript } from './page-summary.injected';
 
 export { cleanupHarListeners };
 
-export function registerBrowserHandler(app: Express, page: Page): void {
+export interface BrowserHandlerOptions {
+  /** Refuse `navigate` — see BrowserPolicy.block_navigate. */
+  blockNavigate?: boolean;
+}
+
+export function registerBrowserHandler(
+  app: Express,
+  page: Page,
+  opts: BrowserHandlerOptions = {},
+): void {
   app.post('/execute/browser', async (req: Request, res: Response) => {
     try {
       const body = req.body as ExecuteBrowserRequest;
@@ -28,6 +37,25 @@ export function registerBrowserHandler(app: Express, page: Page): void {
           success: false,
           error: `Unknown command "${body.command}". Valid: ${BROWSER_COMMANDS.join(', ')}`,
         });
+        return;
+      }
+
+      // Enforced here rather than asked for in SKILL.md. A reload destroys the
+      // session on refresh-sensitive portals, and an agent that gets stuck will
+      // reach for navigate however firmly the prose tells it not to — which is
+      // precisely how the observed ICICI run ended, with the human asked to sign
+      // in again mid-task. The message names the alternative, because a refusal
+      // an agent cannot act on just becomes a different dead end.
+      if (opts.blockNavigate && body.command === 'navigate') {
+        res.json({
+          success: false,
+          error:
+            'navigate is disabled for this app: a full-page load destroys its session, ' +
+            'and the next call would land on its signed-out screen. Move around the app ' +
+            'the way a person does — click_element with a selector from get_page_summary, ' +
+            'or click_by_text on a menu item. These are client-side route changes and keep ' +
+            'the session alive.',
+        } satisfies ExecuteBrowserResponse);
         return;
       }
 
