@@ -6,20 +6,47 @@
  * events with rich selector metadata, detects username/password/otp field
  * roles, and REDACTS password/otp values IN-POD before they leave the browser.
  *
- * Event channel: each event is POSTed as a sentinel `fetch()` to a fake host
- * (REC_BEACON). RecordingRunner reads them via page.on('request') + postData —
- * the SAME network-capture path HAR uses, which is the only CDP channel proven
- * to survive CloakBrowser's stealth Chromium (exposeBinding bindings are
- * stripped and console forwarding is suppressed as automation fingerprints).
- * The request never leaves the box: the .local host fails to resolve, but the
- * request-initiation event still fires with the body. Host/paths are inlined as
- * literals because the function body is serialized into the page context.
+ * Event channel: each event is POSTed as a sentinel `fetch()` to a reserved
+ * path. RecordingRunner reads them via page.on('request') + postData — the SAME
+ * network-capture path HAR uses, which is the only CDP channel proven to
+ * survive CloakBrowser's stealth Chromium (exposeBinding bindings are stripped
+ * and console forwarding is suppressed as automation fingerprints).
+ *
+ * The beacon is sent **same-origin** (`location.origin + REC_PATH`), NOT to an
+ * off-origin sentinel host. A page's Content-Security-Policy governs where its
+ * scripts may fetch, and `mode: 'no-cors'` does not exempt it: under a policy
+ * like app.adopt.ai's
+ *
+ *     connect-src 'self' https://*.adopt.ai https://*.frontegg.com …
+ *
+ * every beacon to an off-origin host is refused by the browser *before* a
+ * request is ever initiated, so page.on('request') never fires and the whole
+ * capture comes back with zero interaction events — silently, because the
+ * recorder's own fetch rejection is caught and discarded. Downstream that looks
+ * identical to "the human never typed anything": NoUI's
+ * split.find_login_boundary() finds no credential field, so every *combined*
+ * capture of a CSP-enforcing site degrades to workflow-only and no App Template
+ * is ever registered. Reproduced against the real policy: 3 events without CSP,
+ * 0 with it.
+ *
+ * `'self'` is allowed by essentially every real connect-src (a SPA must reach
+ * its own API), so a same-origin beacon survives. RecordingRunner aborts the
+ * route so nothing reaches the origin server, and filters the path out of the
+ * HAR. Opaque origins (about:blank, sandboxed frames) have no usable
+ * location.origin and fall back to the legacy off-origin host.
+ *
+ * Paths are inlined as literals because the function body is serialized into
+ * the page context.
  */
 
-// Sentinel beacon (kept in sync with the literals inlined in domRecorderScript).
-export const REC_BEACON = 'https://tabby-rec.local/';
-export const REC_EVENT_PATH = 'https://tabby-rec.local/e';
-export const REC_INSTALL_PATH = 'https://tabby-rec.local/i';
+// Reserved beacon path. Matched by suffix, so it works under any origin.
+export const REC_PATH = '/__tabby_rec__/';
+export const REC_EVENT_PATH = '/__tabby_rec__/e';
+export const REC_INSTALL_PATH = '/__tabby_rec__/i';
+/** Playwright route glob used to abort beacons before they leave the box. */
+export const REC_ROUTE_GLOB = '**/__tabby_rec__/**';
+/** Fallback origin for documents with no usable origin (about:blank, sandboxed frames). */
+export const REC_FALLBACK_ORIGIN = 'https://tabby-rec.local';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -47,10 +74,21 @@ export function domRecorderScript(): void {
     }
   })();
 
+  // Same-origin beacon base — see the module docstring: an off-origin host is
+  // refused outright by any page whose CSP declares connect-src.
+  const recBase: string = (() => {
+    try {
+      const o = w.location && w.location.origin;
+      return typeof o === 'string' && /^https?:\/\//.test(o) ? o : 'https://tabby-rec.local';
+    } catch {
+      return 'https://tabby-rec.local';
+    }
+  })();
+
   const emit = (data: any): void => {
     if (!send) return;
     try {
-      send('https://tabby-rec.local/e', JSON.stringify(data));
+      send(recBase + '/__tabby_rec__/e', JSON.stringify(data));
     } catch {
       /* serialization failure on one event must not tear down the recorder */
     }
@@ -148,9 +186,40 @@ export function domRecorderScript(): void {
   const shouldRedact = (fieldRole: string | null): boolean =>
     fieldRole === 'password' || fieldRole === 'otp';
 
+  /**
+   * The element the human actually touched.
+   *
+   * Events that cross a shadow boundary are RETARGETED: a listener on
+   * `document` sees `e.target` as the shadow HOST, not the inner control. Any
+   * login box mounted as a web component (Frontegg's
+   * `#frontegg-login-box-container-default`, and most hosted-login widgets) is
+   * therefore invisible to a naive `e.target` — the input handler's
+   * "is this an <input>?" guard drops every keystroke, so no credential field
+   * is ever recorded and NoUI concludes no login happened.
+   *
+   * `composedPath()[0]` is the true origin of the event and pierces OPEN
+   * shadow roots. Closed roots still report only the host; nothing at this
+   * layer can see inside one.
+   */
+  const realTarget = (e: any): any => {
+    try {
+      if (typeof e.composedPath === 'function') {
+        const path = e.composedPath();
+        if (path && path.length && path[0] && path[0].tagName) return path[0];
+      }
+    } catch {
+      /* fall through to e.target */
+    }
+    return e.target;
+  };
+
   const handleClick = (e: any): void => {
+    const origin = realTarget(e);
+    if (!origin) return;
     const target =
-      e.target.closest('[id], [class], a, button, input, select, textarea, [role]') || e.target;
+      (typeof origin.closest === 'function'
+        ? origin.closest('[id], [class], a, button, input, select, textarea, [role]')
+        : null) || origin;
     if (!target || !target.tagName) return;
     const at = stamp();
     emit({
@@ -186,7 +255,7 @@ export function domRecorderScript(): void {
   const inputMarks = new WeakMap<any, { seq: number; eventTime: string }>();
 
   const handleInput = (e: any): void => {
-    const target = e.target;
+    const target = realTarget(e);
     if (!target || !target.tagName) return;
     const tag = target.tagName.toLowerCase();
     if (tag !== 'input' && tag !== 'textarea') return;
@@ -237,7 +306,7 @@ export function domRecorderScript(): void {
   };
 
   const handleChange = (e: any): void => {
-    const target = e.target;
+    const target = realTarget(e);
     if (!target || !target.tagName) return;
     const tag = target.tagName.toLowerCase();
     if (tag === 'input' && !['checkbox', 'radio'].includes(target.type)) return;
@@ -276,7 +345,7 @@ export function domRecorderScript(): void {
   };
 
   const handleSubmit = (e: any): void => {
-    const form = e.target;
+    const form = realTarget(e);
     if (!form || (form.tagName && form.tagName.toLowerCase() !== 'form')) return;
     const at = stamp();
     emit({
@@ -306,7 +375,7 @@ export function domRecorderScript(): void {
   // Breadcrumb: proves the recorder actually ran in this document. RecordingRunner
   // logs it; if it never appears, injection itself is blocked and we must launch
   // a non-stealth browser for recording.
-  if (send) send('https://tabby-rec.local/i', w.location ? String(w.location.href) : '');
+  if (send) send(recBase + '/__tabby_rec__/i', w.location ? String(w.location.href) : '');
 
   function cleanup(): void {
     document.removeEventListener('click', handleClick, true);

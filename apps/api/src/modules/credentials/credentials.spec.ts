@@ -21,7 +21,7 @@ jest.mock('ioredis', () => {
   return jest.fn().mockImplementation(() => mockRedis);
 });
 
-import { CredentialsService } from './credentials.service';
+import { CredentialsService, cloneTargetUrls } from './credentials.service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1181,6 +1181,80 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
       await expect(
         service.findHealthySession(TEST_TENANT, TEST_APP_ID, 'user-a'),
       ).rejects.toThrow('No healthy session available');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-provision: target_urls cloned onto the per-user app
+  // -------------------------------------------------------------------------
+  //
+  // Regression: this list is what the worker's artifact extractor compiles into
+  // anchored regexes to decide where to harvest credentials. Deriving it only
+  // from target_domains produced bare origins, which match no real request
+  // path — so request-header capture silently yielded nothing,
+  // /credentials/request served an EMPTY authorization value, and every call
+  // 401'd against a HEALTHY session.
+  describe('cloneTargetUrls', () => {
+    const template = {
+      login_config: { login_url: 'https://app.example.com/' },
+      export_policy: {
+        target_urls: ['https://app.example.com/**', 'https://api.example.com/**'],
+        target_domains: ['app.example.com', 'api.example.com'],
+      },
+    };
+
+    it('carries the globbed patterns from the template', () => {
+      const urls = cloneTargetUrls(template);
+      expect(urls).toContain('https://api.example.com/**');
+      expect(urls).toContain('https://app.example.com/**');
+    });
+
+    it('keeps a glob for every declared target domain', () => {
+      const urls = cloneTargetUrls(template);
+      for (const domain of template.export_policy.target_domains) {
+        expect(urls.some((u) => u === `https://${domain}/**`)).toBe(true);
+      }
+    });
+
+    it('produces patterns that match a real request path', () => {
+      // Mirrors artifact-extractor.ts buildUrlMatcher exactly.
+      const matches = (url: string) =>
+        cloneTargetUrls(template)
+          .map((g) => new RegExp(`^${g.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`))
+          .some((r) => r.test(url));
+
+      expect(matches('https://api.example.com/v1/end-user/agent-harness/skills')).toBe(true);
+      expect(matches('https://app.example.com/dashboard')).toBe(true);
+      expect(matches('https://evil.example.net/v1/thing')).toBe(false);
+    });
+
+    it('still preserves the login URL and bare origins (additive change)', () => {
+      const urls = cloneTargetUrls(template);
+      expect(urls).toContain('https://app.example.com/');
+      expect(urls).toContain('https://api.example.com');
+    });
+
+    it('falls back to derived origins when the template has no globbed list', () => {
+      const legacy = {
+        login_config: { login_url: 'https://app.example.com/' },
+        export_policy: { target_domains: ['api.example.com'] },
+      };
+      expect(cloneTargetUrls(legacy)).toEqual([
+        'https://app.example.com/',
+        'https://api.example.com',
+      ]);
+    });
+
+    it('de-duplicates and tolerates a template with nothing set', () => {
+      expect(cloneTargetUrls({})).toEqual([]);
+      const dupes = cloneTargetUrls({
+        login_config: { login_url: 'https://a.example.com/' },
+        export_policy: {
+          target_urls: ['https://a.example.com/', 'https://a.example.com/**'],
+          target_domains: [],
+        },
+      });
+      expect(dupes).toEqual(['https://a.example.com/', 'https://a.example.com/**']);
     });
   });
 });
