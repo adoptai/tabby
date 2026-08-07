@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository, DataSource } from 'typeorm';
+import { MoreThan, Not, In, Repository, DataSource } from 'typeorm';
 import { SessionState, StreamingMode, RECORDING_POOL } from '@browser-hitl/shared';
 import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
@@ -38,6 +38,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
   private readonly circuitCooldownMs: number;
   private readonly appCircuitFailureThreshold: number;
   private readonly tenantCircuitFailureThreshold: number;
+  private readonly disableNetworkPolicy: boolean;
 
   constructor(
     @InjectRepository(ApplicationEntity)
@@ -60,6 +61,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     this.tenantCircuitFailureThreshold = this.readPositiveInt('CIRCUIT_BREAKER_TENANT_FAILURE_THRESHOLD', 15);
     this.circuitWindowMs = this.readPositiveInt('CIRCUIT_BREAKER_WINDOW_SECONDS', 900) * 1000;
     this.circuitCooldownMs = this.readPositiveInt('CIRCUIT_BREAKER_COOLDOWN_SECONDS', 300) * 1000;
+    this.disableNetworkPolicy = process.env.DISABLE_NETWORK_POLICY === 'true';
   }
 
   async onModuleInit() {
@@ -213,17 +215,59 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       s => s.state !== SessionState.TERMINATED
     );
 
+    // A FAILED session must NOT count toward the app's session capacity —
+    // otherwise it blocks its own replacement and the app cannot provision on
+    // demand for the whole cleanup window (a user requesting credentials just
+    // waits and gets "no session"). Provisioning counts only sessions that are
+    // live or on their way up; the circuit breaker (Step 3) bounds retries if
+    // the replacements keep failing.
+    //
+    // Because it no longer holds capacity, its pod MUST be released here rather
+    // than waiting for the FAILED-cleanup pass: that pass is gated on
+    // IDLE_SHUTDOWN_SECONDS, which defaults to 0 (disabled), so on a default
+    // deployment it never runs at all — the pod would outlive the session
+    // forever while reconcile kept creating replacements on top of it, leaking
+    // one pod per failure. reconcileRuntimeDrift doesn't cover this either (it
+    // only reaps pods whose session is missing or TERMINATED).
+    //
+    // State-driven rather than hooked to the FAILED transition, so it self-heals
+    // no matter who marked the session failed (controller, worker, or API), and
+    // idempotent: pod_name is cleared once the runtime is gone.
+    for (const session of activeSessions) {
+      if (session.state !== SessionState.FAILED || !session.pod_name) {
+        continue;
+      }
+      try {
+        this.logger.log(
+          `Releasing runtime for FAILED session ${session.id} (pod ${session.pod_name})`,
+        );
+        await this.releaseSessionRuntime(session);
+        await this.sessionRepo.update(session.id, { pod_name: null as any });
+        session.pod_name = null as any;
+      } catch (error) {
+        // Never let a stuck reap block provisioning — the next tick retries.
+        this.logger.warn(
+          `Failed to release runtime for FAILED session ${session.id}: ${error}`,
+        );
+      }
+    }
+
+    const liveSessions = activeSessions.filter(
+      s => s.state !== SessionState.FAILED
+    );
+
     const desired = app.desired_session_count;
-    const actual = activeSessions.length;
+    const actual = liveSessions.length;
 
     // Keep egress allowlist synced for all currently active runtime sessions.
     const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+    const effectiveAllowAll = this.disableNetworkPolicy || allowAll;
     for (const session of activeSessions) {
       if (!session.pod_name) {
         continue;
       }
       try {
-        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, allowAll, this.resolveResidential(session, app));
+        await this.podManager.syncEgressAllowlist(session.id, app.target_urls, extraAllowlist, effectiveAllowAll, this.resolveResidential(session, app));
       } catch (error) {
         this.logger.error(
           `Egress allowlist sync failed for session ${session.id}; terminating session fail-closed: ${error}`,
@@ -265,10 +309,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // Step 4: Terminate excess sessions (oldest first)
+    // Step 4: Terminate excess LIVE sessions (oldest first). FAILED sessions are
+    // excluded from `actual` above and reaped by the dedicated FAILED-cleanup
+    // pass, so they must not be treated as excess capacity here.
     if (actual > desired) {
       const toTerminate = actual - desired;
-      const sorted = activeSessions.sort(
+      const sorted = liveSessions.sort(
         (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
       );
 
@@ -383,14 +429,22 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       // both execute calls AND recording drain (POST /recording/stop). Recording
       // sessions don't set execute_enabled, so key off either.
       const { extraAllowlist, allowAll } = this.resolveEgressOptions(app);
+      // Deliberately keyed off the raw `allowAll` (recording_mode), NOT
+      // `effectiveAllowAll`: when DISABLE_NETWORK_POLICY is on there's no
+      // NetworkPolicy gating port 8091, so the worker Service isn't needed for
+      // reachability. Only genuine execute/recording sessions need it.
       const needsWorkerHealth = app.execute_enabled || allowAll;
       if (needsWorkerHealth) {
         await this.podManager.createWorkerService(savedSession.id, podName);
       }
 
-      // Generate NetworkPolicy — open the 8091 ingress when the worker health
-      // Service exists (execute or recording drain).
-      await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll, this.resolveResidential(savedSession, app));
+      if (this.disableNetworkPolicy) {
+        // Local dev: skip K8s NetworkPolicy, push allow_all to the egress proxy
+        await this.podManager.syncEgressAllowlist(savedSession.id, app.target_urls, extraAllowlist, true, this.resolveResidential(savedSession, app));
+        this.logger.log(`Skipped NetworkPolicy (DISABLE_NETWORK_POLICY=true), pushed allow_all for session ${savedSession.id}`);
+      } else {
+        await this.podManager.createNetworkPolicy(savedSession.id, podName, app.target_urls, streamingMode, needsWorkerHealth, extraAllowlist, allowAll, this.resolveResidential(savedSession, app));
+      }
 
       this.logger.log(`Created session ${savedSession.id} with pod ${podName} (mode=${streamingMode})`);
     } catch (error) {
@@ -434,7 +488,17 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     // Transition to TERMINATED
     await this.stateMachine.transition(session, SessionState.TERMINATED);
 
-    // Delete pod and NetworkPolicy
+    await this.releaseSessionRuntime(session);
+
+    this.logger.log(`Terminated session ${session.id}`);
+  }
+
+  /**
+   * Delete a session's Kubernetes runtime (pod, streaming services, NetworkPolicy)
+   * WITHOUT changing its state. Split out of terminateSession so a FAILED session
+   * can give its pod back while its row stays FAILED for the grace TTL.
+   */
+  private async releaseSessionRuntime(session: SessionEntity): Promise<void> {
     if (session.pod_name) {
       await this.podManager.deleteWorkerPod(session.pod_name);
     }
@@ -443,8 +507,6 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     await this.podManager.deleteCdpService(session.id, session.pod_name || undefined);
     await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
     await this.podManager.deleteNetworkPolicy(session.id);
-
-    this.logger.log(`Terminated session ${session.id}`);
   }
 
   /**
@@ -536,7 +598,41 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
           this.logger.log(
             `Cleaning up FAILED session ${session.id} (age: ${Math.round(age / 60000)}min, threshold: ${Math.round(failedTtlMs / 60000)}min)`,
           );
-          await this.appRepo.update(session.app_id, { desired_session_count: 0 });
+
+          // Decide whether reaping this corpse should also stand the app down.
+          // Historically cleanup ALWAYS scaled desired→0. That is correct for an
+          // abandoned app, but wrong for one a user is actively driving: it wiped
+          // provisioning intent, so the next credential request found no session
+          // and no way to make one (the failed session had already blocked its
+          // replacement — see the liveSessions count in reconcileApp). Only stand
+          // down when the app has no other live session AND no recent demand;
+          // otherwise leave desired alone so reconcile provisions a fresh session
+          // for the waiting user. A WARM pool spare never stands its (shared) pool
+          // app down — that would drain the pool (mirrors the max-age path above).
+          // The global value, deliberately: appById/templateById are built only
+          // from the apps of HEALTHY sessions, and this branch only acts when the
+          // app has NO live session — so the per-template lookup always missed and
+          // silently fell back here anyway. Say what it does instead of implying a
+          // per-template override that never applied.
+          const idleSeconds = globalIdleShutdownSeconds;
+          const idleMs = idleSeconds * 1000;
+          const lastUsed =
+            session.last_activity_at || session.last_credential_request_at || session.started_at;
+          const appHasRecentDemand = idleMs > 0 && now - new Date(lastUsed).getTime() < idleMs;
+          const liveCount = await this.sessionRepo.count({
+            where: {
+              app_id: session.app_id,
+              state: Not(In([SessionState.TERMINATED, SessionState.FAILED])),
+            },
+          });
+
+          const isWarmPoolSpare = session.pool_state === RECORDING_POOL.WARM;
+          if (liveCount === 0 && !appHasRecentDemand && !isWarmPoolSpare) {
+            this.logger.log(
+              `App ${session.app_id}: no live session and idle (last used ${Math.round((now - new Date(lastUsed).getTime()) / 60000)}min ago, threshold ${idleSeconds}s) — scaling to 0 after failed-session cleanup`,
+            );
+            await this.appRepo.update(session.app_id, { desired_session_count: 0 });
+          }
           await this.terminateSession(session);
         }
       }

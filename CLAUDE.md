@@ -33,10 +33,22 @@ Monorepo (NX + pnpm workspaces):
 ## Local Development (Kind)
 
 ```bash
-make kind-create          # one-time: create Kind cluster
+make kind-create          # one-time: create Kind cluster (auto-runs kind-fix-mtu + kind-fix-dns)
 make kind-reload-all      # clean + build + docker-build + load + helm upgrade with values-local.yaml
 make k8s-port-forward     # forward API (18080), Admin UI (13000), Postgres, Redis, MinIO, NATS
 ```
+
+**Existing Kind cluster (created before these targets existed):** run the two
+node-fixups by hand once, or worker egress to external sites will fail:
+
+```bash
+make kind-fix-mtu         # patch kindnet pod MTU 65535 -> 1500 (large-cert TLS handshakes)
+make kind-fix-dns         # repoint CoreDNS at 8.8.8.8/1.1.1.1 (Docker Desktop AAAA SERVFAIL)
+```
+
+Both are **Kind-only** — they pin `--context kind-<cluster>` and refuse to run if
+that context is absent, so they can never touch a remote cluster. See gotchas
+about MTU and CoreDNS AAAA below.
 
 All local config (API URL, stream host, service auth, secrets) is in `values-local.yaml` — no manual `kubectl set env` needed.
 
@@ -282,6 +294,8 @@ Recent migrations (newest first):
 21. **Admin-UI ingress route gated on `adminUi.enabled`** — The `{{- if .Values.adminUi.enabled }}` block in `charts/browser-hitl/templates/ingress.yaml` controls the `/` route. Disabling admin-UI removes it cleanly.
 22. **VNC access requires OAuth authentication** — Opening a VNC viewer URL sets a `tabby_vnc` HttpOnly cookie (1h TTL) via OAuth callback. Without it, the user hits the IdP login wall. Falls back to email gate if no OAuth IdP is configured. Wrong user → 403 (not a redirect loop). Currently owner-only (session owner matched via `owner_user_id` in cookie).
 23. **Squash merge breaks long-lived branch sync** — Repo only allows squash merge. For feature→dev PRs this is fine, but syncing between long-lived branches (e.g. `dev`→`tabby-noui`) via GitHub PR causes the next sync to show ALL previous changes again (different SHAs). Sync locally instead: `git checkout target && git merge origin/source && git push`.
+24. **Kind pod MTU defaults to 65535** — Breaks TLS handshakes to external sites whose certs produce large packets (GitHub, LinkedIn CDN). Kind exposes no MTU setting, so `make kind-fix-mtu` patches kindnet's conflist to 1500 post-create (restart-first so the patch survives kindnet's startup rewrite; verifies the patch landed). Local Kind only.
+25. **CoreDNS AAAA SERVFAIL in Kind** — Docker Desktop's embedded DNS (which Kind's CoreDNS forwards to via `/etc/resolv.conf`) returns SERVFAIL on AAAA lookups for CNAME→CloudFront domains. `getaddrinfo` (Chromium + the egress proxy's `net.connect`) does a dual A+AAAA lookup and fails the whole thing with EAI_AGAIN → `ERR_TUNNEL_CONNECTION_FAILED` in worker sessions. `make kind-fix-dns` repoints CoreDNS `forward` at `8.8.8.8 1.1.1.1`. Diagnose with `dns.resolve4` OK but `dns.lookup` failing = AAAA SERVFAIL. Cloud clusters use well-behaved VPC resolvers and never hit this — local Kind only.
 
 ## Git
 

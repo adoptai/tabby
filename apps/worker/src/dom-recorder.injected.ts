@@ -56,6 +56,37 @@ export function domRecorderScript(): void {
     }
   };
 
+  /**
+   * Ordinal + wall clock of an interaction, captured AT EVENT TIME. Every handler
+   * stamps once, up front, and carries the stamp to the payload it emits.
+   *
+   * These feed two ADDITIVE fields, `seq` and `event_time`. `timestamp` is not
+   * sourced from here at all: every handler keeps its own original
+   * `new Date().toISOString()` call, in its original position, so the value is
+   * byte-identical to what the recorder emitted before this change. It therefore
+   * keeps its existing meaning — the moment the payload was built, which for the
+   * debounced `input` handler is the FLUSH, not the keystroke. That is exactly
+   * why it cannot order the stream: a human who types a field and clicks submit
+   * inside the 500ms window flushes the input after the click, so a timestamp
+   * sort reconstructs "click submit" before "fill password". Consumers that need
+   * order read `seq`; consumers that need the interaction's wall clock read
+   * `event_time`. Nothing reading `timestamp` changes behaviour.
+   *
+   * For every handler but `handleInput` the two clock reads are the same
+   * statement apart, so `event_time` and `timestamp` are equal in practice —
+   * but only `event_time` is guaranteed to be the interaction.
+   *
+   * `seq` restarts at 1 in every document (and in every subframe — the recorder
+   * installs per document). RecordingRunner rebases each run onto a session-global
+   * counter as the beacons arrive, so consumers get a total order that survives
+   * navigation and does not depend on beacon delivery order.
+   */
+  let seq = 0;
+  const stamp = (): { seq: number; eventTime: string } => ({
+    seq: ++seq,
+    eventTime: new Date().toISOString(),
+  });
+
   const getDataAttrs = (el: any): string | null => {
     const attrs: Record<string, string> = {};
     for (const attr of el.attributes || []) {
@@ -121,6 +152,7 @@ export function domRecorderScript(): void {
     const target =
       e.target.closest('[id], [class], a, button, input, select, textarea, [role]') || e.target;
     if (!target || !target.tagName) return;
+    const at = stamp();
     emit({
       event_type: 'click',
       tag_name: target.tagName || '',
@@ -138,17 +170,33 @@ export function domRecorderScript(): void {
       aria_label: target.getAttribute ? target.getAttribute('aria-label') : null,
       role_attr: target.getAttribute ? target.getAttribute('role') : null,
       data_attrs_json: getDataAttrs(target),
+      seq: at.seq,
+      event_time: at.eventTime,
+      // Left as the ORIGINAL clock read, in its original position, so the value
+      // is byte-identical to what this handler produced before seq/event_time.
       timestamp: new Date().toISOString(),
     });
   };
 
   const inputTimers = new WeakMap<any, any>();
+  // Stamp of the FIRST keystroke in the field's current debounce burst, carried
+  // across the debounce so the flushed payload can report when the human
+  // actually started typing (`seq`/`event_time`) alongside its existing
+  // flush-time `timestamp` — see stamp().
+  const inputMarks = new WeakMap<any, { seq: number; eventTime: string }>();
 
   const handleInput = (e: any): void => {
     const target = e.target;
     if (!target || !target.tagName) return;
     const tag = target.tagName.toLowerCase();
     if (tag !== 'input' && tag !== 'textarea') return;
+
+    let mark = inputMarks.get(target);
+    if (!mark) {
+      mark = stamp();
+      inputMarks.set(target, mark);
+    }
+    const at = mark;
 
     const existing = inputTimers.get(target);
     if (existing) clearTimeout(existing);
@@ -157,6 +205,7 @@ export function domRecorderScript(): void {
       target,
       setTimeout(() => {
         inputTimers.delete(target);
+        inputMarks.delete(target); // next burst on this field starts a new stamp
         const fieldRole = detectFieldRole(target);
         const redact = shouldRedact(fieldRole);
         const rawValue = (target.value || '').slice(0, 500);
@@ -177,6 +226,10 @@ export function domRecorderScript(): void {
           aria_label: target.getAttribute('aria-label') || null,
           role_attr: target.getAttribute('role') || null,
           data_attrs_json: getDataAttrs(target),
+          seq: at.seq,
+          event_time: at.eventTime,
+          // Flush time, NOT the keystroke — preserved verbatim so every existing
+          // consumer of this field is untouched. Order by `seq` instead.
           timestamp: new Date().toISOString(),
         });
       }, 500),
@@ -190,6 +243,7 @@ export function domRecorderScript(): void {
     if (tag === 'input' && !['checkbox', 'radio'].includes(target.type)) return;
     if (tag !== 'select' && tag !== 'input') return;
 
+    const at = stamp();
     const fieldRole = detectFieldRole(target);
     const redact = shouldRedact(fieldRole);
     let val: string;
@@ -215,13 +269,16 @@ export function domRecorderScript(): void {
       aria_label: target.getAttribute('aria-label') || null,
       role_attr: target.getAttribute('role') || null,
       data_attrs_json: getDataAttrs(target),
-      timestamp: new Date().toISOString(),
+      seq: at.seq,
+      event_time: at.eventTime,
+      timestamp: new Date().toISOString(), // original clock read, original position
     });
   };
 
   const handleSubmit = (e: any): void => {
     const form = e.target;
     if (!form || (form.tagName && form.tagName.toLowerCase() !== 'form')) return;
+    const at = stamp();
     emit({
       event_type: 'submit',
       tag_name: 'FORM',
@@ -235,7 +292,9 @@ export function domRecorderScript(): void {
       field_role: null,
       is_redacted: false,
       data_attrs_json: null,
-      timestamp: new Date().toISOString(),
+      seq: at.seq,
+      event_time: at.eventTime,
+      timestamp: new Date().toISOString(), // original clock read, original position
     });
   };
 

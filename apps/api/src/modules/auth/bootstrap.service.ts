@@ -1,7 +1,8 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { Not, Repository } from 'typeorm';
+import { RECORDING_POOL } from '@browser-hitl/shared';
 import { TenantEntity, UserEntity } from '../../entities';
 import { AuthService } from './auth.service';
 
@@ -11,7 +12,9 @@ import { AuthService } from './auth.service';
  * 1. A tenant with name BOOTSTRAP_TENANT_NAME
  * 2. An admin user with ADMIN_BOOTSTRAP_EMAIL/PASSWORD
  * 3. (MinIO bucket + encryption key provisioned separately)
- * Idempotent: skips if any tenant exists.
+ * Idempotent: skips if any *non-system* tenant exists. The system recording-pool
+ * tenant (RECORDING_POOL.SYSTEM_TENANT_ID, seeded by migration 033) is excluded
+ * from the count, so a fresh install with only the system tenant still bootstraps.
  */
 @Injectable()
 export class BootstrapService implements OnModuleInit {
@@ -26,7 +29,9 @@ export class BootstrapService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const tenantCount = await this.tenantRepo.count();
+    const tenantCount = await this.tenantRepo.count({
+      where: { id: Not(RECORDING_POOL.SYSTEM_TENANT_ID) },
+    });
     if (tenantCount > 0) {
       this.logger.log('Tenants exist, skipping bootstrap');
       return;

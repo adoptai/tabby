@@ -225,6 +225,28 @@ describe('AgentService', () => {
       });
     });
 
+    it('excludes TERMINATED/FAILED sessions and 404s so the caller provisions fresh', async () => {
+      // Regression: returning the newest session regardless of state handed a
+      // just-expired TERMINATED session back as "current", so the harness minted
+      // a sign-in card pointing at a dead session (the recurring ICICI failure).
+      const credentialsService = createMockCredentialsService();
+      credentialsService.resolveActiveProfile.mockResolvedValue({ app_id: 'app-1' });
+
+      const sessionRepo = createMockSessionRepo();
+      // With the state filter applied, no LIVE session matches → findOne returns null.
+      sessionRepo.findOne.mockResolvedValue(null);
+
+      const { service } = buildService({ sessionRepo, credentialsService });
+
+      await expect(
+        service.getSessionStatus('profile-1', 'tenant-1', [], 'Operator'),
+      ).rejects.toThrow(/No live session/);
+
+      // and the query must carry a state exclusion, not just an order-by.
+      const call = sessionRepo.findOne.mock.calls[0][0];
+      expect(call.where.state).toBeDefined();
+    });
+
     it('falls back to session.pending_input_request when no intervention exists', async () => {
       const credentialsService = createMockCredentialsService();
       credentialsService.resolveActiveProfile.mockResolvedValue({ app_id: 'app-1' });
@@ -362,7 +384,7 @@ describe('AgentService', () => {
 
       await expect(
         service.getSessionStatus(PROFILE_ID, TENANT, [PROFILE_ID], 'Agent', 'user-a'),
-      ).rejects.toThrow('No session found for profile');
+      ).rejects.toThrow(/No .*session found for profile/);
     });
   });
 });

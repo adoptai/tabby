@@ -204,7 +204,7 @@ k8s-logs-controller: ## Tail controller logs
 	kubectl logs -n $(HELM_NAMESPACE) -l app.kubernetes.io/component=controller -f --tail=100
 
 .PHONY: k8s-port-forward
-k8s-port-forward: ## Port-forward all services for local development
+k8s-port-forward: kind-guard ## Port-forward all services for local development
 	@echo "API:        http://localhost:18080        (Swagger: http://localhost:18080/api/docs)"
 	@echo "Admin UI:   http://localhost:13000"
 	@echo "PostgreSQL: localhost:25432"
@@ -214,12 +214,12 @@ k8s-port-forward: ## Port-forward all services for local development
 	@echo ""
 	@echo "Stop all: pkill -f 'kubectl port-forward'"
 	@echo ""
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8000 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-admin-ui 13000:8000 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-postgres 25432:5432 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-redis 16379:6379 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-minio 19000:9000 &
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-nats 4222:4222 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8000 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-admin-ui 13000:8000 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-postgres 25432:5432 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-redis 16379:6379 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-minio 19000:9000 &
+	kubectl --context $(KIND_CONTEXT) port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-nats 4222:4222 &
 	@wait
 
 # ============================================================
@@ -232,6 +232,13 @@ ifneq (,$(wildcard $(DOTENV_FILE)))
   HELM_DOTENV_SETS := $(shell ./scripts/dotenv-to-helm-sets.sh $(DOTENV_FILE))
 endif
 
+# Optional gitignored local secrets override, auto-included in every local helm
+# upgrade when present. A values FILE (not --set) so credentials with dots/braces
+# — e.g. the residential EGRESS_UPSTREAM_PROXY_URL Oxylabs URL with its
+# {sessionId} template — don't trip helm's --set parser. Copy the committed
+# values-local.secret.yaml.example to values-local.secret.yaml and fill it in.
+LOCAL_SECRET_VALUES := $(if $(wildcard charts/browser-hitl/values-local.secret.yaml),-f charts/browser-hitl/values-local.secret.yaml)
+
 KIND_CLUSTER ?= tabby-dev
 
 .PHONY: tilt
@@ -240,8 +247,85 @@ tilt: ## Start Tilt for live rebuild and deploy (replaces kind-reload-all)
 
 .PHONY: kind-create
 kind-create: ## Create a Kind cluster for local development
-	kind create cluster --name $(KIND_CLUSTER)
+	kind create cluster --name $(KIND_CLUSTER) --config infra/kind/cluster-config.yaml
+	$(MAKE) kind-fix-mtu
+	$(MAKE) kind-fix-dns
 	@echo "Kind cluster '$(KIND_CLUSTER)' created. Context: kind-$(KIND_CLUSTER)"
+
+# The Kind cluster's kubectl context (Kind names it kind-<cluster>). All mutating
+# targets below pin --context to this so they can NEVER touch a remote cluster,
+# even if the current kube-context is pointed at staging/prod.
+KIND_CONTEXT := kind-$(KIND_CLUSTER)
+
+# Guard: refuse to run if the Kind cluster's context doesn't exist (i.e. the
+# cluster isn't up). Prevents these local-only targets from silently no-oping
+# against whatever context happens to be current.
+.PHONY: kind-guard
+kind-guard:
+	@kubectl config get-contexts -o name 2>/dev/null | grep -qx '$(KIND_CONTEXT)' || \
+		{ echo "refusing: kube-context '$(KIND_CONTEXT)' not found — is the Kind cluster up? (make kind-create)"; exit 1; }
+
+.PHONY: kind-fix-mtu
+kind-fix-mtu: kind-guard ## Fix Kind pod MTU from 65535 to 1500 (prevents TLS failures to external sites)
+	@echo "Patching kindnet pod MTU to 1500 on all nodes of '$(KIND_CLUSTER)'..."
+	@# Patch ONLY the CNI conflist (pod veth MTU). Do NOT touch the node's own eth0:
+	@# it must keep matching the Docker bridge (`docker network inspect kind` ->
+	@# com.docker.network.driver.mtu, 65535 on Docker Desktop). Lowering the node
+	@# interface while the bridge stays 65535 makes the bridge emit frames the node
+	@# drops, which wedges kubectl port-forward with
+	@#   'error creating error stream ...: Timeout occurred'
+	@# and takes the API/VNC tunnels down with it.
+	@#
+	@# kindnet rewrites the conflist on startup, and does so a moment AFTER the
+	@# daemonset reports Ready — so a patch applied immediately gets clobbered.
+	@# Restart first, then patch, then RE-verify once kindnet has settled, retrying
+	@# before giving up. The previous version verified instantly and printed success
+	@# against a file that was about to be overwritten.
+	kubectl --context $(KIND_CONTEXT) rollout restart daemonset/kindnet -n kube-system
+	kubectl --context $(KIND_CONTEXT) rollout status daemonset/kindnet -n kube-system --timeout=60s
+	@ok=0; \
+	for attempt in 1 2 3 4 5; do \
+		for node in $$(kind get nodes --name $(KIND_CLUSTER)); do \
+			docker exec $$node sh -c '\
+				CNI=/etc/cni/net.d/10-kindnet.conflist; \
+				[ -s "$$CNI" ] && sed -i "s/\"mtu\": *[0-9]*/\"mtu\": 1500/g" "$$CNI"; \
+				grep -q "\"mtu\": 1500" "$$CNI"' \
+				|| { echo "MTU patch did not land on $$node (no \"mtu\" key? kindnet variant changed)"; exit 1; }; \
+		done; \
+		sleep 20; \
+		stable=1; \
+		for node in $$(kind get nodes --name $(KIND_CLUSTER)); do \
+			docker exec $$node sh -c 'grep -q "\"mtu\": 1500" /etc/cni/net.d/10-kindnet.conflist' || stable=0; \
+		done; \
+		if [ "$$stable" = "1" ]; then \
+			echo "Pod MTU 1500 verified stable on all nodes (attempt $$attempt)."; ok=1; break; \
+		fi; \
+		echo "kindnet reverted the patch (attempt $$attempt) — retrying..."; \
+	done; \
+	if [ "$$ok" != "1" ]; then echo "MTU patch keeps being reverted by kindnet; aborting."; exit 1; fi
+	@echo "NOTE: kindnet rewrites this on every restart — re-run after one."
+	@echo "Existing pods keep their old MTU — recreate them to pick this up:"
+	@echo "  kubectl --context $(KIND_CONTEXT) rollout restart deploy -n $(HELM_NAMESPACE)"
+
+.PHONY: kind-fix-dns
+kind-fix-dns: kind-guard ## Point CoreDNS at public resolvers (fixes AAAA SERVFAIL from Docker Desktop embedded DNS)
+	@echo "Pointing CoreDNS forward at 8.8.8.8 1.1.1.1 on '$(KIND_CONTEXT)' (local-dev only)..."
+	@# Docker Desktop's embedded DNS (127.0.0.11, reached via /etc/resolv.conf) returns
+	@# SERVFAIL on AAAA lookups for CNAME->CloudFront domains. getaddrinfo (Chromium + the
+	@# egress proxy's net.connect) does a dual A+AAAA lookup and fails the whole resolution
+	@# with EAI_AGAIN, surfacing as ERR_TUNNEL_CONNECTION_FAILED in worker sessions.
+	@# Forwarding to a public resolver that answers AAAA cleanly avoids this. Cloud clusters
+	@# (staging/prod) use a well-behaved VPC resolver and never hit this, so it stays local.
+	@kubectl --context $(KIND_CONTEXT) get configmap coredns -n kube-system -o yaml | \
+		sed 's#forward . /etc/resolv.conf#forward . 8.8.8.8 1.1.1.1#' | \
+		kubectl --context $(KIND_CONTEXT) apply -f -
+	@# Verify the substitution actually landed (CoreDNS Corefile variants differ; a
+	@# no-op sed would otherwise re-apply an identical ConfigMap and still report success).
+	@kubectl --context $(KIND_CONTEXT) get configmap coredns -n kube-system -o yaml | grep -q '8.8.8.8' \
+		|| { echo "CoreDNS Corefile did not match 'forward . /etc/resolv.conf' — nothing changed. Inspect the Corefile manually."; exit 1; }
+	kubectl --context $(KIND_CONTEXT) rollout restart deployment/coredns -n kube-system
+	kubectl --context $(KIND_CONTEXT) rollout status deployment/coredns -n kube-system --timeout=60s
+	@echo "CoreDNS now forwards to public resolvers (verified 8.8.8.8 in Corefile)."
 
 .PHONY: kind-load-images
 kind-load-images: ## Load all Docker images into the Kind cluster
@@ -255,11 +339,12 @@ kind-load-images: ## Load all Docker images into the Kind cluster
 	@echo "Images loaded into Kind cluster '$(KIND_CLUSTER)'"
 
 .PHONY: kind-deploy
-kind-deploy: ## Full local deploy: load images + helm install with local values
+kind-deploy: kind-guard ## Full local deploy: load images + helm install with local values
 	$(MAKE) kind-load-images
-	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
+	kubectl --context $(KIND_CONTEXT) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl --context $(KIND_CONTEXT) apply -f -
+	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) \
 		--wait --timeout 5m
 	@echo "Stack deployed. Run: kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-api 18080:8080"
@@ -267,37 +352,41 @@ kind-deploy: ## Full local deploy: load images + helm install with local values
 # --- Kind reload shortcuts: build + load + restart a single service ----------
 
 .PHONY: kind-reload-api
-kind-reload-api: docker-build-api ## Rebuild API and reload into Kind
+kind-reload-api: kind-guard docker-build-api ## Rebuild API and reload into Kind
 	kind load docker-image $(IMG_API) --name $(KIND_CLUSTER)
-	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "API reloaded."
 
 .PHONY: kind-reload-controller
-kind-reload-controller: docker-build-controller ## Rebuild controller and reload into Kind
+kind-reload-controller: kind-guard docker-build-controller ## Rebuild controller and reload into Kind
 	kind load docker-image $(IMG_CONTROLLER) --name $(KIND_CLUSTER)
-	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "Controller reloaded."
 
 .PHONY: kind-reload-worker
-kind-reload-worker: docker-build-worker ## Rebuild worker and reload into Kind
+kind-reload-worker: kind-guard docker-build-worker ## Rebuild worker and reload into Kind
 	kind load docker-image $(IMG_WORKER) --name $(KIND_CLUSTER)
-	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "Worker reloaded."
 
 .PHONY: kind-reload-admin-ui
-kind-reload-admin-ui: docker-build-admin-ui ## Rebuild admin-ui and reload into Kind
+kind-reload-admin-ui: kind-guard docker-build-admin-ui ## Rebuild admin-ui and reload into Kind
 	kind load docker-image $(IMG_ADMIN_UI) --name $(KIND_CLUSTER)
-	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ \
+	helm upgrade $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --reuse-values \
 		--wait --timeout 5m
 	@echo "Admin UI reloaded."
@@ -308,33 +397,34 @@ kind-reload-novnc: docker-build-novnc ## Rebuild noVNC and reload into Kind
 	@echo "noVNC reloaded (sidecar — new worker pods will pick it up)."
 
 .PHONY: kind-reload-all
-kind-reload-all: clean build docker-build ## Clean + build source + images, load into Kind, and upgrade Helm release
+kind-reload-all: kind-guard clean build docker-build ## Clean + build source + images, load into Kind, and upgrade Helm release
 	$(MAKE) kind-load-images
-	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ \
+	helm upgrade --install $(HELM_RELEASE) charts/browser-hitl/ --kube-context $(KIND_CONTEXT) \
 		-f charts/browser-hitl/values-local.yaml \
+		$(LOCAL_SECRET_VALUES) \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
 		$(HELM_DOTENV_SETS) \
 		--wait --timeout 5m
 	@echo "Force-restarting deployments (image tag :dev never changes, so pods must be bounced)..."
-	kubectl rollout restart deployment \
+	kubectl --context $(KIND_CONTEXT) rollout restart deployment \
 		-l app.kubernetes.io/instance=$(HELM_RELEASE) \
 		-n $(HELM_NAMESPACE)
-	kubectl rollout status deployment \
+	kubectl --context $(KIND_CONTEXT) rollout status deployment \
 		-l app.kubernetes.io/instance=$(HELM_RELEASE) \
 		-n $(HELM_NAMESPACE) \
 		--timeout 3m
 	@echo "All services rebuilt and deployed with local images."
 
 .PHONY: kind-stop
-kind-stop: ## Scale all deployments and statefulsets to 0 replicas (stop pods without deleting)
-	kubectl scale deployment --all --replicas=0 -n $(HELM_NAMESPACE)
-	kubectl scale statefulset --all --replicas=0 -n $(HELM_NAMESPACE)
+kind-stop: kind-guard ## Scale all deployments and statefulsets to 0 replicas (stop pods without deleting)
+	kubectl --context $(KIND_CONTEXT) scale deployment --all --replicas=0 -n $(HELM_NAMESPACE)
+	kubectl --context $(KIND_CONTEXT) scale statefulset --all --replicas=0 -n $(HELM_NAMESPACE)
 	@echo "All pods scaled to 0 in namespace '$(HELM_NAMESPACE)'."
 
 .PHONY: kind-start
-kind-start: ## Scale all deployments and statefulsets back to 1 replica
-	kubectl scale deployment --all --replicas=1 -n $(HELM_NAMESPACE)
-	kubectl scale statefulset --all --replicas=1 -n $(HELM_NAMESPACE)
+kind-start: kind-guard ## Scale all deployments and statefulsets back to 1 replica
+	kubectl --context $(KIND_CONTEXT) scale deployment --all --replicas=1 -n $(HELM_NAMESPACE)
+	kubectl --context $(KIND_CONTEXT) scale statefulset --all --replicas=1 -n $(HELM_NAMESPACE)
 	@echo "All pods scaled to 1 in namespace '$(HELM_NAMESPACE)'."
 
 .PHONY: kind-delete

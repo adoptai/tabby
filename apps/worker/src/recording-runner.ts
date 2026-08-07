@@ -5,6 +5,7 @@ import type {
   RecordedInteractionEvent,
   RecordedUrlEvent,
 } from '@browser-hitl/shared';
+import { RECORDING_SCHEMA_VERSION } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, cleanupHarListeners } from './har-capture';
 import { REC_BEACON, REC_INSTALL_PATH, domRecorderScript } from './dom-recorder.injected';
 import { sanitizeHar } from './har-sanitizer';
@@ -31,6 +32,18 @@ export class RecordingRunner {
   private started = false;
   private installSeen = false;
 
+  // Session-global event ordering. The injected recorder numbers events per
+  // DOCUMENT — its counter dies with the page — so a two-page login (username
+  // page, then password page) would restart at 1 and a global sort on the raw
+  // ordinal would interleave the pages. Each document's run is rebased onto a
+  // running counter here: a raw ordinal that fails to advance means a new
+  // document (or a subframe's recorder), so the base moves past everything
+  // numbered so far. URL events draw from the same counter, giving consumers one
+  // total order over interactions and navigations.
+  private seqMax = 0;
+  private seqBase = 0;
+  private lastRawSeq = 0;
+
   constructor(
     private readonly page: Page,
     private readonly context: BrowserContext,
@@ -38,6 +51,29 @@ export class RecordingRunner {
     private readonly recordingMode: RecordingMode,
   ) {
     this.startedAt = new Date().toISOString();
+  }
+
+  /** Next session-global ordinal, for events we number ourselves (URL transitions). */
+  private nextSeq(): number {
+    this.seqMax += 1;
+    // Force the next page-side ordinal to rebase past this one, whatever it is.
+    this.seqBase = this.seqMax;
+    this.lastRawSeq = Number.MAX_SAFE_INTEGER;
+    return this.seqMax;
+  }
+
+  /** Map a page-local ordinal onto the session-global one. See seqMax/seqBase. */
+  private rebaseSeq(raw: unknown): number {
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 1) {
+      // A recorder too old to number its events, or a mangled beacon: fall back
+      // to arrival order so the event still sorts where it landed.
+      return this.nextSeq();
+    }
+    if (raw <= this.lastRawSeq) this.seqBase = this.seqMax; // counter restarted
+    this.lastRawSeq = raw;
+    const seq = this.seqBase + raw;
+    if (seq > this.seqMax) this.seqMax = seq;
+    return seq;
   }
 
   async start(): Promise<void> {
@@ -72,7 +108,10 @@ export class RecordingRunner {
         const body = typeof req.postData === 'function' ? req.postData() : '';
         if (!body) return;
         const ev = JSON.parse(body) as RecordedInteractionEvent;
-        if (ev && typeof ev === 'object') this.events.push(ev);
+        if (ev && typeof ev === 'object') {
+          ev.seq = this.rebaseSeq(ev.seq);
+          this.events.push(ev);
+        }
       } catch {
         /* malformed beacon — ignore */
       }
@@ -104,6 +143,7 @@ export class RecordingRunner {
         this.urlEvents.push({
           from_url: this.lastUrl,
           to_url: to,
+          seq: this.nextSeq(),
           timestamp: new Date().toISOString(),
         });
         this.lastUrl = to;
@@ -133,6 +173,9 @@ export class RecordingRunner {
     this.events.length = 0;
     this.urlEvents.length = 0;
     this.lastUrl = '';
+    this.seqMax = 0;
+    this.seqBase = 0;
+    this.lastRawSeq = 0;
     // Re-arm HAR capture: startHarCapture detaches the existing listeners and
     // installs fresh ones over a new (empty) entries buffer, dropping any
     // placeholder-page requests captured while the spare was warm.
@@ -184,6 +227,7 @@ export class RecordingRunner {
     );
 
     return {
+      schema_version: RECORDING_SCHEMA_VERSION,
       session_id: this.sessionId,
       recording_mode: this.recordingMode,
       started_at: this.startedAt,

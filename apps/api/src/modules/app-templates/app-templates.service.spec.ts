@@ -77,6 +77,7 @@ function buildService(overrides: {
 } = {}) {
   const templateRepo = overrides.templateRepo ?? {
     findOne: jest.fn().mockResolvedValue(null),
+    findOneOrFail: jest.fn().mockResolvedValue(null),
     find: jest.fn().mockResolvedValue([]),
     create: jest.fn().mockImplementation((d: any) => d),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve({ id: 'tpl-uuid-1', ...d })),
@@ -127,6 +128,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service, templateRepo, appRepo } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -159,6 +161,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service, appRepo } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -183,6 +186,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service, appRepo } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -202,6 +206,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -230,6 +235,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -253,6 +259,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -274,6 +281,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -313,6 +321,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -348,6 +357,64 @@ describe('AppTemplatesService — propagation', () => {
       );
     });
 
+    it('propagates full config on a PATCH even though save() returns only the patched fields', async () => {
+      // Regression: repo.save() resolves to an object carrying only the properties it was
+      // handed. On a PATCH that is just the patched field, so propagating from save()'s
+      // return value read login_config as undefined and inserted a profile row with a NULL
+      // login_config — a NOT NULL violation that 500'd the request after appRepo.update()
+      // had already written. The service must propagate from a fresh read instead.
+      const newExportPolicy = {
+        target_domains: ['salesforce.com'],
+        credential_types: { token: 'VOLATILE', headers: ['x-xsrf-token'] },
+      };
+      const template = makeTemplate({ export_policy: newExportPolicy });
+      const existingProfile = makeProfile();
+
+      let managerSave: jest.Mock;
+      const dataSource = {
+        transaction: jest.fn().mockImplementation(async (cb: any) => {
+          managerSave = jest.fn().mockResolvedValue({});
+          return cb({ update: jest.fn().mockResolvedValue(undefined), save: managerSave });
+        }),
+      };
+
+      const appRepo = {
+        find: jest.fn().mockResolvedValue([{ id: 'app-1' }]),
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const { service } = buildService({
+        templateRepo: {
+          findOne: jest.fn().mockResolvedValue(template),
+          // Fresh read after save — carries every column.
+          findOneOrFail: jest.fn().mockResolvedValue(template),
+          // Mimics real TypeORM: resolves to just what the PATCH handed it.
+          save: jest.fn().mockResolvedValue({ export_policy: newExportPolicy }),
+        },
+        appRepo,
+        profileRepo: { find: jest.fn().mockResolvedValue([existingProfile]) },
+        dataSource,
+      });
+
+      await service.update('tenant-1', 'tpl-uuid-1', { export_policy: newExportPolicy }, 'actor-1');
+
+      // The new profile row must carry the template's real login_config, never undefined.
+      expect(managerSave!).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({
+          login_config: template.login_config,
+          credential_types: newExportPolicy.credential_types,
+          target_domains: newExportPolicy.target_domains,
+        }),
+      );
+
+      // And the linked app must not be handed an undefined login_config either.
+      expect(appRepo.update).toHaveBeenCalledWith(
+        'app-1',
+        expect.objectContaining({ login_config: template.login_config }),
+      );
+    });
+
     it('does not create a new profile version when only browser_policy changes', async () => {
       const template = makeTemplate({ browser_policy: { downloads: true, clipboard: false, file_chooser: false } });
       // Profile fields match the template exactly
@@ -362,6 +429,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -388,6 +456,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -430,6 +499,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -467,6 +537,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -497,6 +568,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {
@@ -529,6 +601,7 @@ describe('AppTemplatesService — propagation', () => {
       const { service } = buildService({
         templateRepo: {
           findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
           save: jest.fn().mockResolvedValue(template),
         },
         appRepo: {

@@ -46,6 +46,17 @@ spec:
             - node
             - /app/server.js
           env:
+            # Node's Happy Eyeballs (autoSelectFamily, on by default since 20) races the
+            # A and AAAA connects but caps EACH attempt at 250ms. When a target publishes
+            # an AAAA we cannot route, the v6 attempt fails instantly and the v4 fallback
+            # is aborted at 250ms — so any host further away than that never connects and
+            # the browser sees ERR_TUNNEL_CONNECTION_FAILED. Real-world example: ICICI
+            # (retailnetbanking.icici.bank.in) has an AAAA and a ~500ms v4 RTT from
+            # outside India, which fails 100% at the default budget.
+            # Raise the per-attempt budget rather than disabling autoselection, so
+            # dual-stack targets still work where v6 IS routable.
+            - name: NODE_OPTIONS
+              value: "--network-family-autoselection-attempt-timeout={{ .Values.egressProxy.familyAutoselectionTimeoutMs }}"
             - name: EGRESS_PROXY_PORT
               value: {{ .Values.egressProxy.port | quote }}
             - name: EGRESS_PROXY_ADMIN_PORT

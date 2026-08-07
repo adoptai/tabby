@@ -152,6 +152,7 @@ config:
   reconcileBatchSize: "50"
   extractTabTimeoutMs: "15000"
   extractTabPollIntervalMs: "3000"
+  disableNetworkPolicy: "true"
   # Warm recording-session pool (off by default locally — set recordingPoolTenants
   # to "*" or a tenant id to warm spares; residential spares also need
   # EGRESS_UPSTREAM_PROXY_URL on the egress-proxy). IfNotPresent is required for
@@ -312,6 +313,14 @@ egressProxy:
     # --- Workday ---
     - ".workday.com"
     - ".workdaycdn.com"
+    # --- ICICI Net Banking ---
+    # Scoped to .icici.bank.in rather than .bank.in: leading-dot entries are suffix
+    # matches, so the broader form would open every *.bank.in registrar domain.
+    - ".icici.bank.in"
+    - ".icicibank.com"
+    - ".hsbcnet.com"
+    # --- HDFC Life (myaccount portal) ---
+    - ".hdfclife.com"
     # --- Dev/test ---
     - ".dontpad.com"
     - ".api.dontpad.com"

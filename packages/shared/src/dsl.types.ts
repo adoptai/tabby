@@ -20,6 +20,7 @@ export type DslActionType =
   | 'sleep'
   | 'screenshot'
   | 'reload'
+  | 'activity'
   | 'request_human_input';
 
 export type FailureHandler =
@@ -119,6 +120,16 @@ export interface ReloadStep extends BaseDslStep {
   action: 'reload';
 }
 
+/**
+ * Human-like idle-reset keepalive: a small trusted mouse move + scroll nudge, no
+ * clicks/keys/navigation. Resets client-side idle timers (banks detect idle via
+ * DOM interaction events, not HTTP) the way a real user would, without side
+ * effects. Safe on any page.
+ */
+export interface ActivityStep extends BaseDslStep {
+  action: 'activity';
+}
+
 export interface RequestHumanInputStep extends BaseDslStep {
   action: 'request_human_input';
   input_type: HumanInputType;
@@ -145,6 +156,7 @@ export type DslStep =
   | SleepStep
   | ScreenshotStep
   | ReloadStep
+  | ActivityStep
   | RequestHumanInputStep;
 
 /** Metadata for a pending human input request, stored on session + passed via NATS. */
