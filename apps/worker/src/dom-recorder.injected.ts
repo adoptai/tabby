@@ -24,9 +24,15 @@ export const REC_INSTALL_PATH = 'https://tabby-rec.local/i';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** The function executed in the browser. Self-contained — no outer closures. */
-export function domRecorderScript(): void {
+export function domRecorderScript(opts?: { rich?: boolean }): void {
   const w = window as any;
   if (w.__tabbyDomRecorder) return;
+
+  // Rich capture (locator candidates + element evidence) is workflow-only. A
+  // login recording emits precisely the fields it always has — same shape, same
+  // beacon volume, same in-page cost — so the login compiler cannot be affected
+  // by any of it.
+  const rich = !!(opts && opts.rich);
 
   // Capture the original fetch up front so a later page override can't sever the
   // channel. Network requests are the one CDP signal the stealth build forwards.
@@ -148,12 +154,395 @@ export function domRecorderScript(): void {
   const shouldRedact = (fieldRole: string | null): boolean =>
     fieldRole === 'password' || fieldRole === 'otp';
 
+  // ---------------------------------------------------------------------------
+  // Element evidence (workflow recordings only)
+  //
+  // buildRichSelector above makes a DECISION — one selector, chosen by a fixed
+  // ladder, with no idea how many nodes it matches. That verdict is final: the
+  // page is gone when the recording ends, so no later compiler improvement can
+  // revisit it, and ambiguity only ever surfaces in production.
+  //
+  // Everything below records EVIDENCE instead: several ways to address the
+  // element, each with the number of nodes it actually matched, plus what was
+  // true about the element at that instant. The compiler picks; the choice stays
+  // revisable against recordings already captured.
+  //
+  // `selector` and every other legacy field are untouched, so the login compiler
+  // sees exactly what it always did.
+  // ---------------------------------------------------------------------------
+
+  /** Elements a human can actually act on. */
+  const ACTIONABLE =
+    'a[href],button,input,select,textarea,summary,[role="button"],[role="link"],' +
+    '[role="menuitem"],[role="tab"],[role="option"],[role="checkbox"],[role="radio"],' +
+    '[onclick],[tabindex]:not([tabindex="-1"])';
+
+  const normText = (s: any): string => String(s || '').replace(/\s+/g, ' ').trim();
+
+  const cssEsc = (v: string): string => {
+    try {
+      const c = (window as any).CSS;
+      if (c && typeof c.escape === 'function') return c.escape(v);
+    } catch {
+      /* fall through */
+    }
+    return String(v).replace(/["\\]/g, '\\$&');
+  };
+
+  const countCss = (sel: string): number => {
+    try {
+      return document.querySelectorAll(sel).length;
+    } catch {
+      return -1; // unevaluable — distinct from 0, which means "matched nothing"
+    }
+  };
+
+  const actionableList = (): any[] => {
+    try {
+      return Array.prototype.slice.call(document.querySelectorAll(ACTIONABLE));
+    } catch {
+      return [];
+    }
+  };
+
+  /**
+   * The element the human actually touched. `e.target` is retargeted to the
+   * shadow HOST for anything inside a web component, so a document-level
+   * listener silently reports the wrong node; composedPath()[0] is the real one.
+   */
+  const realTarget = (e: any): any => {
+    try {
+      const path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+      if (path && path.length && path[0] && path[0].nodeType === 1) return path[0];
+    } catch {
+      /* fall through */
+    }
+    return e.target;
+  };
+
+  const inShadowDom = (el: any): boolean => {
+    try {
+      const root = el.getRootNode ? el.getRootNode() : null;
+      return !!(root && root !== document && root.host);
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * The actionable ancestor. The legacy resolution stops at the nearest element
+   * with an id OR ANY CLASS, which on a modern page is usually the innermost
+   * wrapper — a span inside the button rather than the button. Actionability is
+   * the property that matters; "has a class" is not a proxy for it.
+   */
+  const actionableAncestor = (el: any): any => {
+    try {
+      if (el.matches && el.matches(ACTIONABLE)) return el;
+      const up = el.closest ? el.closest(ACTIONABLE) : null;
+      return up || el;
+    } catch {
+      return el;
+    }
+  };
+
+  const implicitRole = (el: any): string | null => {
+    try {
+      const explicit = el.getAttribute ? el.getAttribute('role') : null;
+      if (explicit) return explicit;
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'a') return el.hasAttribute('href') ? 'link' : null;
+      if (tag === 'button' || tag === 'summary') return 'button';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'input') {
+        const t = String(el.type || 'text').toLowerCase();
+        if (t === 'checkbox') return 'checkbox';
+        if (t === 'radio') return 'radio';
+        if (t === 'submit' || t === 'button' || t === 'reset') return 'button';
+        if (t === 'search') return 'searchbox';
+        return 'textbox';
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Close enough to the accessible name to be useful for getByRole/getByLabel. */
+  const accessibleName = (el: any): string | null => {
+    try {
+      const aria = el.getAttribute ? el.getAttribute('aria-label') : null;
+      if (aria && aria.trim()) return aria.trim().slice(0, 120);
+
+      const labelledBy = el.getAttribute ? el.getAttribute('aria-labelledby') : null;
+      if (labelledBy) {
+        const parts: string[] = [];
+        const ids = labelledBy.split(/\s+/);
+        for (let i = 0; i < ids.length; i++) {
+          const node = document.getElementById(ids[i]);
+          if (node) parts.push(normText(node.textContent));
+        }
+        const joined = normText(parts.join(' '));
+        if (joined) return joined.slice(0, 120);
+      }
+
+      if (el.labels && el.labels.length) {
+        const t = normText(el.labels[0].textContent);
+        if (t) return t.slice(0, 120);
+      }
+
+      const alt = el.getAttribute ? el.getAttribute('alt') : null;
+      if (alt && alt.trim()) return alt.trim().slice(0, 120);
+
+      const title = el.getAttribute ? el.getAttribute('title') : null;
+      if (title && title.trim()) return title.trim().slice(0, 120);
+
+      const tag = (el.tagName || '').toLowerCase();
+      const type = String(el.type || '').toLowerCase();
+      if (tag === 'input' && (type === 'submit' || type === 'button' || type === 'reset')) {
+        const v = normText(el.value);
+        if (v) return v.slice(0, 120);
+      }
+
+      const text = normText(el.textContent);
+      return text ? text.slice(0, 120) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Structural fallback. Only meaningful when nothing better exists, and its
+   * match_count still tells the compiler whether it is unique.
+   */
+  const cssPath = (el: any): string => {
+    try {
+      const parts: string[] = [];
+      let cur = el;
+      let depth = 0;
+      while (cur && cur.nodeType === 1 && depth < 8) {
+        if (cur.id) {
+          parts.unshift('#' + cssEsc(cur.id));
+          break;
+        }
+        const tag = String(cur.tagName || '').toLowerCase();
+        if (!tag || tag === 'html' || tag === 'body') {
+          parts.unshift(tag || 'div');
+          break;
+        }
+        const parent = cur.parentElement;
+        if (!parent) {
+          parts.unshift(tag);
+          break;
+        }
+        const sameTag = Array.prototype.filter.call(
+          parent.children,
+          (c: any) => c.tagName === cur.tagName,
+        );
+        parts.unshift(
+          sameTag.length > 1 ? tag + ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')' : tag,
+        );
+        cur = parent;
+        depth++;
+      }
+      return parts.join(' > ');
+    } catch {
+      return '';
+    }
+  };
+
+  const TESTID_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
+
+  const buildCandidates = (el: any): any[] => {
+    const out: any[] = [];
+    const add = (kind: string, value: string, matchCount: number): void => {
+      if (value) out.push({ kind: kind, value: value, match_count: matchCount });
+    };
+    try {
+      const tag = String(el.tagName || '').toLowerCase();
+
+      for (let i = 0; i < TESTID_ATTRS.length; i++) {
+        const attr = TESTID_ATTRS[i];
+        const v = el.getAttribute ? el.getAttribute(attr) : null;
+        if (v) {
+          const sel = '[' + attr + '="' + cssEsc(v) + '"]';
+          add('testid', sel, countCss(sel));
+          break;
+        }
+      }
+
+      // Emitted even when it looks generated. Whether "#ext-gen1234" is durable
+      // is a judgement, and judgements belong in the compiler where they can be
+      // improved — the recorder's job is to report that the id existed.
+      if (el.id) {
+        const sel = '#' + cssEsc(el.id);
+        add('id', sel, countCss(sel));
+      }
+
+      if (el.name) {
+        const sel = tag + '[name="' + cssEsc(el.name) + '"]';
+        add('name', sel, countCss(sel));
+      }
+
+      const ariaLabel = el.getAttribute ? el.getAttribute('aria-label') : null;
+      if (ariaLabel) {
+        const sel = tag + '[aria-label="' + cssEsc(ariaLabel) + '"]';
+        add('aria_label', sel, countCss(sel));
+      }
+
+      const role = implicitRole(el);
+      const name = accessibleName(el);
+
+      // role+name and text are resolved semantically at runtime (getByRole /
+      // getByText), not as CSS, so count them over the actionable set — which is
+      // the domain the runtime resolves against anyway.
+      if (role && name) {
+        let n = 0;
+        const all = actionableList();
+        for (let i = 0; i < all.length; i++) {
+          if (implicitRole(all[i]) === role && accessibleName(all[i]) === name) n++;
+        }
+        add('role_name', role + '|' + name, n);
+      }
+
+      if (el.labels && el.labels.length) {
+        const labelText = normText(el.labels[0].textContent);
+        if (labelText) {
+          let n = 0;
+          const all = actionableList();
+          for (let i = 0; i < all.length; i++) {
+            const l = all[i].labels;
+            if (l && l.length && normText(l[0].textContent) === labelText) n++;
+          }
+          add('label', labelText.slice(0, 120), n);
+        }
+      }
+
+      const text = normText(el.textContent).slice(0, 120);
+      if (text) {
+        let n = 0;
+        const all = actionableList();
+        for (let i = 0; i < all.length; i++) {
+          if (normText(all[i].textContent).slice(0, 120) === text) n++;
+        }
+        add('text', text, n);
+      }
+
+      const path = cssPath(el);
+      if (path) add('css_path', path, countCss(path));
+    } catch {
+      /* a partial candidate list beats failing the interaction */
+    }
+    return out;
+  };
+
+  const isVisibleEl = (el: any): boolean => {
+    try {
+      if (typeof el.checkVisibility === 'function') {
+        if (
+          !el.checkVisibility({
+            checkVisibilityCSS: true,
+            checkOpacity: true,
+            contentVisibilityAuto: true,
+          })
+        ) {
+          return false;
+        }
+      } else {
+        const s = window.getComputedStyle(el);
+        if (
+          s.display === 'none' ||
+          s.visibility === 'hidden' ||
+          s.visibility === 'collapse' ||
+          parseFloat(s.opacity || '1') === 0
+        ) {
+          return false;
+        }
+      }
+      if (el.closest && el.closest('[aria-hidden="true"]')) return false;
+      return true;
+    } catch {
+      return true;
+    }
+  };
+
+  /**
+   * Was something painted over the element's centre?
+   *
+   * This is the overlay-intercepted-click problem answered at the only moment it
+   * is knowable. Without it the runtime can only discover an overlay by having a
+   * click fail against it.
+   */
+  const isOccluded = (el: any, rect: any): boolean => {
+    try {
+      if (!rect || !rect.width || !rect.height) return false;
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      // Outside the viewport there is nothing to be occluded BY — scrolled-away
+      // is not the same as covered, and reporting it as covered would be a lie.
+      if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return false;
+      const top = document.elementFromPoint(cx, cy);
+      if (!top) return false;
+      return !(top === el || (el.contains && el.contains(top)) || (top.contains && top.contains(el)));
+    } catch {
+      return false;
+    }
+  };
+
+  const elementEvidence = (el: any): any => {
+    let rect: any = null;
+    try {
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (r) {
+        rect = {
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        };
+      }
+      return {
+        tag: String(el.tagName || '').toLowerCase(),
+        role: implicitRole(el),
+        accessible_name: accessibleName(el),
+        visible: isVisibleEl(el),
+        occluded: isOccluded(el, el.getBoundingClientRect ? el.getBoundingClientRect() : null),
+        rect: rect,
+        in_shadow_dom: inShadowDom(el),
+        in_iframe: window !== window.top,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Attach evidence to an outgoing payload. No-op unless this is a workflow
+   * recording, so login bundles carry exactly the fields they always did.
+   */
+  const enrich = (payload: any, getEl: () => any): void => {
+    // Bails BEFORE calling getEl, so a login recording runs not one line of the
+    // evidence path — not the resolver, not composedPath, not a DOM query. The
+    // whole feature is inert there rather than merely quiet.
+    if (!rich) return;
+    try {
+      const el = getEl();
+      if (!el || !el.tagName) return;
+      const act = actionableAncestor(el);
+      payload.candidates = buildCandidates(act);
+      const ev = elementEvidence(act);
+      if (ev) payload.element = ev;
+    } catch {
+      /* evidence is a bonus; never let it cost us the event itself */
+    }
+  };
+
   const handleClick = (e: any): void => {
     const target =
       e.target.closest('[id], [class], a, button, input, select, textarea, [role]') || e.target;
     if (!target || !target.tagName) return;
     const at = stamp();
-    emit({
+    const payload: any = {
       event_type: 'click',
       tag_name: target.tagName || '',
       element_id: target.id || null,
@@ -175,7 +564,12 @@ export function domRecorderScript(): void {
       // Left as the ORIGINAL clock read, in its original position, so the value
       // is byte-identical to what this handler produced before seq/event_time.
       timestamp: new Date().toISOString(),
-    });
+    };
+    // Evidence is gathered from the element the human really touched — through
+    // any shadow root, then up to the actionable ancestor — which is often not
+    // the node `selector` above describes.
+    enrich(payload, () => realTarget(e));
+    emit(payload);
   };
 
   const inputTimers = new WeakMap<any, any>();
@@ -209,7 +603,7 @@ export function domRecorderScript(): void {
         const fieldRole = detectFieldRole(target);
         const redact = shouldRedact(fieldRole);
         const rawValue = (target.value || '').slice(0, 500);
-        emit({
+        const payload: any = {
           event_type: 'input',
           tag_name: target.tagName || '',
           element_id: target.id || null,
@@ -231,7 +625,12 @@ export function domRecorderScript(): void {
           // Flush time, NOT the keystroke — preserved verbatim so every existing
           // consumer of this field is untouched. Order by `seq` instead.
           timestamp: new Date().toISOString(),
-        });
+        };
+        // A field IS the actionable element, so no ancestor walk is needed —
+        // but evidence is still gathered at FLUSH time, i.e. after the human
+        // finished typing, which is when the field's state is worth recording.
+        enrich(payload, () => target);
+        emit(payload);
       }, 500),
     );
   };
@@ -252,7 +651,7 @@ export function domRecorderScript(): void {
     } else {
       val = redact ? '[REDACTED]' : (target.value || '').slice(0, 500);
     }
-    emit({
+    const payload: any = {
       event_type: 'change',
       tag_name: target.tagName || '',
       element_id: target.id || null,
@@ -272,14 +671,16 @@ export function domRecorderScript(): void {
       seq: at.seq,
       event_time: at.eventTime,
       timestamp: new Date().toISOString(), // original clock read, original position
-    });
+    };
+    enrich(payload, () => target);
+    emit(payload);
   };
 
   const handleSubmit = (e: any): void => {
     const form = e.target;
     if (!form || (form.tagName && form.tagName.toLowerCase() !== 'form')) return;
     const at = stamp();
-    emit({
+    const payload: any = {
       event_type: 'submit',
       tag_name: 'FORM',
       element_id: form.id || null,
@@ -295,7 +696,19 @@ export function domRecorderScript(): void {
       seq: at.seq,
       event_time: at.eventTime,
       timestamp: new Date().toISOString(), // original clock read, original position
+    };
+    // The form's submit BUTTON is what a skill has to click, so evidence is
+    // gathered from it rather than from the form element. Resolved lazily inside
+    // enrich() and defensively: a form that answers neither `submitter` nor
+    // querySelector must still produce the event.
+    enrich(payload, () => {
+      if (e.submitter) return e.submitter;
+      if (typeof form.querySelector === 'function') {
+        return form.querySelector('[type="submit"]') || form;
+      }
+      return form;
     });
+    emit(payload);
   };
 
   document.addEventListener('click', handleClick, true);

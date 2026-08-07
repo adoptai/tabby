@@ -13,6 +13,74 @@
 
 export type RecordingMode = 'login' | 'workflow';
 
+/**
+ * One way of addressing the element that was interacted with, and how many
+ * nodes it actually matched at that instant.
+ *
+ * The recorder used to emit a single `selector` chosen in-page by a fixed
+ * priority ladder, with no idea whether it matched one node or forty. That
+ * verdict was final — the page is gone once the recording ends, so no later
+ * compiler improvement could revisit it, and ambiguity only surfaced in
+ * production. (`a.mb-0` on ICICI's dashboard is the canonical example.)
+ *
+ * Emitting candidates plus `match_count` moves the choice into the compiler,
+ * where it is revisable, and makes ambiguity detectable at compile time: a
+ * candidate with `match_count > 1` cannot be trusted to identify this element,
+ * and one with `match_count === 0` did not even find it.
+ *
+ * `match_count` is -1 when counting failed (an engine that could not evaluate
+ * the selector) — distinct from 0, which is a real "matched nothing".
+ */
+export interface RecordedLocatorCandidate {
+  /** How this candidate addresses the element; also its durability ranking. */
+  kind:
+    | 'testid'
+    | 'id'
+    | 'name'
+    | 'aria_label'
+    | 'role_name'
+    | 'label'
+    | 'text'
+    | 'css_path';
+  /**
+   * The addressing value. A CSS selector for css-expressible kinds; for
+   * `role_name` / `text` / `label` it is the accessible name or text to match,
+   * which the runtime resolves semantically (getByRole / getByText / getByLabel)
+   * rather than as CSS.
+   */
+  value: string;
+  /** Nodes this matched when it was recorded. 1 is the only trustworthy count. */
+  match_count: number;
+}
+
+/**
+ * What was true about the element at the moment it was interacted with.
+ *
+ * All of this is free to capture at record time and impossible to recover
+ * afterwards. `occluded` in particular is the overlay-intercepted-click problem
+ * answered at the only moment it is knowable — the runtime otherwise has to
+ * discover it by having a click fail.
+ */
+export interface RecordedElementEvidence {
+  tag: string;
+  /** Explicit `role` attribute, else the implicit role for the tag. */
+  role: string | null;
+  accessible_name: string | null;
+  /** CSS-visible: not display:none / visibility:hidden / opacity:0 / aria-hidden. */
+  visible: boolean;
+  /** Something else was painted over its centre point. */
+  occluded: boolean;
+  rect: { x: number; y: number; w: number; h: number } | null;
+  /**
+   * The element lives inside a shadow root, so a document-level listener sees
+   * the shadow HOST rather than this element — which is why the legacy
+   * `selector` field describes the wrong node for these.
+   */
+  in_shadow_dom: boolean;
+  /** The interaction happened inside an iframe; `url` on the event is that frame's. */
+  in_iframe: boolean;
+}
+
 /** A single captured DOM interaction. Field names mirror NoUI's ClickEvent. */
 export interface RecordedInteractionEvent {
   event_type: 'click' | 'input' | 'change' | 'submit';
@@ -36,6 +104,20 @@ export interface RecordedInteractionEvent {
   aria_label?: string | null;
   role_attr?: string | null;
   data_attrs_json?: string | null;
+  /**
+   * Ranked ways to address the element, with match counts. `workflow`
+   * recordings only — see RecordedLocatorCandidate for why this exists.
+   *
+   * These describe the ACTIONABLE element (the `a`/`button`/input the human
+   * meant), which is frequently not the node `selector` describes: the legacy
+   * resolution walks up to the nearest ancestor with an id *or any class*, and
+   * on a modern page that is usually the innermost wrapper — a `span` inside the
+   * button. `selector` is left exactly as it was so the login compiler is
+   * unaffected; new consumers should prefer `candidates`.
+   */
+  candidates?: RecordedLocatorCandidate[];
+  /** State of the actionable element at interaction time. `workflow` only. */
+  element?: RecordedElementEvidence;
   /**
    * Total-order key across ALL events in the bundle (interactions and URL
    * transitions share one counter). Strictly increasing in interaction order;
@@ -155,8 +237,10 @@ export interface RecordedCookie {
  *   2 — every event carries `seq`; interaction events also carry `event_time`.
  *   3 — workflow recordings additionally capture downloads (`download_events`)
  *       and attach to popups/new tabs (`page_id` on url events).
+ *   4 — workflow interactions additionally carry `candidates` (ranked locators
+ *       with match counts) and `element` (state at interaction time).
  */
-export const RECORDING_SCHEMA_VERSION = 3;
+export const RECORDING_SCHEMA_VERSION = 4;
 
 /** The bundle drained on "Finish & export" and pulled by NoUI. */
 export interface RecordingBundle {

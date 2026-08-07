@@ -197,3 +197,249 @@ describe('domRecorderScript', () => {
     }
   });
 });
+
+/**
+ * Rich capture: locator candidates + element evidence.
+ *
+ * The recorder used to emit ONE selector chosen by a fixed ladder, with no idea
+ * how many nodes it matched — a decision that could never be revisited, because
+ * the page is gone once the recording ends. These assert it now records evidence
+ * instead, and that a `login` recording is completely unaffected.
+ */
+function installRichDom(opts: {
+  /** selector -> how many nodes it matches */
+  counts?: Record<string, number>;
+  /** what document.elementFromPoint returns (occlusion) */
+  topAt?: unknown;
+  actionableNodes?: unknown[];
+} = {}) {
+  const listeners: Record<string, (e: unknown) => void> = {};
+  const emitted: Array<Record<string, any>> = [];
+  const counts = opts.counts || {};
+
+  const fakeWindow: Record<string, any> = {
+    location: { href: 'https://bank.test/accounts' },
+    innerWidth: 1280,
+    innerHeight: 800,
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+    CSS: { escape: (v: string) => v },
+    fetch: (url: string, init: { body: string }) => {
+      if (url === REC_EVENT_PATH) emitted.push(JSON.parse(init.body));
+      return Promise.resolve();
+    },
+  };
+  fakeWindow.top = fakeWindow; // not in an iframe
+
+  const fakeDocument: Record<string, any> = {
+    addEventListener: (type: string, fn: (e: unknown) => void) => {
+      listeners[type] = fn;
+    },
+    removeEventListener: () => undefined,
+    getElementById: () => null,
+    querySelectorAll: (sel: string) => {
+      // The actionable-set query is used for semantic candidate counting.
+      if (sel.indexOf('a[href],button') === 0) return opts.actionableNodes || [];
+      return { length: counts[sel] ?? 0 };
+    },
+    elementFromPoint: () => opts.topAt ?? null,
+  };
+
+  const g = globalThis as any;
+  const prev = { window: g.window, document: g.document };
+  g.window = fakeWindow;
+  g.document = fakeDocument;
+
+  return {
+    listeners,
+    emitted,
+    teardown: () => {
+      g.window = prev.window;
+      g.document = prev.document;
+      delete (g.window || {}).__tabbyDomRecorder;
+    },
+  };
+}
+
+/** Minimal element the rich helpers can interrogate. */
+function node(p: Record<string, any> = {}): Record<string, any> {
+  const self: Record<string, any> = {
+    nodeType: 1,
+    tagName: p.tagName || 'BUTTON',
+    id: p.id || '',
+    className: p.className || '',
+    textContent: p.textContent || '',
+    name: p.name || '',
+    type: p.type || '',
+    attributes: [],
+    labels: p.labels,
+    parentElement: null,
+    hasAttribute: (k: string) => !!(p.attrs && p.attrs[k] != null),
+    getAttribute: (k: string) => (p.attrs && p.attrs[k] != null ? p.attrs[k] : null),
+    matches: () => p.actionable !== false,
+    closest: (sel: string) => {
+      if (sel.indexOf('aria-hidden') !== -1) return null;
+      if (p.actionableAncestor) return p.actionableAncestor;
+      return p.actionable === false ? null : self;
+    },
+    getBoundingClientRect: () => p.rect || { left: 100, top: 100, width: 80, height: 20 },
+    checkVisibility: () => p.visible !== false,
+    getRootNode: () => (p.inShadow ? { host: {} } : (globalThis as any).document),
+    contains: (o: unknown) => o === self,
+  };
+  return self;
+}
+
+const clickOn = (target: unknown, extra: Record<string, any> = {}) => ({
+  target,
+  clientX: 140,
+  clientY: 110,
+  ...extra,
+});
+
+describe('domRecorderScript — login mode carries no evidence', () => {
+  it('emits neither candidates nor element when rich capture is off', async () => {
+    const h = installRichDom();
+    domRecorderScript(); // no opts === login
+    const btn = node({ tagName: 'BUTTON', id: 'submit', textContent: 'Log on' });
+    h.listeners.click(clickOn(btn));
+    await Promise.resolve();
+
+    expect(h.emitted).toHaveLength(1);
+    expect(h.emitted[0].candidates).toBeUndefined();
+    expect(h.emitted[0].element).toBeUndefined();
+    // The legacy field the login compiler reads is still there, unchanged.
+    expect(h.emitted[0].selector).toBe('#submit');
+    h.teardown();
+  });
+
+  it('emits nothing extra when rich is explicitly false', async () => {
+    const h = installRichDom();
+    domRecorderScript({ rich: false });
+    h.listeners.click(clickOn(node({ id: 'x' })));
+    await Promise.resolve();
+
+    expect(h.emitted[0].candidates).toBeUndefined();
+    h.teardown();
+  });
+});
+
+describe('domRecorderScript — locator candidates', () => {
+  it('records how many nodes each candidate matched', async () => {
+    // The whole point: a candidate that matched 40 nodes cannot identify this
+    // element, and only the count makes that knowable at compile time.
+    const h = installRichDom({ counts: { '#login-btn': 1, 'button[name="go"]': 3 } });
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(node({ tagName: 'BUTTON', id: 'login-btn', name: 'go' })));
+    await Promise.resolve();
+
+    const cands = h.emitted[0].candidates;
+    expect(cands).toEqual(
+      expect.arrayContaining([
+        { kind: 'id', value: '#login-btn', match_count: 1 },
+        { kind: 'name', value: 'button[name="go"]', match_count: 3 },
+      ]),
+    );
+    h.teardown();
+  });
+
+  it('surfaces ambiguous text rather than silently emitting it as a selector', async () => {
+    // click_by_text against a page with several "Download" controls is exactly
+    // how the HSBCnet skill misclicked.
+    const twin = () => node({ tagName: 'A', textContent: 'Download' });
+    const h = installRichDom({ actionableNodes: [twin(), twin(), twin()] });
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(node({ tagName: 'A', textContent: 'Download' })));
+    await Promise.resolve();
+
+    const text = h.emitted[0].candidates.find((c: any) => c.kind === 'text');
+    expect(text.value).toBe('Download');
+    expect(text.match_count).toBe(3);
+    h.teardown();
+  });
+
+  it('emits a generated-looking id rather than discarding it', async () => {
+    // Durability is a judgement, and judgements belong in the compiler where they
+    // can be improved. The recorder reports that the id existed.
+    const h = installRichDom({ counts: { '#ext-gen1234abcd': 1 } });
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(node({ id: 'ext-gen1234abcd' })));
+    await Promise.resolve();
+
+    expect(h.emitted[0].candidates.some((c: any) => c.kind === 'id')).toBe(true);
+    h.teardown();
+  });
+});
+
+describe('domRecorderScript — element evidence', () => {
+  it('describes the actionable ancestor, not the wrapper that was hit', async () => {
+    // The legacy walk stops at the nearest element with an id OR ANY CLASS,
+    // which on a modern page is usually a span inside the button.
+    const button = node({ tagName: 'BUTTON', id: 'pay', textContent: 'Pay now' });
+    const span = node({
+      tagName: 'SPAN',
+      className: 'label',
+      textContent: 'Pay now',
+      actionable: false,
+      actionableAncestor: button,
+    });
+    const h = installRichDom({ counts: { '#pay': 1 } });
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(span));
+    await Promise.resolve();
+
+    expect(h.emitted[0].element.tag).toBe('button');
+    expect(h.emitted[0].element.role).toBe('button');
+    expect(h.emitted[0].candidates.some((c: any) => c.value === '#pay')).toBe(true);
+    h.teardown();
+  });
+
+  it('flags an element covered by an overlay', async () => {
+    // The overlay-intercepted click, answered at the only moment it is knowable.
+    const overlay = node({ tagName: 'DIV', className: 'cookie-banner' });
+    const h = installRichDom({ topAt: overlay });
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(node({ tagName: 'BUTTON', textContent: 'Accept' })));
+    await Promise.resolve();
+
+    expect(h.emitted[0].element.occluded).toBe(true);
+    h.teardown();
+  });
+
+  it('does not call a scrolled-away element occluded', async () => {
+    // Off-screen is not covered, and reporting it as covered would be a lie.
+    const h = installRichDom({ topAt: node({ tagName: 'DIV' }) });
+    domRecorderScript({ rich: true });
+    h.listeners.click(
+      clickOn(node({ rect: { left: 5000, top: 9000, width: 40, height: 20 } })),
+    );
+    await Promise.resolve();
+
+    expect(h.emitted[0].element.occluded).toBe(false);
+    h.teardown();
+  });
+
+  it('records invisibility instead of leaving the compiler to guess', async () => {
+    const h = installRichDom();
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(node({ visible: false })));
+    await Promise.resolve();
+
+    expect(h.emitted[0].element.visible).toBe(false);
+    h.teardown();
+  });
+
+  it('reaches through a shadow root to the element actually clicked', async () => {
+    // A document-level listener retargets e.target to the shadow HOST, so the
+    // legacy fields describe the wrong node entirely. composedPath()[0] is real.
+    const host = node({ tagName: 'MY-WIDGET', id: 'host' });
+    const inner = node({ tagName: 'BUTTON', id: 'inner', inShadow: true });
+    const h = installRichDom({ counts: { '#inner': 1 } });
+    domRecorderScript({ rich: true });
+    h.listeners.click(clickOn(host, { composedPath: () => [inner, host] }));
+    await Promise.resolve();
+
+    expect(h.emitted[0].element.in_shadow_dom).toBe(true);
+    expect(h.emitted[0].candidates.some((c: any) => c.value === '#inner')).toBe(true);
+    h.teardown();
+  });
+});

@@ -121,9 +121,14 @@ export class RecordingRunner {
     //  2. page.evaluate on every domcontentloaded — uses Runtime.evaluate, which
     //     cloak preserves. The recorder's idempotency guard makes double-inject
     //     a no-op, so whichever path works wins.
-    await this.context.addInitScript(domRecorderScript);
+    // Rich capture (locator candidates + element evidence) is workflow-only, so
+    // the mode has to reach the page. Passed as an argument rather than read
+    // from a global: the function body is serialized into the page context and
+    // closes over nothing.
+    const recorderOpts = { rich: this.isWorkflow };
+    await this.context.addInitScript(domRecorderScript, recorderOpts);
     this.onDomReady = () => {
-      this.page.evaluate(domRecorderScript).catch(() => {
+      this.page.evaluate(domRecorderScript, recorderOpts).catch(() => {
         /* page navigating/closed — next domcontentloaded re-injects */
       });
     };
@@ -246,7 +251,8 @@ export class RecordingRunner {
     // do not reliably honour it — mirror the main page's re-inject on every
     // document.
     const domReady = () => {
-      popup.evaluate(domRecorderScript).catch(() => undefined);
+      // Popups only exist in workflow mode, so rich capture is unconditional here.
+      popup.evaluate(domRecorderScript, { rich: true }).catch(() => undefined);
     };
     popup.on('domcontentloaded', domReady);
     this.popupTeardowns.push(() => popup.removeListener('domcontentloaded', domReady));
