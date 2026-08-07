@@ -27,6 +27,11 @@ export interface BindParams {
    * happens before any of the real target is captured.
    */
   recording_mode?: 'login' | 'workflow';
+  /**
+   * Build a browser-driven skill from this recording, so the HAR is reduced to
+   * metadata at drain. Independent of recording_mode — see BrowserPolicy.
+   */
+  browser_driven?: boolean;
 }
 
 /**
@@ -193,6 +198,7 @@ export class HealthServer {
         start_url: startUrl,
         seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [],
         recording_mode: body.recording_mode === 'workflow' ? 'workflow' : undefined,
+        browser_driven: body.browser_driven === true,
       })
         .then(() => res.json({ success: true }))
         .catch((err: unknown) => {

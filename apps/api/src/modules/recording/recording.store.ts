@@ -38,7 +38,12 @@ export class RecordingStore {
    */
   async bindWorker(
     podName: string,
-    params: { start_url: string; seed_cookies?: unknown[]; recording_mode?: string },
+    params: {
+      start_url: string;
+      seed_cookies?: unknown[];
+      recording_mode?: string;
+      browser_driven?: boolean;
+    },
   ): Promise<void> {
     const url = this.buildWorkerUrl(podName, '/recording/bind');
     const controller = new AbortController();

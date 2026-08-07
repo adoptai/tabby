@@ -74,6 +74,12 @@ export class RecordingRunner {
     private readonly context: BrowserContext,
     private readonly sessionId: string,
     private recordingMode: RecordingMode,
+    /**
+     * Build a BROWSER-DRIVEN skill from this recording. Controls only the HAR
+     * reduction — see BrowserPolicy.browser_driven for why this is separate from
+     * recordingMode. Defaults false: full HAR, unchanged from before it existed.
+     */
+    private browserDriven = false,
   ) {
     this.startedAt = new Date().toISOString();
   }
@@ -326,7 +332,11 @@ export class RecordingRunner {
    * moments later). Listeners that only exist in workflow mode are attached
    * here, since start() ran before the mode was known.
    */
-  adoptMode(mode: RecordingMode): void {
+  adoptMode(mode: RecordingMode, browserDriven?: boolean): void {
+    if (typeof browserDriven === 'boolean' && browserDriven !== this.browserDriven) {
+      this.browserDriven = browserDriven;
+      console.log(`[Recording] browser_driven adopted at bind: ${browserDriven}`);
+    }
     if (mode === this.recordingMode) return;
     const previous = this.recordingMode;
     this.recordingMode = mode;
@@ -399,13 +409,29 @@ export class RecordingRunner {
     }
     let har = sanitizeHar(rawHar, sensitiveNames);
 
-    // Workflow recordings do not replay requests — their contract is the DOM and
-    // the route — so the wire payloads are pure cost and, on a bank portal, a
-    // serious liability. Reduce to metadata, then derive each interaction's
-    // outcome from what is left. Order matters: outcomes are derived from the
-    // REDUCED har so the two always agree about which requests exist.
-    if (this.isWorkflow) {
+    // Two INDEPENDENT decisions, deliberately not merged:
+    //
+    // The HAR reduction is destructive and is gated on browser_driven alone. A
+    // browser skill never replays a request, so the wire payloads are pure cost
+    // and, on a bank portal, a serious liability. But a WORKFLOW recording of an
+    // ordinary REST app compiles into a HAR-replay skill, and that compiler reads
+    // exactly what the reduction empties (postData, headers, queryString) —
+    // gating this on `workflow` produced silently broken replay skills.
+    //
+    // Outcomes are additive (a new optional field per interaction) and cost a
+    // replay skill nothing, so they follow the recording mode.
+    // AND isWorkflow, not browserDriven alone. A login recording's HAR is the
+    // contract for building the Tabby profile — the auth plan and login_config
+    // are derived from those very requests — so it must never be reduced, no
+    // matter what the caller asked for. A caller building a browser skill for a
+    // bank will reasonably set browser_driven on BOTH of its recordings; that
+    // must not quietly destroy the login one.
+    if (this.browserDriven && this.isWorkflow) {
       har = stripHarPayloads(har);
+    }
+    if (this.isWorkflow) {
+      // Derived from whatever har we are actually shipping, so the outcomes and
+      // the entries always agree about which requests exist.
       deriveOutcomes(this.events, this.urlEvents, this.downloadEvents, har);
     }
 
