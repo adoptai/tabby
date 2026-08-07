@@ -48,18 +48,25 @@ export interface RecordedInteractionEvent {
    * and is also immune to the beacon channel's delivery order and to clock
    * granularity.
    *
-   * Added additively — bundles recorded before it have no `seq`, so consumers
-   * must detect its presence rather than assume it.
+   * OPTIONAL because it was added additively: this interface also describes
+   * bundles read back from storage (RecordingStore.retrieve), and anything
+   * persisted before schema_version 2 has no `seq`. It can also be lost in
+   * transit — NoUI's `/clicks` ingestion projects events onto a fixed column
+   * list. Detect it; never assume it. RecordingRunner does guarantee it on every
+   * bundle IT drains, but that is a producer guarantee, not a wire one.
    */
-  seq: number;
+  seq?: number;
   /**
    * Wall clock of the interaction itself. For `input` this is the first
    * keystroke of the debounce burst; for every other event type it is the same
    * clock read as `timestamp` to within a statement. Read this when you need the
-   * time an interaction happened, and `seq` when you need order. Added
-   * additively alongside `seq`.
+   * time an interaction happened, and `seq` when you need order.
+   *
+   * Optional for the same reason as `seq` — see there. Unlike `seq` it is never
+   * reconstructed server-side: it comes from the page, so a bundle drained by a
+   * worker older than schema_version 2 has none.
    */
-  event_time: string;
+  event_time?: string;
   /**
    * Wall clock at which the event payload was BUILT — for the debounced `input`
    * handler that is the flush, up to 500ms after the keystroke; for every other
@@ -81,9 +88,9 @@ export interface RecordedUrlEvent {
   to_url: string;
   /**
    * Same counter as RecordedInteractionEvent.seq — clicks and navigations
-   * interleave in one total order. Added additively.
+   * interleave in one total order. Optional for the same reason: see there.
    */
-  seq: number;
+  seq?: number;
   /** Emitted inline at navigation, so this is also the interaction time. */
   timestamp: string;
 }

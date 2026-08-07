@@ -68,6 +68,14 @@ const pageEvent = (seq: number, selector: string): RecordedInteractionEvent => (
   seq,
 });
 
+/**
+ * The ordinal of a drained event. `seq` is optional on the wire — bundles from
+ * before schema_version 2 have none — but RecordingRunner assigns one to every
+ * event it drains, so -1 here means the guarantee broke and the assertion fails
+ * rather than silently comparing undefined.
+ */
+const seqOf = (e: { seq?: number }): number => e.seq ?? -1;
+
 describe('RecordingRunner', () => {
   it('injects the recorder on start', async () => {
     const f = makeFakes('https://example.com/login');
@@ -156,7 +164,12 @@ describe('RecordingRunner', () => {
 
     const bundle = await runner.drain();
 
-    const timeline = [...bundle.click_events, ...bundle.url_events].sort((a, b) => a.seq - b.seq);
+    // `seq` is optional on the wire (pre-schema_version-2 bundles have none), so
+    // assert the producer guarantee before relying on it to sort.
+    const all = [...bundle.click_events, ...bundle.url_events];
+    expect(all.every((e) => typeof e.seq === 'number')).toBe(true);
+
+    const timeline = [...all].sort((a, b) => seqOf(a) - seqOf(b));
     expect(timeline.map((e) => ('selector' in e ? e.selector : e.to_url))).toEqual([
       '#user',
       '#next',
@@ -164,7 +177,7 @@ describe('RecordingRunner', () => {
       '#password',
       '#signin',
     ]);
-    const seqs = timeline.map((e) => e.seq);
+    const seqs = timeline.map(seqOf);
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
     expect(new Set(seqs).size).toBe(seqs.length);
   });
@@ -174,7 +187,7 @@ describe('RecordingRunner', () => {
     const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
     await runner.start();
 
-    f.emit({ ...clickEvent, seq: undefined as unknown as number, selector: '#a' });
+    f.emit({ ...clickEvent, seq: undefined, selector: '#a' });
     f.emit(pageEvent(1, '#b'));
 
     const bundle = await runner.drain();
@@ -182,7 +195,8 @@ describe('RecordingRunner', () => {
       '#a',
       '#b',
     ]);
-    expect(bundle.click_events[0].seq).toBeLessThan(bundle.click_events[1].seq);
+    // The runner still numbers it, from arrival order.
+    expect(seqOf(bundle.click_events[0])).toBeLessThan(seqOf(bundle.click_events[1]));
   });
 
   it('does not record a url event when the url is unchanged', async () => {
