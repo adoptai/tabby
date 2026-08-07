@@ -196,7 +196,10 @@ export class RecordingProvisionController {
         wantResidential,
       );
       if (claimed?.pod_name) {
-        await this.bindClaimedSession(claimed.pod_name, startUrl, seedCookies);
+        // The spare booted from the pool app, which is hardcoded to 'login'.
+        // Bind is where it learns what it is really for — without this every
+        // warm-pool workflow recording captured as a login one.
+        await this.bindClaimedSession(claimed.pod_name, startUrl, seedCookies, mode);
         const stream = await this.vncStreamProvider.getStreamUrl(claimed.id, ownerUserId || actorId);
         const vncUrl = stream.url.replace('#', '?mode=recording#');
         this.logger.log(
@@ -252,12 +255,14 @@ export class RecordingProvisionController {
     podName: string,
     startUrl: string,
     seedCookies: unknown[],
+    mode: RecordingMode,
   ): Promise<void> {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         await this.recordingStore.bindWorker(podName, {
           start_url: startUrl,
           seed_cookies: seedCookies,
+          recording_mode: mode,
         });
         return;
       } catch (err) {

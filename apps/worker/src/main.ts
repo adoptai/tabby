@@ -303,7 +303,14 @@ async function main() {
       // target. Seed cookies first (so the human starts authenticated), then
       // navigate. The already-running RecordingRunner captures from here on.
       const boundContext = context;
-      healthServer.setBindHandler(async ({ start_url, seed_cookies }) => {
+      healthServer.setBindHandler(async ({ start_url, seed_cookies, recording_mode }) => {
+        // FIRST: adopt the mode this recording was actually requested as. A
+        // pooled spare boots from the pool app (hardcoded 'login'), so without
+        // this every warm-pool workflow recording captured as a login one — no
+        // locator candidates, no element evidence, no outcomes, no downloads, no
+        // popups. Must run before the navigation below so the real target is
+        // captured under the right mode.
+        if (recording_mode) recordingRunner?.adoptMode(recording_mode);
         // Seed cookies synchronously — the human must start authenticated before
         // they interact — but do NOT await the navigation. Loading the target
         // through the residential proxy can take tens of seconds, and the API

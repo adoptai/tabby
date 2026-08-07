@@ -193,6 +193,70 @@ describe('stripHarPayloads', () => {
     expect(serialized).not.toContain('1234567890'); // account number in the query
   });
 
+  it('keeps the body SHAPE that browser-vs-replay detection depends on', async () => {
+    // noui's detect_unreplayable decides whether an app can be a HAR-replay
+    // skill at all, by testing whether request bodies are opaque {data,key}
+    // encryption envelopes. It needs the top-level field NAMES and whether any
+    // value looked like ciphertext — never the values. Dropping the body
+    // outright silently disables that decision, and ICICI compiles back into 40
+    // operations that all 403.
+    const encrypted: RecordingHar = {
+      log: {
+        version: '1.2',
+        creator: { name: 't', version: '1' },
+        entries: [
+          {
+            startedDateTime: iso(0),
+            time: 40,
+            request: {
+              method: 'POST',
+              url: 'https://bank.test/api/op',
+              postData: {
+                mimeType: 'application/json',
+                text: JSON.stringify({ data: 'x'.repeat(400), key: 'y'.repeat(64) }),
+              },
+            },
+            response: { status: 200, content: { mimeType: 'application/json', text: '{}' } },
+          },
+        ],
+      },
+    };
+    const pd = (stripHarPayloads(encrypted) as any).log.entries[0].request.postData;
+
+    expect(pd.keys).toEqual(['data', 'key']);
+    expect(pd.long_values).toBe(true);
+    expect(JSON.stringify(pd)).not.toContain('xxxx'); // the ciphertext itself is gone
+  });
+
+  it('does not mistake a normal API body for an encryption envelope', async () => {
+    const normal: RecordingHar = {
+      log: {
+        version: '1.2',
+        creator: { name: 't', version: '1' },
+        entries: [
+          {
+            startedDateTime: iso(0),
+            time: 40,
+            request: {
+              method: 'POST',
+              url: 'https://bank.test/api/txns',
+              postData: {
+                mimeType: 'application/json',
+                text: JSON.stringify({ accountId: '00112233445566', fromDate: '2026-01-01' }),
+              },
+            },
+            response: { status: 200, content: { mimeType: 'application/json', text: '[]' } },
+          },
+        ],
+      },
+    };
+    const pd = (stripHarPayloads(normal) as any).log.entries[0].request.postData;
+
+    expect(pd.keys).toEqual(['accountId', 'fromDate']);
+    // Field names are schema; the account number itself is a value and is gone.
+    expect(JSON.stringify(pd)).not.toContain('00112233445566');
+  });
+
   it('preserves the HAR 1.2 shape so existing readers do not break', async () => {
     // Fields are emptied rather than deleted, and the envelope is untouched, so
     // anything already reading har.log.entries[].request.url keeps working.
@@ -201,8 +265,11 @@ describe('stripHarPayloads', () => {
     expect(out.log.version).toBe('1.2');
     expect(Array.isArray(out.log.entries[0].request.headers)).toBe(true);
     expect(out.log.entries[0].request.headers).toHaveLength(0);
-    expect(out.log.entries[0].request.postData).toEqual({});
     expect(out.log.entries[0].response.content.text).toBe('');
+    // postData is reduced to a shape rather than emptied — see the body-shape
+    // tests above for why. What must be gone is the content.
+    expect(out.log.entries[0].request.postData.text).toBeUndefined();
+    expect(out.log.entries[0].request.postData.keys).toEqual(['pan']);
   });
 
   it('survives a malformed entry rather than failing the drain', async () => {

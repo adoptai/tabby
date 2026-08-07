@@ -12,6 +12,21 @@ import type { RecordingRunner } from './recording-runner';
 export interface BindParams {
   start_url: string;
   seed_cookies?: unknown[];
+  /**
+   * The mode this recording was actually REQUESTED as.
+   *
+   * A pooled spare boots from the shared pool app, whose browser_policy is
+   * hardcoded `recording_mode: 'login'` — so every warm-pool session was
+   * constructed as a login recording no matter what the caller asked for. The
+   * bundle came back stamped `login` (noui has regression cover for exactly
+   * that), and, worse, every workflow-only capture stayed switched off: locator
+   * candidates, element evidence, outcomes, downloads and popups. The cold path
+   * was always correct; only the fast path lied.
+   *
+   * Bind is the first moment the pod learns what it is really for, and it
+   * happens before any of the real target is captured.
+   */
+  recording_mode?: 'login' | 'workflow';
 }
 
 /**
@@ -174,7 +189,11 @@ export class HealthServer {
         res.status(400).json({ success: false, error: 'start_url is required' });
         return;
       }
-      this.bindHandler({ start_url: startUrl, seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [] })
+      this.bindHandler({
+        start_url: startUrl,
+        seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [],
+        recording_mode: body.recording_mode === 'workflow' ? 'workflow' : undefined,
+      })
         .then(() => res.json({ success: true }))
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);

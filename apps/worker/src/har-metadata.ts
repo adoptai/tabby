@@ -42,7 +42,7 @@ export function stripHarPayloads(har: RecordingHar): RecordingHar {
         url: stripQuery(req.url),
         headers: [],
         queryString: [],
-        postData: {},
+        postData: bodyShape(req.postData),
       },
       response: {
         status: res.status,
@@ -62,6 +62,54 @@ export function stripHarPayloads(har: RecordingHar): RecordingHar {
       entries: stripped,
     },
   };
+}
+
+/** Cap so a pathological body cannot bloat the bundle. */
+const MAX_BODY_KEYS = 24;
+const MAX_KEY_LEN = 48;
+
+/**
+ * The SHAPE of a request body, with none of its content.
+ *
+ * This exists for one specific downstream consumer: noui's `detect_unreplayable`,
+ * which decides whether an app can be compiled as a HAR-replay skill at all or
+ * must be driven through the browser. Its fingerprint is an app that encrypts
+ * every request body in page JavaScript — bodies that are opaque `{data, key}`
+ * envelopes, alongside a key-fetch endpoint. ICICI is the canonical case: replay
+ * compiles 40 operations that all 403.
+ *
+ * That detector needs exactly two facts, and neither is content:
+ *   - the top-level JSON field NAMES, to test them against the envelope key set
+ *   - whether any top-level value is a long string, i.e. looks like ciphertext
+ *
+ * Field names are schema; values are the customer's data. Emitting names keeps
+ * the browser-vs-replay decision automatic while balances, PANs and tokens still
+ * never leave the pod. Dropping the body entirely — which an earlier cut of this
+ * function did — silently removed the ability to make that decision at all.
+ */
+function bodyShape(postData: unknown): Record<string, unknown> {
+  const pd = (postData || {}) as any;
+  const text = typeof pd.text === 'string' ? pd.text : '';
+  const shape: Record<string, unknown> = { mimeType: pd.mimeType || '' };
+  if (!text) return shape;
+
+  shape.size = text.length;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const keys = Object.keys(parsed).slice(0, MAX_BODY_KEYS);
+      shape.keys = keys.map((k) => String(k).slice(0, MAX_KEY_LEN));
+      // "Does this look like ciphertext" is a length question, not a content one.
+      shape.long_values = keys.some((k) => {
+        const v = (parsed as any)[k];
+        return typeof v === 'string' && v.length >= 16;
+      });
+    }
+  } catch {
+    // Not JSON (form-encoded, binary, multipart). Its size and mime type are
+    // still recorded; the envelope test simply does not apply to it.
+  }
+  return shape;
 }
 
 function stripQuery(url: unknown): string {

@@ -26,13 +26,27 @@ export const REC_INSTALL_PATH = 'https://tabby-rec.local/i';
 /** The function executed in the browser. Self-contained — no outer closures. */
 export function domRecorderScript(opts?: { rich?: boolean }): void {
   const w = window as any;
-  if (w.__tabbyDomRecorder) return;
 
   // Rich capture (locator candidates + element evidence) is workflow-only. A
   // login recording emits precisely the fields it always has — same shape, same
   // beacon volume, same in-page cost — so the login compiler cannot be affected
   // by any of it.
   const rich = !!(opts && opts.rich);
+
+  // Idempotent, EXCEPT for an upgrade. A warm-pool spare boots as a login
+  // recording and only learns it is a workflow recording at bind, so a plain
+  // "already installed, do nothing" guard would pin it to the mode it happened
+  // to boot with and silently discard every workflow-only field. Re-entering
+  // with a different `rich` tears the old listeners down and reinstalls.
+  if (w.__tabbyDomRecorder) {
+    if (w.__tabbyDomRecorderRich === rich) return;
+    try {
+      w.__tabbyDomRecorder();
+    } catch {
+      /* a failed teardown must not block the upgrade */
+    }
+  }
+  w.__tabbyDomRecorderRich = rich;
 
   // Capture the original fetch up front so a later page override can't sever the
   // channel. Network requests are the one CDP signal the stealth build forwards.
@@ -727,6 +741,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     document.removeEventListener('change', handleChange, true);
     document.removeEventListener('submit', handleSubmit, true);
     delete w.__tabbyDomRecorder;
+    delete w.__tabbyDomRecorderRich;
   }
 
   w.__tabbyDomRecorder = cleanup;

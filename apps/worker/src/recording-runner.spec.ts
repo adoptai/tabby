@@ -448,3 +448,92 @@ describe('RecordingRunner — interaction outcomes', () => {
     expect(bundle.click_events[0].outcome).toBeUndefined();
   });
 });
+
+/**
+ * Warm-pool spares boot from a shared pool app hardcoded to
+ * `recording_mode: 'login'`, so a session provisioned as `workflow` arrived at
+ * the worker as a login one. The bundle came back mislabelled — noui carries
+ * regression cover for exactly that — and, worse, every workflow-only capture
+ * stayed switched off. The label was recoverable downstream; the missing capture
+ * was not.
+ */
+describe('RecordingRunner — adopting the requested mode at bind', () => {
+  it('turns on workflow capture for a spare that booted as login', async () => {
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+
+    expect(f.hasPageListener()).toBe(false); // booted as login: nothing armed
+    expect(f.hasDownloadListener()).toBe(false);
+
+    runner.adoptMode('workflow');
+
+    expect(f.hasPageListener()).toBe(true);
+    expect(f.hasDownloadListener()).toBe(true);
+  });
+
+  it('stamps the bundle with the adopted mode, not the booted one', async () => {
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+    runner.adoptMode('workflow');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.recording_mode).toBe('workflow');
+    expect(bundle.download_events).toEqual([]); // present, i.e. workflow-shaped
+  });
+
+  it('captures downloads that arrive after the mode is adopted', async () => {
+    // The point of the fix: a statement download on a warm-pool session was
+    // invisible, because the listener was never attached.
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+    runner.adoptMode('workflow');
+
+    f.download('statement.pdf', 'blob:https://bank.test/9');
+    const bundle = await runner.drain();
+
+    expect(bundle.download_events).toEqual([
+      expect.objectContaining({ suggested_filename: 'statement.pdf' }),
+    ]);
+  });
+
+  it('re-injects the recorder so the page upgrades to rich capture', async () => {
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+    (f.page.evaluate as jest.Mock).mockClear();
+
+    runner.adoptMode('workflow');
+
+    expect(f.page.evaluate).toHaveBeenCalledWith(expect.any(Function), { rich: true });
+  });
+
+  it('is a no-op when the mode already matches', async () => {
+    // A cold-path session is constructed correctly; bind must not disturb it.
+    const f = makeFakes('https://bank.test/cold');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+    await runner.start();
+    (f.page.evaluate as jest.Mock).mockClear();
+
+    runner.adoptMode('workflow');
+
+    expect(f.page.evaluate).not.toHaveBeenCalled();
+    expect((f.context.on as jest.Mock).mock.calls.filter((c) => c[0] === 'page')).toHaveLength(1);
+  });
+
+  it('never downgrades a workflow recording to login', async () => {
+    const f = makeFakes('https://bank.test/cold');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+    await runner.start();
+
+    runner.adoptMode('login');
+    const bundle = await runner.drain();
+
+    // Downgrading would silently discard capture already taken under workflow.
+    expect(bundle.recording_mode).toBe('login');
+    expect(bundle.download_events).toBeUndefined();
+  });
+});

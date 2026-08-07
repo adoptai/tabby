@@ -73,7 +73,7 @@ export class RecordingRunner {
     private readonly page: Page,
     private readonly context: BrowserContext,
     private readonly sessionId: string,
-    private readonly recordingMode: RecordingMode,
+    private recordingMode: RecordingMode,
   ) {
     this.startedAt = new Date().toISOString();
   }
@@ -127,10 +127,12 @@ export class RecordingRunner {
     // the mode has to reach the page. Passed as an argument rather than read
     // from a global: the function body is serialized into the page context and
     // closes over nothing.
-    const recorderOpts = { rich: this.isWorkflow };
-    await this.context.addInitScript(domRecorderScript, recorderOpts);
+    await this.context.addInitScript(domRecorderScript, { rich: this.isWorkflow });
     this.onDomReady = () => {
-      this.page.evaluate(domRecorderScript, recorderOpts).catch(() => {
+      // Opts are read HERE, not captured at start(): a warm-pool spare boots as
+      // a login recording and adopts its real mode at bind, so every re-injection
+      // after that must carry the new one.
+      this.page.evaluate(domRecorderScript, { rich: this.isWorkflow }).catch(() => {
         /* page navigating/closed — next domcontentloaded re-injects */
       });
     };
@@ -308,6 +310,42 @@ export class RecordingRunner {
    * lastUrl is cleared (not set to the current placeholder page) so the imminent
    * navigation to the real start_url is recorded as the first url_event.
    */
+  /**
+   * Adopt the mode this recording was actually requested as.
+   *
+   * A pooled spare boots from the shared pool app, which is hardcoded
+   * `recording_mode: 'login'`, so every warm-pool session was constructed as a
+   * login recording regardless of what the caller asked for. The bundle came
+   * back stamped `login` — noui has regression cover for exactly that — and
+   * every workflow-only capture stayed off: locator candidates, element
+   * evidence, outcomes, downloads, popups, the metadata HAR reduction. The cold
+   * path was always right; only the fast path lied.
+   *
+   * Called from bind, before the pod navigates to the real target, so nothing
+   * captured under the wrong mode survives (reset() clears the pre-bind capture
+   * moments later). Listeners that only exist in workflow mode are attached
+   * here, since start() ran before the mode was known.
+   */
+  adoptMode(mode: RecordingMode): void {
+    if (mode === this.recordingMode) return;
+    const previous = this.recordingMode;
+    this.recordingMode = mode;
+
+    if (this.isWorkflow && this.started && !this.onPopup) {
+      this.attachDownloadCapture(this.page, 0);
+      this.onPopup = (popup: Page) => this.attachPopupCapture(popup);
+      this.context.on('page', this.onPopup);
+    }
+    // The recorder in the CURRENT document was installed with the old flag. The
+    // imminent navigation to the real target gets a fresh one via addInitScript /
+    // domcontentloaded, but re-inject now too so a bind that does not navigate
+    // (already on the target) is still upgraded — the script tears down and
+    // reinstalls when `rich` differs.
+    this.page.evaluate(domRecorderScript, { rich: this.isWorkflow }).catch(() => undefined);
+
+    console.log(`[Recording] mode adopted at bind: ${previous} -> ${mode}`);
+  }
+
   reset(): void {
     if (!this.started) return;
     this.events.length = 0;
