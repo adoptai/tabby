@@ -8,6 +8,7 @@ import {
 } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, getHarStatus, cleanupHarListeners } from './har-capture';
 import { listDownloads, getDownload } from './download-capture';
+import { beginAgentCommand, endAgentCommand, isIdleResettingCommand } from './agent-activity';
 
 export { cleanupHarListeners };
 
@@ -35,7 +36,16 @@ export function registerBrowserHandler(app: Express, page: Page): void {
         EXECUTE_LIMITS.MAX_TIMEOUT_MS,
       );
 
-      const result = await dispatchCommand(page, body.command, params, timeoutMs);
+      // Tell the keepalive loop an agent is driving the page, so it does not
+      // inject a mouse-move/scroll/reload into the middle of this command.
+      const resetsIdle = isIdleResettingCommand(body.command);
+      beginAgentCommand(resetsIdle);
+      let result: unknown;
+      try {
+        result = await dispatchCommand(page, body.command, params, timeoutMs);
+      } finally {
+        endAgentCommand(resetsIdle);
+      }
       const response: ExecuteBrowserResponse = { success: true, data: result };
       res.json(response);
     } catch (err: unknown) {

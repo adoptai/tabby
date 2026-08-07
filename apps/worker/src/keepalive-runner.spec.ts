@@ -1,4 +1,5 @@
 import { KeepaliveRunner } from './keepalive-runner';
+import { beginAgentCommand, endAgentCommand, resetAgentActivity } from './agent-activity';
 
 // Drive runCycle() directly with mocked deps to assert the HEALTHY-gate on the
 // 'activity' nudge: robotic mouse/scroll must not run once the session is on a
@@ -43,7 +44,7 @@ function build(healthSeq: string[]) {
     { username: '', password: '' },
     false,
   );
-  return { runner, execCalls, dslRunner };
+  return { runner, execCalls, dslRunner, healthRunner };
 }
 
 describe('KeepaliveRunner activity HEALTHY-gate', () => {
@@ -81,5 +82,76 @@ describe('KeepaliveRunner activity gate is AUTH_FAIL-only', () => {
     await (runner as any).runCycle();
     await (runner as any).runCycle();
     expect(dslRunner.execute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('KeepaliveRunner agent-driven gate', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    resetAgentActivity();
+  });
+  afterEach(() => {
+    resetAgentActivity();
+    jest.useRealTimers();
+  });
+
+  it('skips keepalive actions when the agent touched the origin within the interval', async () => {
+    // The agent's own click already reset the portal's idle timer, so the nudge
+    // is redundant — and a synthetic scroll can misplace the agent's next click.
+    const { runner, dslRunner } = build(['PASS']);
+    beginAgentCommand(true);
+    endAgentCommand(true);
+    jest.advanceTimersByTime(1_000); // 1s < 60s interval
+
+    await (runner as any).runCycle();
+
+    expect(dslRunner.execute).not.toHaveBeenCalled();
+  });
+
+  it('runs keepalive actions once the agent has been idle longer than the interval', async () => {
+    const { runner, execCalls } = build(['PASS']);
+    beginAgentCommand(true);
+    endAgentCommand(true);
+    jest.advanceTimersByTime(61_000); // 61s > 60s interval
+
+    await (runner as any).runCycle();
+
+    expect(execCalls).toEqual([[{ action: 'activity' }]]);
+  });
+
+  it('does not treat read-only commands as activity (a screenshot is not a keepalive)', async () => {
+    // Mirrors the platform rule that `screenshot` makes no request, so the
+    // portal's idle timer keeps running and the session still needs the nudge.
+    const { runner, execCalls } = build(['PASS']);
+    beginAgentCommand(false);
+    endAgentCommand(false);
+    jest.advanceTimersByTime(1_000);
+
+    await (runner as any).runCycle();
+
+    expect(execCalls).toEqual([[{ action: 'activity' }]]);
+  });
+
+  it('skips the entire cycle, health included, while a command is in flight', async () => {
+    // dom_check mid-navigation cannot find its selector and reports AUTH_FAIL,
+    // which would push a working session to LOGIN_NEEDED and show a sign-in card.
+    const { runner, dslRunner, healthRunner } = build(['PASS']);
+    beginAgentCommand(true); // never ended → still in flight
+
+    await (runner as any).runCycle();
+
+    expect(dslRunner.execute).not.toHaveBeenCalled();
+    expect(healthRunner.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('evaluates health anyway after too many consecutive busy skips', async () => {
+    // Health must not stall forever behind an agent that is always working.
+    const { runner, dslRunner, healthRunner } = build(['PASS']);
+    beginAgentCommand(true); // stays in flight for every cycle below
+
+    for (let i = 0; i < 4; i++) await (runner as any).runCycle();
+
+    expect(healthRunner.evaluate).toHaveBeenCalledTimes(1); // 3 skipped, 4th ran
+    expect(dslRunner.execute).not.toHaveBeenCalled(); // but never any actions
   });
 });

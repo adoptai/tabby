@@ -5,6 +5,13 @@ import { LoginDslRunner } from './login-dsl-runner';
 import { HealthPredicateRunner } from './health-predicate-runner';
 import { ArtifactExtractor } from './artifact-extractor';
 import { SessionDb } from './session-db';
+import { isAgentBusy, msSinceAgentActivity } from './agent-activity';
+
+// A cycle skipped because an agent command was in flight is retried on the next
+// tick, but health must not go stale forever behind a continuously busy agent.
+// After this many consecutive skips the cycle runs its health checks anyway
+// (still without actions).
+const MAX_CONSECUTIVE_BUSY_SKIPS = 3;
 
 /**
  * Keepalive Runner per spec section 9.9.
@@ -28,6 +35,7 @@ export class KeepaliveRunner {
   // SDKs score the page as a bot before the human can re-login. null until the
   // first cycle's health check (session enters keepalive already logged in).
   private lastHealthOverall: string | null = null;
+  private consecutiveBusySkips = 0;
 
   constructor(
     private readonly page: Page,
@@ -97,10 +105,49 @@ export class KeepaliveRunner {
     this.running = true;
 
     try {
+      // Step 0: Stay out of an agent's way. If a browser command is in flight,
+      // skip the whole cycle — not just the actions. Health checks read the live
+      // page (dom_check resolves a locator, and returns AUTH_FAIL when it cannot
+      // find it) so evaluating mid-navigation reports a signed-in session as
+      // signed out, which drives it to LOGIN_NEEDED and shows the human a
+      // sign-in card in the middle of a working task. The agent's own traffic is
+      // keeping the session alive meanwhile, so there is nothing to lose by
+      // waiting for the next tick.
+      if (isAgentBusy() && this.consecutiveBusySkips < MAX_CONSECUTIVE_BUSY_SKIPS) {
+        this.consecutiveBusySkips += 1;
+        console.log(
+          `Keepalive: agent command in flight, skipping cycle ` +
+            `(${this.consecutiveBusySkips}/${MAX_CONSECUTIVE_BUSY_SKIPS})`,
+        );
+        return;
+      }
+      this.consecutiveBusySkips = 0;
+
       await this.refreshConfig();
 
       // Step 1: Execute keepalive actions (suppressed in recording mode).
       let actions = this.recordingMode ? [] : (this.appConfig.keepalive_config?.actions || []);
+
+      // Agent-driven gate: if the agent touched the origin within the last
+      // keepalive interval, every action here is redundant — its clicks and
+      // navigations already reset the portal's idle timer, which is the only
+      // thing keepalive exists to do. Running anyway is actively harmful: a
+      // synthetic scroll/mouse-move can move an element between the agent's
+      // locator resolution and its click, and a 'goto' reloads the page out from
+      // under a half-finished flow. Robotic input interleaved with real
+      // interaction also reads worse to reCAPTCHA v3 than either alone.
+      // Read-only commands (screenshot, get_page_summary) deliberately do not
+      // count as activity — they make no request, so the idle timer keeps
+      // running and the nudge is still needed.
+      const intervalMs = (this.appConfig.keepalive_config?.interval_seconds || 300) * 1000;
+      const agentIdleMs = msSinceAgentActivity();
+      if (actions.length > 0 && agentIdleMs < intervalMs) {
+        console.log(
+          `Keepalive: skipping ${actions.length} action(s) — agent active ` +
+            `${Math.round(agentIdleMs / 1000)}s ago (interval ${Math.round(intervalMs / 1000)}s)`,
+        );
+        actions = [];
+      }
       // HEALTHY-gate the 'activity' nudge: if the previous cycle found the
       // session NOT healthy (it has likely bounced to the app's login/expired
       // page), skip the trusted mouse-move + scroll — robotic input on a page
@@ -171,7 +218,11 @@ export class KeepaliveRunner {
   }
 
   private async checkExtractRequest(): Promise<void> {
-    if (!this.redis || this.extracting || this.running) return;
+    // Also hold off while an agent command is in flight: extraction navigates
+    // the page when export_policy.extract_urls is configured, which would yank
+    // the agent off whatever it was working on. The request stays in Redis and
+    // is picked up by the next 2s poll.
+    if (!this.redis || this.extracting || this.running || isAgentBusy()) return;
 
     try {
       const key = REDIS_KEYS.extractRequest(this.sessionId);
