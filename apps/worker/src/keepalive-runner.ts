@@ -113,7 +113,8 @@ export class KeepaliveRunner {
       // sign-in card in the middle of a working task. The agent's own traffic is
       // keeping the session alive meanwhile, so there is nothing to lose by
       // waiting for the next tick.
-      if (isAgentBusy() && this.consecutiveBusySkips < MAX_CONSECUTIVE_BUSY_SKIPS) {
+      const agentBusy = isAgentBusy();
+      if (agentBusy && this.consecutiveBusySkips < MAX_CONSECUTIVE_BUSY_SKIPS) {
         this.consecutiveBusySkips += 1;
         console.log(
           `Keepalive: agent command in flight, skipping cycle ` +
@@ -139,12 +140,23 @@ export class KeepaliveRunner {
       // Read-only commands (screenshot, get_page_summary) deliberately do not
       // count as activity — they make no request, so the idle timer keeps
       // running and the nudge is still needed.
+      //
+      // `agentBusy` is checked here as well as in Step 0, and is NOT redundant:
+      // reaching this line with a command still in flight is exactly what the
+      // skip cap above allows, and neither of the elapsed-time conditions covers
+      // it. A command running longer than the keepalive interval pushes
+      // agentIdleMs past intervalMs, and a read-only command never stamps
+      // activity at all (msSinceAgentActivity() stays Infinity), so the elapsed
+      // check would wave both through and fire a mouse-move into the middle of a
+      // live command. Health may go ahead on the capped cycle; input never does.
       const intervalMs = (this.appConfig.keepalive_config?.interval_seconds || 300) * 1000;
       const agentIdleMs = msSinceAgentActivity();
-      if (actions.length > 0 && agentIdleMs < intervalMs) {
+      if (actions.length > 0 && (agentBusy || agentIdleMs < intervalMs)) {
         console.log(
-          `Keepalive: skipping ${actions.length} action(s) — agent active ` +
-            `${Math.round(agentIdleMs / 1000)}s ago (interval ${Math.round(intervalMs / 1000)}s)`,
+          agentBusy
+            ? `Keepalive: skipping ${actions.length} action(s) — agent command still in flight`
+            : `Keepalive: skipping ${actions.length} action(s) — agent active ` +
+              `${Math.round(agentIdleMs / 1000)}s ago (interval ${Math.round(intervalMs / 1000)}s)`,
         );
         actions = [];
       }

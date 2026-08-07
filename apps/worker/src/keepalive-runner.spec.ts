@@ -155,3 +155,60 @@ describe('KeepaliveRunner agent-driven gate', () => {
     expect(dslRunner.execute).not.toHaveBeenCalled(); // but never any actions
   });
 });
+
+/**
+ * The skip cap deliberately lets a cycle through while a command is STILL in
+ * flight, so health cannot stall behind a busy agent. Health is safe to run
+ * there; injected input never is. Neither elapsed-time condition covers this,
+ * which is why the busy check is repeated at the action gate.
+ */
+describe('KeepaliveRunner never injects input on the capped cycle', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    resetAgentActivity();
+  });
+  afterEach(() => {
+    resetAgentActivity();
+    jest.useRealTimers();
+  });
+
+  it('suppresses actions when a single command outlives the keepalive interval', async () => {
+    // A 'navigate' can legitimately run longer than a 60s interval. Once
+    // agentIdleMs passes intervalMs the elapsed check stops firing, so without
+    // the busy check a mouse-move/scroll lands mid-navigation.
+    const { runner, dslRunner, healthRunner } = build(['PASS']);
+    beginAgentCommand(true); // still in flight for every cycle below
+    jest.advanceTimersByTime(61_000); // 61s > 60s interval
+
+    for (let i = 0; i < 4; i++) await (runner as any).runCycle();
+
+    expect(healthRunner.evaluate).toHaveBeenCalledTimes(1); // capped cycle ran health
+    expect(dslRunner.execute).not.toHaveBeenCalled(); // but injected nothing
+  });
+
+  it('suppresses actions during an in-flight read-only command', async () => {
+    // Read-only commands never stamp activity (a screenshot is not a keepalive),
+    // so msSinceAgentActivity() stays Infinity and the elapsed check can never
+    // fire — busy is the only thing standing between the agent and a scroll
+    // landing in the middle of its get_page_summary.
+    const { runner, dslRunner, healthRunner } = build(['PASS']);
+    beginAgentCommand(false); // in flight, but not idle-resetting
+
+    for (let i = 0; i < 4; i++) await (runner as any).runCycle();
+
+    expect(healthRunner.evaluate).toHaveBeenCalledTimes(1);
+    expect(dslRunner.execute).not.toHaveBeenCalled();
+  });
+
+  it('resumes actions once the command finishes and the interval has passed', async () => {
+    const { runner, execCalls } = build(['PASS']);
+    beginAgentCommand(true);
+    jest.advanceTimersByTime(61_000);
+    endAgentCommand(true); // stamps activity on completion
+    jest.advanceTimersByTime(61_000); // idle again for a full interval
+
+    await (runner as any).runCycle();
+
+    expect(execCalls).toEqual([[{ action: 'activity' }]]);
+  });
+});
