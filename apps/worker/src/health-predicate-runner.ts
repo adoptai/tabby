@@ -166,6 +166,9 @@ export class HealthPredicateRunner {
 
   /**
    * DOM check: verify selector exists on current page (spec section 9.9).
+   *
+   * Note the failure classification below (`classifyDomCheckError`): a dom_check
+   * that could not be *evaluated* is not evidence about authentication.
    */
   private async runDomCheck(check: any): Promise<{ result: HealthResultType; detail?: string }> {
     const locator = this.page.locator(check.selector);
@@ -212,6 +215,8 @@ export class HealthPredicateRunner {
         await first.waitFor({ state: strictVisibility ? 'visible' : 'attached', timeout });
         return { result: HealthResultType.PASS };
       } catch (error) {
+        const unevaluable = classifyDomCheckError(error);
+        if (unevaluable) return unevaluable;
         return {
           result: HealthResultType.AUTH_FAIL,
           detail: strictVisibility
@@ -229,6 +234,8 @@ export class HealthPredicateRunner {
       await first.waitFor({ state: strictVisibility ? 'hidden' : 'detached', timeout });
       return { result: HealthResultType.PASS };
     } catch (error) {
+      const unevaluable = classifyDomCheckError(error);
+      if (unevaluable) return unevaluable;
       // Report WHY. A bare "found" hid the difference between the marker really
       // being on the page and the check itself misfiring.
       return {
@@ -272,4 +279,64 @@ export class HealthPredicateRunner {
       return { result: HealthResultType.TRANSIENT_FAIL, detail: `Request error: ${error}` };
     }
   }
+}
+
+/**
+ * Separate "the marker is not there" from "the check could not be run".
+ *
+ * Every failure inside runDomCheck used to map to AUTH_FAIL, which conflates a
+ * genuine timeout (the logged-in marker really is gone — signed out, the verdict
+ * we want) with failures that say nothing at all about authentication:
+ *
+ *   - the page navigated while the locator was resolving, so the execution
+ *     context was destroyed under it. Common on any portal that redirects or
+ *     re-renders on a timer, and on every SPA route change.
+ *   - the page/context/browser closed, i.e. the pod is shutting down. This wrote
+ *     a final AUTH_FAIL on the way out and left the session looking signed out.
+ *   - the selector itself is malformed. A typo in a profile's health_checks
+ *     turned every session for that app permanently "signed out" — the worst
+ *     shape of this bug, because it is silent, total, and looks like a real auth
+ *     failure to everyone downstream.
+ *
+ * AUTH_FAIL is not a neutral verdict: it drives the session to LOGIN_NEEDED,
+ * raises HITL, and shows a human a sign-in card. Claiming it on no evidence is
+ * strictly worse than admitting the check did not run, which is what
+ * TRANSIENT_FAIL means and which the caller already handles.
+ *
+ * Returns null when the error is NOT one of these — so an unrecognised error
+ * keeps the previous AUTH_FAIL behaviour rather than silently becoming
+ * TRANSIENT_FAIL. A plain Playwright timeout is the overwhelmingly common case
+ * and must stay AUTH_FAIL; this only carves out the classes we can positively
+ * identify as uninformative.
+ */
+export function classifyDomCheckError(
+  error: unknown,
+): { result: HealthResultType; detail: string } | null {
+  const message = error instanceof Error ? error.message : String(error);
+
+  // Page moved (navigation / SPA re-render) while the locator was resolving.
+  if (/execution context was destroyed|because of a navigation|frame (was |got )?detached/i.test(message)) {
+    return {
+      result: HealthResultType.TRANSIENT_FAIL,
+      detail: `dom_check raced a navigation, no auth signal: ${message}`,
+    };
+  }
+
+  // Pod teardown, or the browser died.
+  if (/target (page, context or browser )?(has been )?closed|browser has been closed|page has been closed|target closed/i.test(message)) {
+    return {
+      result: HealthResultType.TRANSIENT_FAIL,
+      detail: `dom_check ran against a closed page, no auth signal: ${message}`,
+    };
+  }
+
+  // Malformed selector in the app's health_checks config.
+  if (/not a valid selector|while parsing selector|failed to parse selector|unknown engine/i.test(message)) {
+    return {
+      result: HealthResultType.TRANSIENT_FAIL,
+      detail: `dom_check selector is invalid — fix the app's health_checks config: ${message}`,
+    };
+  }
+
+  return null;
 }

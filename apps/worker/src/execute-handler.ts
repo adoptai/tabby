@@ -5,6 +5,7 @@ import {
   type ExecuteFetchRequest,
   type ExecuteFetchResponse,
 } from '@browser-hitl/shared';
+import { beginAgentCommand, endAgentCommand } from './agent-activity';
 
 export function registerExecuteHandler(app: Express, page: Page): void {
   app.post('/execute/fetch', async (req: Request, res: Response) => {
@@ -137,14 +138,21 @@ export function registerExecuteHandler(app: Express, page: Page): void {
         };
       };
 
+      // A fetch is a real request to the origin, so it both makes the agent
+      // "busy" and resets the portal's idle timer — the keepalive nudge is
+      // redundant while these are flowing (see agent-activity.ts).
       if (isCrossOrigin) {
-        const response = await fetchViaContext().catch((err: Error) => {
-          throw new ExecuteError(502, `Cross-origin fetch failed: ${err.message}`);
-        });
+        beginAgentCommand(true);
+        const response = await fetchViaContext()
+          .catch((err: Error) => {
+            throw new ExecuteError(502, `Cross-origin fetch failed: ${err.message}`);
+          })
+          .finally(() => endAgentCommand(true));
         res.json(response);
         return;
       }
 
+      beginAgentCommand(true);
       const result = await page.evaluate(
         async ({
           url, method: m, headers: h, body: b, maxBytes,
@@ -231,7 +239,7 @@ export function registerExecuteHandler(app: Express, page: Page): void {
         } catch {
           throw new ExecuteError(502, `Browser fetch failed: ${err.message}`);
         }
-      });
+      }).finally(() => endAgentCommand(true));
 
       const response: ExecuteFetchResponse = result;
       res.json(response);
