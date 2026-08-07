@@ -165,3 +165,72 @@ describe('HealthPredicateRunner — dom_check', () => {
     expect(res.checks[0].detail).toMatch(/not visible/);
   });
 });
+
+/**
+ * A dom_check that could not be EVALUATED is not evidence about authentication.
+ *
+ * Every failure used to map to AUTH_FAIL, which is not a neutral verdict: it
+ * drives the session to LOGIN_NEEDED, raises HITL and shows a human a sign-in
+ * card. These three classes say nothing about whether anyone is signed in.
+ */
+describe('HealthPredicateRunner — dom_check cannot claim AUTH_FAIL on its own failure', () => {
+  function pageThatThrows(message: string) {
+    return {
+      locator: jest.fn().mockReturnValue({
+        first: jest.fn().mockReturnValue({
+          waitFor: jest.fn(async () => {
+            throw new Error(message);
+          }),
+        }),
+      }),
+      url: jest.fn().mockReturnValue('https://app.test/dashboard'),
+    } as any;
+  }
+
+  it('reports TRANSIENT_FAIL when the page navigated out from under the locator', async () => {
+    const res = await runner(
+      pageThatThrows('Execution context was destroyed, most likely because of a navigation.'),
+      { type: 'dom_check', selector: '#dashboard', exists: true },
+    ).evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+    expect(res.checks[0].detail).toMatch(/raced a navigation/);
+  });
+
+  it('reports TRANSIENT_FAIL when the page is closed (pod teardown)', async () => {
+    // Otherwise the worker writes a final AUTH_FAIL on its way out and leaves
+    // the session looking signed out to everyone downstream.
+    const res = await runner(
+      pageThatThrows('Target page, context or browser has been closed'),
+      { type: 'dom_check', selector: '#dashboard', exists: true },
+    ).evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+  });
+
+  it('reports TRANSIENT_FAIL when the configured selector is malformed', async () => {
+    // The worst shape of this bug: one typo in an app's health_checks turned
+    // every session for that app permanently "signed out", silently.
+    const res = await runner(
+      pageThatThrows('Unexpected token "=" while parsing selector "[data-test-id=value]"'),
+      { type: 'dom_check', selector: '[data-test-id=value]', exists: true },
+    ).evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+    expect(res.checks[0].detail).toMatch(/fix the app's health_checks config/);
+  });
+
+  it('still reports AUTH_FAIL on a plain timeout — the marker really is gone', async () => {
+    // The carve-outs above must not swallow the genuine signed-out verdict.
+    const res = await runner(
+      pageThatThrows('Timeout 5000ms exceeded waiting for locator("#dashboard")'),
+      { type: 'dom_check', selector: '#dashboard', exists: true },
+    ).evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
+  });
+
+  it('applies the same classification to negative checks', async () => {
+    const res = await runner(
+      pageThatThrows('Execution context was destroyed, most likely because of a navigation.'),
+      { type: 'dom_check', selector: 'text=Sign in', exists: false },
+    ).evaluate();
+    expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+  });
+});
