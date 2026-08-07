@@ -356,6 +356,14 @@ values:
       # --- Workday ---
       - ".workday.com"
       - ".workdaycdn.com"
+      # --- ICICI Net Banking ---
+      # Scoped to .icici.bank.in rather than .bank.in: leading-dot entries are
+      # suffix matches, so the broader form would open every *.bank.in registrar
+      # domain.
+      - ".icici.bank.in"
+      - ".icicibank.com"
+      # --- HSBCnet ---
+      - ".hsbcnet.com"
       # --- Adopt platform assets + Frontegg-hosted logins (Spendflo etc.) ---
       - ".adopt.ai"
       - ".frontegg.com"
