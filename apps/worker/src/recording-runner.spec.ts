@@ -412,3 +412,39 @@ describe('RecordingRunner — workflow capture', () => {
     expect(bundle.download_events).toEqual([]);
   });
 });
+
+describe('RecordingRunner — interaction outcomes', () => {
+  it('attaches what happened next to a workflow interaction', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+    await runner.start();
+
+    // Stamped now, not with the shared fixture's fixed date: outcomes are
+    // attributed within a window of the interaction, and f.navigate() stamps the
+    // url event with the current clock.
+    const now = new Date().toISOString();
+    f.emit({ ...clickEvent, url: 'https://bank.test/accounts', event_time: now, timestamp: now });
+    f.navigate('https://bank.test/statements');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events[0].outcome).toEqual(
+      expect.objectContaining({ navigated: true, to_url: 'https://bank.test/statements' }),
+    );
+  });
+
+  it('leaves login interactions without an outcome', async () => {
+    // Derivation is workflow-only; the login compiler sees the event shape it
+    // always has.
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    f.emit(clickEvent);
+    f.navigate('https://example.com/dashboard');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events[0].outcome).toBeUndefined();
+  });
+});

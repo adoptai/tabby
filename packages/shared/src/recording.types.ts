@@ -81,6 +81,31 @@ export interface RecordedElementEvidence {
   in_iframe: boolean;
 }
 
+/**
+ * What happened in the moments after an interaction.
+ *
+ * The compiler otherwise has to INFER causality — which click caused which
+ * navigation — from bare timestamps. It is also precisely what a compiled step
+ * needs as its POSTCONDITION: "after this click the URL becomes X, and traffic
+ * settles in ~400ms" is what lets a runtime agent know within one step that it
+ * is off-route, rather than discovering it five clicks later on the wrong page,
+ * and what lets it wait on a real condition instead of a guessed sleep.
+ *
+ * Absent when the interaction's time could not be parsed — "not known", which is
+ * honest, rather than a zeroed outcome that would read as "nothing happened".
+ */
+export interface RecordedInteractionOutcome {
+  /** The page navigated (or client-side routed) within the window. */
+  navigated: boolean;
+  to_url: string | null;
+  /** Requests that STARTED in the window. 0 means the click did nothing. */
+  request_count: number;
+  /** ms from the interaction until the last of those requests finished. */
+  settled_ms: number | null;
+  /** A file download began — for most browser skills, the success condition. */
+  download: boolean;
+}
+
 /** A single captured DOM interaction. Field names mirror NoUI's ClickEvent. */
 export interface RecordedInteractionEvent {
   event_type: 'click' | 'input' | 'change' | 'submit';
@@ -118,6 +143,11 @@ export interface RecordedInteractionEvent {
   candidates?: RecordedLocatorCandidate[];
   /** State of the actionable element at interaction time. `workflow` only. */
   element?: RecordedElementEvidence;
+  /**
+   * What happened next. `workflow` only, derived at drain — see
+   * RecordedInteractionOutcome.
+   */
+  outcome?: RecordedInteractionOutcome;
   /**
    * Total-order key across ALL events in the bundle (interactions and URL
    * transitions share one counter). Strictly increasing in interaction order;
@@ -239,8 +269,11 @@ export interface RecordedCookie {
  *       and attach to popups/new tabs (`page_id` on url events).
  *   4 — workflow interactions additionally carry `candidates` (ranked locators
  *       with match counts) and `element` (state at interaction time).
+ *   5 — workflow interactions additionally carry `outcome` (what happened
+ *       next), and the workflow HAR is reduced to metadata: no bodies, no
+ *       headers, no query strings. The HAR 1.2 shape is preserved.
  */
-export const RECORDING_SCHEMA_VERSION = 4;
+export const RECORDING_SCHEMA_VERSION = 5;
 
 /** The bundle drained on "Finish & export" and pulled by NoUI. */
 export interface RecordingBundle {

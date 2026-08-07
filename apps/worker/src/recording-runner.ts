@@ -10,6 +10,8 @@ import { RECORDING_SCHEMA_VERSION } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, cleanupHarListeners } from './har-capture';
 import { REC_BEACON, REC_INSTALL_PATH, domRecorderScript } from './dom-recorder.injected';
 import { sanitizeHar } from './har-sanitizer';
+import { stripHarPayloads } from './har-metadata';
+import { deriveOutcomes } from './recording-outcomes';
 
 /**
  * Drives server-side capture for a human-operated VNC recording session:
@@ -357,7 +359,17 @@ export class RecordingRunner {
         if (ev.field_name) sensitiveNames.add(ev.field_name);
       }
     }
-    const har = sanitizeHar(rawHar, sensitiveNames);
+    let har = sanitizeHar(rawHar, sensitiveNames);
+
+    // Workflow recordings do not replay requests — their contract is the DOM and
+    // the route — so the wire payloads are pure cost and, on a bank portal, a
+    // serious liability. Reduce to metadata, then derive each interaction's
+    // outcome from what is left. Order matters: outcomes are derived from the
+    // REDUCED har so the two always agree about which requests exist.
+    if (this.isWorkflow) {
+      har = stripHarPayloads(har);
+      deriveOutcomes(this.events, this.urlEvents, this.downloadEvents, har);
+    }
 
     console.log(
       `[Recording] drained: session=${this.sessionId}, ` +
