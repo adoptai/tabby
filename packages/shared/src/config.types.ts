@@ -15,12 +15,31 @@ export interface OtpPrompt {
   timeout_ms?: number;          // Default: 120000 (2 minutes)
 }
 
+import type { RecordedCookie } from './recording.types';
+
 export interface LoginConfig {
   login_url: string;
   credential_ref: string;       // Format: k8s:secret/{secret-name} | manual: (human provides creds via HITL)
   screenshot_policy?: ScreenshotPolicy;
   steps: DslStep[];
   otp_prompt?: OtpPrompt;
+  /**
+   * Cookies to seed the browser with instead of signing in.
+   *
+   * Used to verify a freshly recorded skill: the draft is replayed in a session
+   * seeded from the recording the human just drove, so it runs with the SAME
+   * auth and no second sign-in — but as a COLD session that loads the app and
+   * lands on its post-login page, which is how the installed skill will actually
+   * start. Replaying inside the recording pod would only prove "works from
+   * wherever the human happened to stop".
+   *
+   * The login DSL still runs if these turn out to be dead. The worker seeds,
+   * loads `login_url`, and asks the health checks; only a session that is
+   * genuinely authenticated skips the login. A stale seed therefore degrades
+   * into an ordinary login rather than into a confident run against a
+   * signed-out page.
+   */
+  seed_cookies?: RecordedCookie[];
 }
 
 // ============================================================
