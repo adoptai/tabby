@@ -373,59 +373,16 @@ async function main() {
       artifactExtractor.registerHeaderCapture();
       artifactExtractor.registerRequestHeaderCapture();
 
-      // Seeded session: cookies handed to us instead of credentials.
-      //
-      // Used to verify a freshly recorded skill. A draft is replayed in a session
-      // seeded from the recording the human just drove, so it runs with the SAME
-      // auth and no second sign-in — but as a COLD session that loads the app and
-      // lands on its post-login page, which is how the installed skill will
-      // actually start. Replaying in the recording pod instead would validate
-      // "works from wherever the human happened to stop", the exact false pass
-      // the verification exists to prevent.
-      //
-      // The DSL still runs if the cookies turn out to be dead: we seed, load the
-      // app, and ask the health checks. Only a session that is genuinely already
-      // authenticated skips the login. That way a stale or partial seed degrades
-      // into an ordinary login rather than into a confident run against a
-      // signed-out page.
-      const seedCookies = (appConfig.login_config as { seed_cookies?: unknown })?.seed_cookies;
-      let seededSessionIsLive = false;
-      if (Array.isArray(seedCookies) && seedCookies.length > 0) {
-        try {
-          await context.addCookies(seedCookies as Parameters<typeof context.addCookies>[0]);
-          const landingUrl = (appConfig.login_config?.login_url || '').trim();
-          if (landingUrl) {
-            await page.goto(landingUrl, { waitUntil: 'domcontentloaded' });
-          }
-          const seeded = await healthRunner.evaluate();
-          seededSessionIsLive = seeded.overall === 'PASS';
-          console.log(
-            `Seeded ${seedCookies.length} cookie(s); session is ` +
-              `${seededSessionIsLive ? 'already authenticated — skipping login DSL' : `${seeded.overall} — running the login DSL`}`,
-          );
-        } catch (err) {
-          console.warn(`Cookie seed failed, falling back to the login DSL: ${err}`);
-        }
-      }
-
       // Execute login DSL
+      console.log('Starting login DSL execution');
       await db.updateLastLoginAt(sessionId);
-      if (seededSessionIsLive) {
-        // Already signed in via the seeded cookies. Running the login DSL here
-        // would sign in a second time — on a portal that allows one session per
-        // user (banks routinely do) that logs the seeded session OUT, which is
-        // the opposite of what the seed was for.
-        console.log('Skipping login DSL: the seeded session is already authenticated');
-      } else {
-        console.log('Starting login DSL execution');
-        await runInUpstreamTrace(() => dslRunner.execute(appConfig.login_config.steps, credentials));
+      await runInUpstreamTrace(() => dslRunner.execute(appConfig.login_config.steps, credentials));
 
-        // Pass DSL variables (e.g., quote_id from store_as) to artifact extractor
-        const dslVars = dslRunner.getVariables();
-        if (dslVars.size > 0) {
-          artifactExtractor.setDslVariables(dslVars);
-          console.log(`DSL variables passed to extractor: ${[...dslVars.keys()].join(', ')}`);
-        }
+      // Pass DSL variables (e.g., quote_id from store_as) to artifact extractor
+      const dslVars = dslRunner.getVariables();
+      if (dslVars.size > 0) {
+        artifactExtractor.setDslVariables(dslVars);
+        console.log(`DSL variables passed to extractor: ${[...dslVars.keys()].join(', ')}`);
       }
 
       // Run health predicate to confirm authentication
