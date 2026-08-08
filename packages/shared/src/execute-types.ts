@@ -27,6 +27,7 @@ export const EXECUTE_LIMITS = {
 export const BROWSER_COMMANDS = [
   'navigate', 'click_element', 'click_by_text', 'click_at',
   'type_text', 'type_into_label', 'press_key',
+  'set_checked', 'select_option',
   'get_page_summary', 'get_page_info', 'screenshot',
   'wait_for_selector', 'scroll_page',
   'har_start', 'har_stop', 'har_status',

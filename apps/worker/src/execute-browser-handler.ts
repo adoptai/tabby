@@ -85,6 +85,27 @@ export function registerBrowserHandler(
   });
 }
 
+/**
+ * The single element a command should act on, addressed however the caller can.
+ *
+ * `selector` when the page summary gave one, `label` when it did not — the same
+ * two ways every other command accepts, so an agent does not have to know which
+ * one a given control supports.
+ */
+async function resolveOne(page: Page, params: Record<string, any>) {
+  if (typeof params.selector === 'string' && params.selector) {
+    const all = page.locator(params.selector);
+    // Visible-first, but fall back to the first match: the whole point of
+    // set_checked is controls that are deliberately NOT visible.
+    const vis = all.filter({ visible: true });
+    return (await vis.count()) > 0 ? vis.first() : all.first();
+  }
+  if (typeof params.label === 'string' && params.label) {
+    return page.getByLabel(params.label).first();
+  }
+  throw new Error('Provide either "selector" or "label" to identify the control');
+}
+
 export async function dispatchCommand(
   page: Page,
   command: string,
@@ -139,6 +160,76 @@ export async function dispatchCommand(
       const text = requireParam(params, 'text', 'string');
       await page.getByLabel(label).fill(text, { timeout: timeoutMs });
       return {};
+    }
+
+    case 'set_checked': {
+      // Radios and checkboxes have no command that can set them, and clicking
+      // their label reports success whether or not the state changed — which is
+      // how an agent ends up stuck, sure it clicked "Annual" while the form
+      // still says Monthly. This sets the control and REPORTS what it actually
+      // holds afterwards.
+      const want = params.checked !== false;
+      const target = await resolveOne(page, params);
+      const timeout = timeoutMs;
+
+      const attempts: Array<() => Promise<void>> = [
+        // 1. The ordinary way.
+        async () => (want ? target.check({ timeout }) : target.uncheck({ timeout })),
+        // 2. Visually hidden but real. The canonical bank pattern is an input
+        //    with display:none behind a styled label, which fails actionability
+        //    while being perfectly functional.
+        async () => (want ? target.check({ force: true, timeout }) : target.uncheck({ force: true, timeout })),
+        // 3. Click the label, which is what a person actually clicks. Covers
+        //    inputs that are not merely hidden but unclickable in principle.
+        async () => {
+          const id = await target.getAttribute('id');
+          const label = id
+            ? page.locator(`label[for="${id}"]`)
+            : target.locator('xpath=ancestor::label[1]');
+          await label.first().click({ timeout });
+        },
+      ];
+
+      let lastError = '';
+      for (const attempt of attempts) {
+        try {
+          await attempt();
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+          continue;
+        }
+        // Verified, not assumed: a click that lands but changes nothing is the
+        // failure we are here to remove.
+        try {
+          if ((await target.isChecked()) === want) return { checked: want, verified: true };
+        } catch {
+          // Cannot read it back — report the attempt without claiming success.
+          return { checked: want, verified: false };
+        }
+      }
+      throw new Error(
+        `Could not set the control to ${want ? 'checked' : 'unchecked'}` +
+          (lastError ? `: ${lastError}` : '. The click landed but the state did not change.'),
+      );
+    }
+
+    case 'select_option': {
+      // Native <select> cannot be driven by any click command, so a recorded
+      // dropdown choice had no way to be replayed at all.
+      const target = await resolveOne(page, params);
+      const value = params.value ?? params.label ?? params.option;
+      if (typeof value !== 'string' || !value) {
+        throw new Error('select_option requires "value" (the option value or its visible label)');
+      }
+      // Match by value first, then by visible label — a recording carries
+      // whichever the page exposed.
+      let chosen: string[];
+      try {
+        chosen = await target.selectOption({ value }, { timeout: timeoutMs });
+      } catch {
+        chosen = await target.selectOption({ label: value }, { timeout: timeoutMs });
+      }
+      return { selected: chosen };
     }
 
     case 'press_key': {

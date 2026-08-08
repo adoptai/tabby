@@ -273,3 +273,92 @@ describe('execute-browser-handler navigate blocking', () => {
     expect(h.page.goto).toHaveBeenCalled();
   });
 });
+
+/**
+ * ICICI's statement form hides its PERIOD_TYPE radios behind styled labels. No
+ * command could set them, and `click_by_text("Annual")` reported SUCCESS while
+ * the form still said Monthly — so the agent had no way to tell it had failed,
+ * and got stuck insisting it had clicked Annual.
+ */
+describe('set_checked', () => {
+  function radio({ checkThrows = 0, checkedAfter = [true] } = {}) {
+    let checkCalls = 0;
+    let readCalls = 0;
+    const target: any = {
+      check: jest.fn(async () => {
+        if (checkCalls++ < checkThrows) throw new Error('Element is not visible');
+      }),
+      uncheck: jest.fn(async () => undefined),
+      isChecked: jest.fn(async () => checkedAfter[Math.min(readCalls++, checkedAfter.length - 1)]),
+      getAttribute: jest.fn(async () => 'PERIOD_TYPE_ANNUAL'),
+      click: jest.fn(async () => undefined),
+      locator: jest.fn(() => ({ first: () => ({ click: jest.fn(async () => undefined) }) })),
+      filter: jest.fn(() => ({ count: async () => 1, first: () => target })),
+      first: () => target,
+      count: async () => 1,
+    };
+    const page: any = { locator: jest.fn(() => target), getByLabel: jest.fn(() => target) };
+    return { page, target };
+  }
+
+  it('sets the control and reports the state it actually holds', async () => {
+    const { page, target } = radio();
+    const out = await dispatchCommand(page, 'set_checked', { selector: '#annual' }, 5000);
+
+    expect(out).toEqual({ checked: true, verified: true });
+    expect(target.check).toHaveBeenCalled();
+  });
+
+  it('forces past actionability for an input hidden behind a styled label', async () => {
+    // The canonical bank pattern: display:none input, visible label.
+    const { page, target } = radio({ checkThrows: 1 });
+    const out = await dispatchCommand(page, 'set_checked', { selector: '#annual' }, 5000);
+
+    expect(out.checked).toBe(true);
+    expect(target.check).toHaveBeenCalledTimes(2);
+    expect(target.check).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+  });
+
+  it('falls back to clicking the label when the input cannot be set at all', async () => {
+    const { page, target } = radio({ checkThrows: 2 });
+    const out = await dispatchCommand(page, 'set_checked', { selector: '#annual' }, 5000);
+
+    expect(out.checked).toBe(true);
+    // Clicked the label a person would click, resolved from the input's id.
+    expect(page.locator).toHaveBeenCalledWith('label[for="PERIOD_TYPE_ANNUAL"]');
+    expect(target.click).toHaveBeenCalled();
+  });
+
+  it('fails loudly when the click lands but the state does not change', async () => {
+    // THE bug being fixed: silent success is what left the agent stuck.
+    const { page } = radio({ checkedAfter: [false] });
+
+    await expect(
+      dispatchCommand(page, 'set_checked', { selector: '#annual' }, 5000),
+    ).rejects.toThrow(/state did not change|Could not set/);
+  });
+
+  it('requires a way to identify the control', async () => {
+    const { page } = radio();
+    await expect(dispatchCommand(page, 'set_checked', {}, 5000)).rejects.toThrow(/selector.*label/i);
+  });
+});
+
+describe('select_option', () => {
+  it('matches by value, then by visible label', async () => {
+    const target: any = {
+      selectOption: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('no option with value'))
+        .mockResolvedValueOnce(['ANNUAL']),
+      filter: jest.fn(() => ({ count: async () => 1, first: () => target })),
+      first: () => target,
+    };
+    const page: any = { locator: jest.fn(() => target) };
+
+    const out = await dispatchCommand(page, 'select_option', { selector: '#period', value: 'Annual' }, 5000);
+
+    expect(out).toEqual({ selected: ['ANNUAL'] });
+    expect(target.selectOption).toHaveBeenLastCalledWith({ label: 'Annual' }, expect.anything());
+  });
+});
