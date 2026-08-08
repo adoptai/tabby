@@ -217,6 +217,16 @@ export class HealthPredicateRunner {
       } catch (error) {
         const unevaluable = classifyDomCheckError(error);
         if (unevaluable) return unevaluable;
+        if (isUniversalSelector(check.selector)) {
+          // See UNIVERSAL_SELECTORS: an absent `body` means the document is not
+          // there, which is a transient state on any portal that navigates.
+          // Calling it AUTH_FAIL drives the session to LOGIN_NEEDED and, on a
+          // recording session, interrupts a human mid-sign-in for nothing.
+          return {
+            result: HealthResultType.TRANSIENT_FAIL,
+            detail: `Selector ${check.selector} matches any loaded page, so its absence means the document was not ready, not that the session ended: ${error}`,
+          };
+        }
         return {
           result: HealthResultType.AUTH_FAIL,
           detail: strictVisibility
@@ -309,6 +319,25 @@ export class HealthPredicateRunner {
  * and must stay AUTH_FAIL; this only carves out the classes we can positively
  * identify as uninformative.
  */
+/**
+ * Selectors that exist in every rendered HTML document.
+ *
+ * A timeout on one of these is never evidence about authentication. Every page
+ * has a body; if it cannot be found the document is loading, navigating or
+ * blank — not signed out. Apps configure `dom_check` on `body` as a cheap
+ * liveness probe (the recording-shell app does exactly this), and on a portal
+ * that replaces the document during login the check lands mid-navigation and
+ * times out. Reported as AUTH_FAIL that flipped a perfectly healthy recording
+ * session to UNHEALTHY while the human was signing in; it passed again on the
+ * next cycle 55 seconds later.
+ */
+const UNIVERSAL_SELECTORS = new Set(['body', 'html', ':root', 'body *', 'html body']);
+
+/** Would this selector match on any loaded page, regardless of auth state? */
+export function isUniversalSelector(selector: unknown): boolean {
+  return UNIVERSAL_SELECTORS.has(String(selector ?? '').trim().toLowerCase());
+}
+
 export function classifyDomCheckError(
   error: unknown,
 ): { result: HealthResultType; detail: string } | null {

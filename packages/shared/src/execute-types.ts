@@ -21,6 +21,25 @@ export const EXECUTE_LIMITS = {
   DEFAULT_TIMEOUT_MS: 30_000,
   ALLOWED_SCHEMES: ['https:', 'http:'] as readonly string[],
   MAX_RESPONSE_BODY_BYTES: 5_242_880, // 5MB
+
+  // --- HAR capture budgets -------------------------------------------------
+  // Separate from the /execute/fetch limit above, which caps ONE response
+  // returned to a caller. HAR capture holds every entry of a whole session in
+  // memory at once and then stringifies the lot at drain, so the figure that
+  // matters is the total, not the individual response.
+  //
+  // A recording of ICICI's login captured 1100 entries and OOM-killed the
+  // worker (1536Mi) at drain — after the bundle was assembled and before it was
+  // persisted, so the entire recording was lost at the one moment nothing had
+  // been written yet.
+
+  /** Largest response body stored per HAR entry. Generous for a JSON API; a
+   *  rendered page or a bundle is truncated, which costs the compiler nothing. */
+  MAX_HAR_BODY_BYTES: 262_144, // 256KB
+  /** Total body bytes stored across a whole capture. Once spent, entries keep
+   *  their metadata and drop their bodies — the shape is what compiles, and a
+   *  truncated capture beats a lost one. */
+  MAX_HAR_BODY_TOTAL_BYTES: 67_108_864, // 64MB
   BROWSER_RATE_LIMIT_PER_MIN: 120,
 } as const;
 

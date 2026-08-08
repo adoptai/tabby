@@ -234,3 +234,60 @@ describe('HealthPredicateRunner — dom_check cannot claim AUTH_FAIL on its own 
     expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
   });
 });
+
+/**
+ * A `dom_check` on `body` cannot report on authentication.
+ *
+ * Every rendered document has a body. If it cannot be found the document is
+ * loading, navigating or blank — never "the session ended". Apps configure this
+ * as a cheap liveness probe (the recording-shell app does exactly this), and on
+ * a portal that replaces the document during sign-in it lands mid-navigation and
+ * times out.
+ *
+ * Observed: a human signing in to ICICI inside a RECORDING session. Five health
+ * cycles passed, one timed out on `body`, the controller flipped the session
+ * HEALTHY -> UNHEALTHY, and the very next cycle 55 seconds later passed again.
+ * One blip interrupted a human mid-sign-in for nothing.
+ */
+describe('HealthPredicateRunner — a universal selector cannot prove a session ended', () => {
+  function pageThatTimesOut() {
+    return {
+      locator: jest.fn().mockReturnValue({
+        first: jest.fn().mockReturnValue({
+          waitFor: jest.fn(async () => {
+            throw new Error('locator.waitFor: Timeout 5000ms exceeded.');
+          }),
+        }),
+      }),
+      url: jest.fn().mockReturnValue('https://retailnetbanking.icici.bank.in/login-page'),
+    } as any;
+  }
+
+  it('reports TRANSIENT_FAIL when body times out, not AUTH_FAIL', async () => {
+    const res = await runner(pageThatTimesOut(), {
+      type: 'dom_check', selector: 'body', exists: true,
+    }).evaluate();
+
+    expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+    expect(res.checks[0].detail).toMatch(/matches any loaded page/);
+  });
+
+  it('treats html and :root the same way', async () => {
+    for (const selector of ['html', ':root', 'BODY', ' body ']) {
+      const res = await runner(pageThatTimesOut(), {
+        type: 'dom_check', selector, exists: true,
+      }).evaluate();
+      expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+    }
+  });
+
+  it('still reports AUTH_FAIL when a REAL marker times out', async () => {
+    // The carve-out must not swallow the genuine signed-out verdict: a missing
+    // dashboard element is exactly what "signed out" looks like.
+    const res = await runner(pageThatTimesOut(), {
+      type: 'dom_check', selector: '#dashboard', exists: true,
+    }).evaluate();
+
+    expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
+  });
+});
