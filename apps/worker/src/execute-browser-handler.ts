@@ -1,5 +1,5 @@
 import { Express, Request, Response } from 'express';
-import { Page } from 'playwright';
+import { Frame, Page } from 'playwright';
 import {
   BROWSER_COMMANDS,
   EXECUTE_LIMITS,
@@ -92,7 +92,45 @@ export function registerBrowserHandler(
  * two ways every other command accepts, so an agent does not have to know which
  * one a given control supports.
  */
-async function resolveOne(page: Page, params: Record<string, any>) {
+/**
+ * The frame a command addresses — the page itself unless one is named.
+ *
+ * Bank portals embed whole applications in iframes (ICICI serves statements
+ * from Finacle that way). The recorder already captured those clicks, because
+ * `addInitScript` runs in every frame, but every command here operated on the
+ * top-level page — so a control the human successfully clicked compiled into a
+ * step that could not be executed, and `get_page_summary` reported the page as
+ * if the embedded app were not there. One run concluded the portal was
+ * "fundamentally frame-gated"; it was not, we simply never looked inside.
+ *
+ * Matching is by name first (stable), then URL: exact, then ignoring the query
+ * string, which is where session tokens churn between the recording and now.
+ */
+function resolveScope(page: Page, params: Record<string, any>): Page | Frame {
+  const name = typeof params.frame_name === 'string' ? params.frame_name.trim() : '';
+  const url = typeof params.frame_url === 'string' ? params.frame_url.trim() : '';
+  if (!name && !url) return page;
+
+  const frames = page.frames().filter((f) => f !== page.mainFrame());
+  if (name) {
+    const byName = frames.find((f) => f.name() === name);
+    if (byName) return byName;
+  }
+  if (url) {
+    const exact = frames.find((f) => f.url() === url);
+    if (exact) return exact;
+    const bare = (u: string) => u.split('?')[0].split('#')[0];
+    const byPath = frames.find((f) => bare(f.url()) === bare(url));
+    if (byPath) return byPath;
+  }
+  throw new Error(
+    `No frame matched ${name ? `name "${name}"` : `url "${url}"`}. ` +
+      `Frames present: ${frames.map((f) => f.url() || '(blank)').join(', ') || 'none'}. ` +
+      `The embedded app may not have loaded yet — wait for it, then retry.`,
+  );
+}
+
+async function resolveOne(page: Page | Frame, params: Record<string, any>) {
   if (typeof params.selector === 'string' && params.selector) {
     const all = page.locator(params.selector);
     // Visible-first, but fall back to the first match: the whole point of
@@ -128,7 +166,7 @@ export async function dispatchCommand(
       // Same visible-first + overlay handling as click_by_text: a selector can
       // match hidden analytics/off-screen copies (strict-mode violation), and the
       // sticky-banner interception is not text-specific.
-      const all = page.locator(selector);
+      const all = resolveScope(page, params).locator(selector);
       const vis = all.filter({ visible: true });
       const el = (await vis.count()) > 0 ? vis.first() : all.first();
       await clickThroughOverlays(el, timeoutMs);
@@ -137,7 +175,7 @@ export async function dispatchCommand(
 
     case 'click_by_text': {
       const text = requireParam(params, 'text', 'string');
-      await clickByText(page, params, text, timeoutMs);
+      await clickByText(resolveScope(page, params), params, text, timeoutMs);
       return {};
     }
 
@@ -151,14 +189,14 @@ export async function dispatchCommand(
     case 'type_text': {
       const selector = requireParam(params, 'selector', 'string');
       const text = requireParam(params, 'text', 'string');
-      await page.locator(selector).fill(text, { timeout: timeoutMs });
+      await resolveScope(page, params).locator(selector).fill(text, { timeout: timeoutMs });
       return {};
     }
 
     case 'type_into_label': {
       const label = requireParam(params, 'label', 'string');
       const text = requireParam(params, 'text', 'string');
-      await page.getByLabel(label).fill(text, { timeout: timeoutMs });
+      await resolveScope(page, params).getByLabel(label).fill(text, { timeout: timeoutMs });
       return {};
     }
 
@@ -169,7 +207,7 @@ export async function dispatchCommand(
       // still says Monthly. This sets the control and REPORTS what it actually
       // holds afterwards.
       const want = params.checked !== false;
-      const target = await resolveOne(page, params);
+      const target = await resolveOne(resolveScope(page, params), params);
       const timeout = timeoutMs;
 
       const attempts: Array<() => Promise<void>> = [
@@ -216,7 +254,7 @@ export async function dispatchCommand(
     case 'select_option': {
       // Native <select> cannot be driven by any click command, so a recorded
       // dropdown choice had no way to be replayed at all.
-      const target = await resolveOne(page, params);
+      const target = await resolveOne(resolveScope(page, params), params);
       const value = params.value ?? params.label ?? params.option;
       if (typeof value !== 'string' || !value) {
         throw new Error('select_option requires "value" (the option value or its visible label)');
@@ -239,7 +277,28 @@ export async function dispatchCommand(
     }
 
     case 'get_page_summary': {
-      return await page.evaluate(pageSummaryScript);
+      // Always report the frames on the page, even when summarising the main
+      // one. The summariser reads a single document, so an app embedded in an
+      // iframe was simply absent from its output — and a caller reading that
+      // output had no way to tell "this control does not exist" from "this
+      // control is one frame down". Naming the frames turns a dead end into a
+      // next step: pass frame_url (or frame_name) to summarise inside one.
+      const scope = resolveScope(page, params);
+      const summary: any = await scope.evaluate(pageSummaryScript);
+      const others = page.frames().filter((f) => f !== page.mainFrame());
+      if (others.length > 0) {
+        summary.frames = others.map((f) => ({
+          url: f.url(),
+          name: f.name() || undefined,
+        }));
+        if (scope === page) {
+          summary.frames_note =
+            `${others.length} embedded frame(s) are NOT included above. ` +
+            `Re-run get_page_summary with frame_url set to one of them to read inside it, ` +
+            `and pass the same frame_url to click_element/type_text to act in it.`;
+        }
+      }
+      return summary;
     }
 
     case 'get_page_info': {
@@ -253,7 +312,7 @@ export async function dispatchCommand(
 
     case 'wait_for_selector': {
       const selector = requireParam(params, 'selector', 'string');
-      await page.locator(selector).waitFor({ timeout: timeoutMs });
+      await resolveScope(page, params).locator(selector).waitFor({ timeout: timeoutMs });
       return {};
     }
 
@@ -342,7 +401,7 @@ async function clickThroughOverlays(target: any, timeoutMs: number): Promise<voi
  * the visible matches, default 0).
  */
 async function clickByText(
-  page: Page,
+  page: Page | Frame,
   params: Record<string, any>,
   text: string,
   timeoutMs: number,

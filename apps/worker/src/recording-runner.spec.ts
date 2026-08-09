@@ -134,6 +134,34 @@ describe('RecordingRunner', () => {
     expect(f.context.addInitScript).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Rich capture (locator candidates, element evidence) follows browser_driven,
+   * NOT the recording mode.
+   *
+   * A COMBINED capture — login and workflow recorded in one session, the default
+   * the harness uses — is provisioned as a `login` session on purpose, so its
+   * HAR stays whole for App Template registration. Gating rich capture on the
+   * mode therefore turned the evidence pipeline off for exactly the captures
+   * that feed browser skills, and the compiler had nothing but generated CSS
+   * paths to work with.
+   */
+  it('captures rich evidence for a browser-driven login-mode recording', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login', true);
+    await runner.start();
+
+    expect(f.context.addInitScript).toHaveBeenCalledWith(expect.any(Function), { rich: true });
+  });
+
+  it('leaves a plain login recording exactly as it was', async () => {
+    // The hard constraint: the non-browser recorder must not change at all.
+    const f = makeFakes('https://bank.test/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    expect(f.context.addInitScript).toHaveBeenCalledWith(expect.any(Function), { rich: false });
+  });
+
   it('captures interaction events emitted over the request beacon channel', async () => {
     const f = makeFakes('https://example.com/login');
     const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');

@@ -69,6 +69,29 @@ export class RecordingRunner {
     return this.recordingMode === 'workflow';
   }
 
+  /**
+   * Capture locator candidates and element evidence, not just the bare click.
+   *
+   * NOT `isWorkflow`. A COMBINED capture — one session recording the login and
+   * the workflow together, which is the default the harness uses — is
+   * provisioned as a `login` session on purpose: its HAR must stay whole,
+   * because that is what registers the App Template (see the drain, where the
+   * HAR reduction is deliberately `browserDriven && isWorkflow`). Gating rich
+   * capture on the mode therefore switched the entire evidence pipeline OFF for
+   * exactly the captures that need it most, and a browser skill compiled from
+   * one had nothing to work with but generated CSS paths like
+   * `.tabMenu>li>ul>COMPOSITE#T_WORK_LOGIN…` — no role, no text, no fallback.
+   * Replay then missed, improvised, and wandered.
+   *
+   * `browserDriven` is the honest signal: it means "browser steps will be
+   * compiled from this recording's DOM evidence", which is precisely when the
+   * evidence is needed. A plain login recording leaves it false and records
+   * exactly what it always did.
+   */
+  private get richCapture(): boolean {
+    return this.isWorkflow || this.browserDriven;
+  }
+
   constructor(
     private readonly page: Page,
     private readonly context: BrowserContext,
@@ -133,12 +156,12 @@ export class RecordingRunner {
     // the mode has to reach the page. Passed as an argument rather than read
     // from a global: the function body is serialized into the page context and
     // closes over nothing.
-    await this.context.addInitScript(domRecorderScript, { rich: this.isWorkflow });
+    await this.context.addInitScript(domRecorderScript, { rich: this.richCapture });
     this.onDomReady = () => {
       // Opts are read HERE, not captured at start(): a warm-pool spare boots as
       // a login recording and adopts its real mode at bind, so every re-injection
       // after that must carry the new one.
-      this.page.evaluate(domRecorderScript, { rich: this.isWorkflow }).catch(() => {
+      this.page.evaluate(domRecorderScript, { rich: this.richCapture }).catch(() => {
         /* page navigating/closed — next domcontentloaded re-injects */
       });
     };
@@ -351,7 +374,7 @@ export class RecordingRunner {
     // domcontentloaded, but re-inject now too so a bind that does not navigate
     // (already on the target) is still upgraded — the script tears down and
     // reinstalls when `rich` differs.
-    this.page.evaluate(domRecorderScript, { rich: this.isWorkflow }).catch(() => undefined);
+    this.page.evaluate(domRecorderScript, { rich: this.richCapture }).catch(() => undefined);
 
     console.log(`[Recording] mode adopted at bind: ${previous} -> ${mode}`);
   }

@@ -524,6 +524,16 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
         rect: rect,
         in_shadow_dom: inShadowDom(el),
         in_iframe: window !== window.top,
+        // WHICH frame, not just whether. `addInitScript` runs the recorder in
+        // every frame, so a click inside an embedded app (ICICI's statements
+        // live in a Finacle iframe) was already captured — and then compiled
+        // into a step no runtime could execute, because nothing said where to
+        // execute it. A boolean records that the problem exists; the URL is
+        // what lets a replay reach the control the human actually clicked.
+        // Same-origin frames can also report their name, which survives the
+        // query-string churn a URL suffers.
+        frame_url: window !== window.top ? String(location.href || '') : '',
+        frame_name: window !== window.top ? String(window.name || '') : '',
       };
     } catch {
       return null;
