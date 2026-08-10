@@ -68,6 +68,34 @@ const FRAME_HTML = `<!doctype html><html><body>
   </script>
 </body></html>`;
 
+/** A second origin for the embedded app — a different port IS a different origin. */
+function startFrameOrigin(): Promise<{ server: Server; base: string }> {
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith('/statement.pdf')) {
+      setTimeout(() => {
+        res.writeHead(200, {
+          'content-type': 'application/pdf',
+          'content-disposition': 'attachment; filename="statement.pdf"',
+        });
+        res.end('%PDF-1.4 fixture');
+      }, DOWNLOAD_DELAY_MS);
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'text/html',
+      // Cross-origin AND locked down, the way a real embedded bank app arrives.
+      'content-security-policy': "default-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline'",
+    });
+    res.end(FRAME_HTML);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({ server, base: `http://localhost:${port}` });   // different host+port
+    });
+  });
+}
+
 function startFixture(): Promise<{ server: Server; base: string }> {
   const server = createServer((req, res) => {
     if (req.url?.startsWith('/finacle-csp')) {
@@ -267,5 +295,103 @@ describe('recording inside a CSP-locked frame', () => {
     const inFrame = (bundle.click_events || []).filter((c: any) => c?.element?.in_iframe);
     expect(inFrame.length).toBeGreaterThan(0);
     expect(inFrame[0].element.frame_url).toContain('/finacle-csp');
+  });
+});
+
+/**
+ * The embedded app on a DIFFERENT ORIGIN, which is how banks actually deploy it
+ * — ICICI's statements come from a separate Finacle host, not a path on the
+ * portal.
+ *
+ * Cross-origin changes what the recorder can see and what the runtime can
+ * address: the injected script cannot reach across the boundary, and a frame
+ * has to be found by its own url rather than by walking the parent's DOM. The
+ * same-origin fixtures cannot tell us whether either holds.
+ */
+describe('recording and replaying across an origin boundary', () => {
+  let appServer: Server;
+  let frameServer: Server;
+  let appBase: string;
+  let frameBase: string;
+  let browser: Browser;
+
+  beforeAll(async () => {
+    ({ server: frameServer, base: frameBase } = await startFrameOrigin());
+    // The app page embeds the OTHER origin.
+    const appHtml = APP_HTML.replace("'/finacle'", `'${frameBase}/finacle'`);
+    appServer = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(appHtml);
+    });
+    await new Promise<void>((r) =>
+      appServer.listen(0, '127.0.0.1', () => {
+        appBase = `http://127.0.0.1:${(appServer.address() as AddressInfo).port}`;
+        r();
+      }),
+    );
+    try {
+      browser = await chromium.launch();
+    } catch {
+      browser = await chromium.launch({ channel: 'chrome' });
+    }
+  });
+
+  afterAll(async () => {
+    await browser?.close();
+    await new Promise((r) => appServer?.close(() => r(null)));
+    await new Promise((r) => frameServer?.close(() => r(null)));
+  });
+
+  it('records the click and identifies the frame by its own origin', async () => {
+    const context: BrowserContext = await browser.newContext({ acceptDownloads: true });
+    const page: Page = await context.newPage();
+    const runner = new RecordingRunner(page, context, 'sess-xorigin', 'login', true);
+    await runner.start();
+
+    await page.goto(`${appBase}/app`);
+    await page.click('#nav-statements');
+    const frame = page.frameLocator('#finacle');
+    await frame.locator('#tab-past').click();
+    await frame.locator('#period-annual').click();
+    const dl = page.waitForEvent('download', { timeout: 30_000 });
+    await frame.locator('#PDF_Download').click();
+    await dl;
+    await page.waitForTimeout(500);
+
+    const bundle: any = await runner.drain();
+    await context.close();
+
+    const inFrame = (bundle.click_events || []).filter((c: any) => c?.element?.in_iframe);
+    expect(inFrame.length).toBeGreaterThanOrEqual(3);
+    // The frame is addressed by ITS origin, not the page's.
+    expect(inFrame[0].element.frame_url.startsWith(frameBase)).toBe(true);
+    // And the download is still attributed across the boundary.
+    expect((bundle.click_events || []).some((c: any) => c?.outcome?.download)).toBe(true);
+  });
+
+  it('replays into the cross-origin frame and gets the file', async () => {
+    const context: BrowserContext = await browser.newContext({ acceptDownloads: true });
+    enableDownloadCapture(context);
+    const page: Page = await context.newPage();
+    const frameUrl = `${frameBase}/finacle`;
+
+    await dispatchCommand(page, 'navigate', { url: `${appBase}/app` }, 15_000);
+    await dispatchCommand(page, 'click_by_text', { text: 'Statements', exact: true }, 15_000);
+    await dispatchCommand(page, 'wait_for_selector', { selector: '#tab-past', frame_url: frameUrl }, 15_000);
+    await dispatchCommand(page, 'click_element', { selector: '#tab-past', frame_url: frameUrl }, 15_000);
+    await dispatchCommand(page, 'click_element', { selector: '#period-annual', frame_url: frameUrl }, 15_000);
+    const waitDownload = page.waitForEvent('download', { timeout: 30_000 });
+    await dispatchCommand(page, 'click_element', { selector: '#PDF_Download', frame_url: frameUrl }, 15_000);
+    await waitDownload;
+    await page.waitForTimeout(500);
+
+    const { downloads } = listDownloads(page);
+    expect(downloads.length).toBeGreaterThan(0);
+
+    // get_page_summary must report the cross-origin frame it did not read.
+    const summary: any = await dispatchCommand(page, 'get_page_summary', {}, 15_000);
+    expect(summary.frames?.some((f: any) => String(f.url).startsWith(frameBase))).toBe(true);
+
+    await context.close();
   });
 });
