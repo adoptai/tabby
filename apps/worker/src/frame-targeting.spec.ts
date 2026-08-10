@@ -215,3 +215,61 @@ describe('falling back to the recording’s other candidates', () => {
     ).rejects.toThrow(/nothing on the page matches/);
   });
 });
+
+/**
+ * A dead end lists what IS on the page.
+ *
+ * "Nothing matches, read the page" sends the caller back to guessing: an ICICI
+ * replay answered it with screenshots and probing until a human supplied the
+ * answer from a skill they had written by hand. A customer building their first
+ * skill has no such reference, so the failure has to carry the options.
+ */
+describe('when nothing matches, say what is there', () => {
+  function pageWithControls(controls: Array<{ text: string; selector: string }>) {
+    const loc = (n: number) => ({
+      count: async () => n,
+      filter: () => ({ count: async () => n, first: () => ({ count: async () => n }) }),
+      first: () => ({ count: async () => n }),
+    });
+    const page: any = {
+      mainFrame: () => page,
+      frames: () => [page],
+      locator: () => loc(0),
+      getByText: () => loc(0),
+      evaluate: async () => ({ elements: controls }),
+    };
+    return page;
+  }
+
+  it('lists real controls, closest to the target first', async () => {
+    const page = pageWithControls([
+      { text: 'Accounts', selector: '#accounts' },
+      { text: 'Credit Cards', selector: '#credit-cards' },
+      { text: 'Offers', selector: '#offers' },
+    ]);
+
+    await expect(
+      dispatchCommand(page, 'click_element', { selector: '#cardStatementTracker > div' }, 1000),
+    ).rejects.toThrow(/Credit Cards.*#credit-cards/s);
+  });
+
+  it('says how many recorded alternatives were also tried', async () => {
+    const page = pageWithControls([{ text: 'Cards', selector: '#cards' }]);
+
+    await expect(
+      dispatchCommand(
+        page,
+        'click_element',
+        { selector: '#gone', fallbacks: [{ text: 'Nope' }, { selector: '#also-gone' }] },
+        1000,
+      ),
+    ).rejects.toThrow(/2 recorded alternative\(s\)/);
+  });
+
+  it('is honest when the page offers nothing to suggest', async () => {
+    const page = pageWithControls([]);
+    await expect(
+      dispatchCommand(page, 'click_element', { selector: '#x' }, 1000),
+    ).rejects.toThrow(/no addressable controls to suggest/);
+  });
+});

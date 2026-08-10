@@ -168,6 +168,9 @@ export async function dispatchCommand(
       // sticky-banner interception is not text-specific.
       const scope = resolveScope(page, params);
       const el = await firstMatching(scope, selector, params);
+      if (!el.matched) {
+        throw new Error(await noMatchMessage(page, scope, selector, params));
+      }
       await clickThroughOverlays(el.locator, timeoutMs);
       return el.usedFallback ? { used_fallback: el.usedFallback } : {};
     }
@@ -419,7 +422,7 @@ async function firstMatching(
   scope: Page | Frame,
   selector: string,
   params: Record<string, any>,
-): Promise<{ locator: any; usedFallback?: string }> {
+): Promise<{ locator: any; usedFallback?: string; matched: boolean }> {
   const visibleFirst = (loc: any) => {
     const vis = loc.filter({ visible: true });
     return { loc, vis };
@@ -428,7 +431,7 @@ async function firstMatching(
   const primary = scope.locator(selector);
   const { vis } = visibleFirst(primary);
   if ((await primary.count()) > 0) {
-    return { locator: (await vis.count()) > 0 ? vis.first() : primary.first() };
+    return { locator: (await vis.count()) > 0 ? vis.first() : primary.first(), matched: true };
   }
 
   const fallbacks = Array.isArray(params.fallbacks) ? params.fallbacks : [];
@@ -450,6 +453,7 @@ async function firstMatching(
         return {
           locator: (await v.count()) > 0 ? v.first() : loc.first(),
           usedFallback: label,
+          matched: true,
         };
       }
     } catch {
@@ -458,7 +462,68 @@ async function firstMatching(
   }
 
   // Nothing matched: hand back the primary so the caller reports it by name.
-  return { locator: primary.first() };
+  return { locator: primary.first(), matched: false };
+}
+
+/**
+ * What the page actually offers, when nothing we were told to click exists.
+ *
+ * "Nothing matches, read the page" sends the caller back to guessing: an ICICI
+ * replay answered it with screenshots and probing until a human supplied the
+ * answer from a skill they had written by hand. A customer building their first
+ * skill has no such reference, so the failure itself has to carry the options --
+ * the summariser already extracts addressable controls, and a dead end that
+ * lists what IS there is a choice between real things instead of a search.
+ *
+ * Ranked by resemblance to what was asked for, because a bank page has hundreds
+ * of controls and the useful ones are the ones that look like the target.
+ */
+async function noMatchMessage(
+  page: Page,
+  scope: Page | Frame,
+  wanted: string,
+  params: Record<string, any>,
+): Promise<string> {
+  const head =
+    `nothing on the page matches ${JSON.stringify(wanted)}` +
+    (Array.isArray(params.fallbacks) && params.fallbacks.length
+      ? `, nor any of the ${params.fallbacks.length} recorded alternative(s)`
+      : '') +
+    '.';
+
+  let options: string[] = [];
+  try {
+    const summary: any = await scope.evaluate(pageSummaryScript);
+    const words = wanted.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+    const score = (label: string): number => {
+      const l = label.toLowerCase();
+      return words.reduce((n, w) => (w.length > 2 && l.includes(w) ? n + 1 : n), 0);
+    };
+    const seen = new Set<string>();
+    options = (summary?.elements || [])
+      .filter((e: any) => e && (e.text || e.label) && e.selector)
+      .map((e: any) => ({ label: String(e.text || e.label).slice(0, 60), sel: String(e.selector) }))
+      .filter((o: any) => (seen.has(o.sel) ? false : (seen.add(o.sel), true)))
+      .sort((a: any, b: any) => score(b.label) - score(a.label))
+      .slice(0, 12)
+      .map((o: any) => `  ${JSON.stringify(o.label)} -> ${o.sel}`);
+  } catch {
+    /* a page we cannot summarise still gets the honest first line */
+  }
+
+  const frames = page.frames().filter((f) => f !== page.mainFrame());
+  const framesNote = frames.length
+    ? `\n\n${frames.length} embedded frame(s) are NOT covered above; pass frame_url to act inside one: ` +
+      frames.map((f) => f.url()).join(', ')
+    : '';
+
+  if (!options.length) {
+    return `${head} The page exposes no addressable controls to suggest — it may not have finished loading.${framesNote}`;
+  }
+  return (
+    `${head}\n\nControls that ARE on the page, closest first:\n${options.join('\n')}` +
+    `\n\nAddress one of these rather than retrying the same locator.${framesNote}`
+  );
 }
 
 async function clickThroughOverlays(target: any, timeoutMs: number): Promise<void> {
