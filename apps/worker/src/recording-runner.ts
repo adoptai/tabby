@@ -156,6 +156,21 @@ export class RecordingRunner {
     // the mode has to reach the page. Passed as an argument rather than read
     // from a global: the function body is serialized into the page context and
     // closes over nothing.
+    // A transport CSP cannot refuse.
+    //
+    // The recorder's fallback is a sentinel fetch, and a frame served with
+    // `connect-src 'self'` -- how banks serve their embedded apps -- blocks it,
+    // so every click inside that frame was lost. A binding is installed by the
+    // browser in every frame of every page and is not a network request, so a
+    // page's own policy has no say in it.
+    try {
+      await this.context.exposeBinding('__tabbyRecEmit', (_source: any, body: string) => {
+        if (typeof body === 'string' && body) this.ingest(body);
+      });
+    } catch {
+      // Already exposed (a reused context), or unsupported: the beacon still
+      // works everywhere a strict CSP is not in force.
+    }
     await this.context.addInitScript(domRecorderScript, { rich: this.richCapture });
     this.onDomReady = () => {
       // Opts are read HERE, not captured at start(): a warm-pool spare boots as
@@ -231,18 +246,27 @@ export class RecordingRunner {
       try {
         const body = typeof req.postData === 'function' ? req.postData() : '';
         if (!body) return;
-        const ev = JSON.parse(body) as RecordedInteractionEvent;
-        if (ev && typeof ev === 'object') {
-          // Rebase the page-local ordinal onto the session-global counter. Runs
-          // for popups as well as the main page, so one total order covers every
-          // document in the recording.
-          ev.seq = this.rebaseSeq(ev.seq);
-          this.events.push(ev);
-        }
+        this.ingest(body);
       } catch {
         /* malformed beacon — ignore */
       }
     };
+  }
+
+  /** Take one serialized interaction from either transport. */
+  private ingest(body: string): void {
+    try {
+      const ev = JSON.parse(body) as RecordedInteractionEvent;
+      if (ev && typeof ev === 'object') {
+        // Rebase the page-local ordinal onto the session-global counter. Runs
+        // for popups as well as the main page, so one total order covers every
+        // document in the recording.
+        ev.seq = this.rebaseSeq(ev.seq);
+        this.events.push(ev);
+      }
+    } catch {
+      /* malformed event — ignore */
+    }
   }
 
   /**

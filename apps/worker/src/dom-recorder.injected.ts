@@ -68,6 +68,27 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   })();
 
   const emit = (data: any): void => {
+    // Prefer the Playwright binding, which CSP cannot touch.
+    //
+    // The fetch beacon is a network request, so a frame served with
+    // `connect-src 'self'` -- which is how banks serve their embedded apps --
+    // blocks it, and every click inside that frame is lost. An ICICI recording
+    // came back with four clicks for a whole session for exactly this reason:
+    // the statement screens live in an embedded Finacle app, and none of what
+    // the human did in there was ever recorded.
+    //
+    // The beacon stays as the fallback: the binding is installed per context and
+    // an older/odd path may not have it, and a recorder that emits nothing is
+    // far worse than one that emits over a channel a strict CSP may refuse.
+    try {
+      const bind = (w as any).__tabbyRecEmit;
+      if (typeof bind === 'function') {
+        bind(JSON.stringify(data));
+        return;
+      }
+    } catch {
+      /* fall through to the beacon */
+    }
     if (!send) return;
     try {
       send('https://tabby-rec.local/e', JSON.stringify(data));

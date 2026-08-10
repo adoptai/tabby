@@ -70,6 +70,18 @@ const FRAME_HTML = `<!doctype html><html><body>
 
 function startFixture(): Promise<{ server: Server; base: string }> {
   const server = createServer((req, res) => {
+    if (req.url?.startsWith('/finacle-csp')) {
+      // A bank's embedded app, served the way banks serve them: a strict CSP
+      // that permits network calls only back to its own origin. The recorder's
+      // beacon is a fetch to a sentinel host, so connect-src decides whether an
+      // in-frame click can be recorded at all.
+      res.writeHead(200, {
+        'content-type': 'text/html',
+        'content-security-policy': "default-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline'",
+      });
+      res.end(FRAME_HTML);
+      return;
+    }
     if (req.url?.startsWith('/finacle')) {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(FRAME_HTML);
@@ -87,7 +99,7 @@ function startFixture(): Promise<{ server: Server; base: string }> {
       return;
     }
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(APP_HTML);
+    res.end(req.url?.startsWith('/app-csp') ? APP_HTML.replace("'/finacle'", "'/finacle-csp'") : APP_HTML);
   });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
@@ -203,5 +215,57 @@ describe('record → replay reaches the same end state', () => {
     expect(summary.frames?.length).toBeGreaterThan(0);
 
     await context.close();
+  });
+});
+
+/**
+ * Can a click inside a CSP-locked frame be recorded at all?
+ *
+ * The recorder reports each interaction by fetching a sentinel URL, which the
+ * worker reads off page.on('request'). A bank's embedded app typically ships
+ * `connect-src 'self'`, and if that blocks the beacon then in-frame clicks never
+ * reach the bundle — and no amount of frame targeting, download attribution or
+ * gate work downstream matters, because there is nothing recorded to compile.
+ *
+ * This is the one property the plain fixture cannot answer, and the last thing
+ * standing between "proven on a fixture" and "will work on ICICI".
+ */
+describe('recording inside a CSP-locked frame', () => {
+  let server: Server;
+  let base: string;
+  let browser: Browser;
+
+  beforeAll(async () => {
+    ({ server, base } = await startFixture());
+    try {
+      browser = await chromium.launch();
+    } catch {
+      browser = await chromium.launch({ channel: 'chrome' });
+    }
+  });
+
+  afterAll(async () => {
+    await browser?.close();
+    await new Promise((r) => server?.close(() => r(null)));
+  });
+
+  it('captures the in-frame click despite connect-src self', async () => {
+    const context: BrowserContext = await browser.newContext({ acceptDownloads: true });
+    const page: Page = await context.newPage();
+    const runner = new RecordingRunner(page, context, 'sess-csp', 'login', true);
+    await runner.start();
+
+    await page.goto(`${base}/app-csp`);
+    await page.click('#nav-statements');
+    const frame = page.frameLocator('#finacle');
+    await frame.locator('#tab-past').click();
+    await page.waitForTimeout(300);
+
+    const bundle: any = await runner.drain();
+    await context.close();
+
+    const inFrame = (bundle.click_events || []).filter((c: any) => c?.element?.in_iframe);
+    expect(inFrame.length).toBeGreaterThan(0);
+    expect(inFrame[0].element.frame_url).toContain('/finacle-csp');
   });
 });
