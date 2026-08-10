@@ -464,17 +464,23 @@ it('gives a nav div its own text candidate, not a zero count', async () => {
 });
 
 describe('hover that reveals a menu', () => {
-  it('records the hover when the click lands inside what was hovered', async () => {
+  it('records the hover when the click lands on what the hover revealed', async () => {
     // ICICI's top nav opens on hover: hover "Cards", click "Credit Cards".
-    // Only the click was recorded, so nothing in the compiled path opened the
-    // menu and replay dead-ended on that hop.
+    // The revealed item is a SIBLING of the trigger, not a descendant -- which
+    // is why an el.contains(clicked) test answered false and the hover was
+    // never recorded. The compiled skill then clicked "Credit Cards" on a page
+    // where that text only exists once the menu is open, and every operation in
+    // a live replay died on its first step.
     const item = node({ tagName: 'A', textContent: 'Credit Cards' });
-    const menu = node({ tagName: 'DIV', textContent: 'Cards' });
-    (menu as any).contains = (n: any) => n === item;
+    const trigger = node({ tagName: 'DIV', textContent: 'Cards' });
+    (trigger as any).contains = (n: any) => n === trigger;   // NOT the item
+    const nav = node({ tagName: 'NAV', textContent: '' });
+    (nav as any).contains = (n: any) => n === trigger || n === item;
+    (trigger as any).parentElement = nav;
 
-    const h = installRichDom({ actionableNodes: [menu, item] });
+    const h = installRichDom({ actionableNodes: [trigger, item] });
     domRecorderScript({ rich: true });
-    h.listeners.mouseover({ target: menu });
+    h.listeners.mouseover({ target: trigger });
     h.listeners.click(clickOn(item));
     await Promise.resolve();
 
@@ -489,13 +495,34 @@ describe('hover that reveals a menu', () => {
     // A mouse crossing the page is not a menu. Recording every mouseover would
     // bury the bundle in noise.
     const passed = node({ tagName: 'DIV', textContent: 'Offers' });
-    (passed as any).contains = () => false;
     const other = node({ tagName: 'A', textContent: 'Accounts' });
+    const box = node({ tagName: 'DIV', textContent: '' });
+    (box as any).contains = (n: any) => n === passed;        // not `other`
+    (passed as any).parentElement = box;
 
     const h = installRichDom({ actionableNodes: [passed, other] });
     domRecorderScript({ rich: true });
     h.listeners.mouseover({ target: passed });
     h.listeners.click(clickOn(other));
+    await Promise.resolve();
+
+    expect(h.emitted.map((e: any) => e.event_type)).toEqual(['click']);
+    h.teardown();
+  });
+
+  it('does not treat a body-level parent as a reveal', async () => {
+    // Scoping to the body would make every click after any hover a "reveal".
+    // A menu portalled to the body is not detectable this way, and saying
+    // nothing is better than flagging everything.
+    const item = node({ tagName: 'A', textContent: 'Credit Cards' });
+    const trigger = node({ tagName: 'DIV', textContent: 'Cards' });
+    (trigger as any).contains = () => false;
+
+    const h = installRichDom({ actionableNodes: [trigger, item] });
+    (trigger as any).parentElement = (globalThis as any).document.body;
+    domRecorderScript({ rich: true });
+    h.listeners.mouseover({ target: trigger });
+    h.listeners.click(clickOn(item));
     await Promise.resolve();
 
     expect(h.emitted.map((e: any) => e.event_type)).toEqual(['click']);

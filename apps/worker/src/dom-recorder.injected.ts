@@ -746,9 +746,23 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     try {
       const el = actionableAncestor(lastHover.el);
       if (!el || el === clicked) return false;
-      // The click must be INSIDE what was hovered -- clicking the control you
-      // hovered is an ordinary click, not a menu opening.
-      if (!(el.contains && el.contains(clicked))) return false;
+      // Scope is the hovered element's PARENT, not the element itself.
+      //
+      // A revealed menu is almost never a descendant of the thing you hovered:
+      // hovering ICICI's "CARDS" opens a panel that is a SIBLING, so an
+      // el.contains(clicked) test answered false and the hover was never
+      // recorded -- the compiled skill then clicked "Credit Cards" on a page
+      // where that text only exists once the menu is open, and every operation
+      // died on its first step. The dropdown-opener rule hit this same wall and
+      // was fixed the same way; this one was missed.
+      const scope = el.parentElement;
+      if (!scope || scope === document.body || scope === document.documentElement) {
+        // A body-level scope would make every click after any hover a "reveal".
+        // A menu portalled to the body is not detectable this way, and saying
+        // nothing is better than flagging everything.
+        return false;
+      }
+      if (!(scope.contains && scope.contains(clicked))) return false;
       hoverEl = el;
       return true;
     } catch {
