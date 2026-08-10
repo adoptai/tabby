@@ -690,32 +690,37 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   let lastHover: { el: any; at: number } | null = null;
   const HOVER_REVEAL_WINDOW_MS = 5000;
 
+  // mouseover fires on EVERY pixel of mouse movement. Doing anything real here
+  // -- an actionableAncestor walk, as the first version did -- runs a DOM
+  // traversal thousands of times a second in the capture phase and freezes the
+  // page: an ICICI recording locked up right after the nav was used. Store the
+  // raw target and nothing else; the walk happens once, at click time, when we
+  // actually need to know whether the hover revealed anything.
   const handleMouseOver = (e: any): void => {
-    try {
-      const el = actionableAncestor(e.target);
-      if (!el || el === lastHover?.el) return;
-      lastHover = { el: el, at: Date.now() };
-    } catch {
-      /* a hover we cannot resolve is simply not remembered */
-    }
+    lastHover = { el: e.target, at: Date.now() };
   };
 
-  /** Did this hover open something the click then used? */
+  /** Did this hover open something the click then used? Resolved at click time. */
+  let hoverEl: any = null;
   const hoverRevealedTarget = (clicked: any): boolean => {
+    hoverEl = null;
     if (!lastHover || !clicked) return false;
     if (Date.now() - lastHover.at > HOVER_REVEAL_WINDOW_MS) return false;
-    // The click must be INSIDE what was hovered, and not be the hovered thing
-    // itself -- clicking the control you hovered is an ordinary click.
-    if (lastHover.el === clicked) return false;
     try {
-      return !!(lastHover.el.contains && lastHover.el.contains(clicked));
+      const el = actionableAncestor(lastHover.el);
+      if (!el || el === clicked) return false;
+      // The click must be INSIDE what was hovered -- clicking the control you
+      // hovered is an ordinary click, not a menu opening.
+      if (!(el.contains && el.contains(clicked))) return false;
+      hoverEl = el;
+      return true;
     } catch {
       return false;
     }
   };
 
   const emitHoverStep = (): void => {
-    const el = lastHover && lastHover.el;
+    const el = hoverEl;
     if (!el) return;
     const at = stamp();
     const payload: any = {
