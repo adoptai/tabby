@@ -192,7 +192,13 @@ export class RecordingRunner {
     // arrived" or "the thing opened in a new tab", and neither is visible to the
     // capture above: a blob: download never touches the network, and every
     // listener so far is bound to a single Page.
-    if (this.isWorkflow) {
+    // richCapture, NOT isWorkflow. A combined capture is provisioned as a
+    // 'login' session so its HAR stays whole, so gating downloads and popups on
+    // the mode meant the default capture recorded neither. A fixture recording
+    // of a click that downloads a file came back with download_events: [] and no
+    // outcomes at all -- which is why no bank recording ever compiled a download
+    // operation, whatever the attribution window said.
+    if (this.richCapture) {
       this.attachDownloadCapture(this.page, 0);
       this.onPopup = (popup: Page) => this.attachPopupCapture(popup);
       this.context.on('page', this.onPopup);
@@ -452,7 +458,7 @@ export class RecordingRunner {
     if (this.browserDriven && this.isWorkflow) {
       har = stripHarPayloads(har);
     }
-    if (this.isWorkflow) {
+    if (this.richCapture) {
       // Derived from whatever har we are actually shipping, so the outcomes and
       // the entries always agree about which requests exist.
       deriveOutcomes(this.events, this.urlEvents, this.downloadEvents, har);
@@ -478,7 +484,7 @@ export class RecordingRunner {
 
     // Workflow-only addition. A 'login' bundle never carries download_events, so
     // the login compiler sees no new collection to reason about.
-    if (this.isWorkflow) {
+    if (this.richCapture) {
       bundle.download_events = this.downloadEvents;
     }
 
