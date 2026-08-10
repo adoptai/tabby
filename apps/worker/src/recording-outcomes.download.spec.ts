@@ -91,3 +91,25 @@ describe('attributing a download to the click that caused it', () => {
     expect(events[0].outcome.request_count).toBe(0);
   });
 });
+
+it('credits the button that produced the file, not a link named "download" long before it', () => {
+  // The ICICI shape: "download previous statement" is a LINK to the statements
+  // page, 19 events and a cross-host navigation before the file arrived. It beat
+  // #DOWNLOAD_ESTATEMENT_PDF, the unlabelled button that actually produced the
+  // file, so the compiled operation ended at the link — cutting off the period
+  // radio, the year dropdown and the download button.
+  const events = [click(0, 'download previous statement'), click(40_000, '')];
+  run(events, [45_000]);
+
+  expect(events[0].outcome.download).toBe(false);
+  expect(events[1].outcome.download).toBe(true);
+});
+
+it('still lets a label win among clicks that happened together', () => {
+  // The case the preference was for: an Export finished by a Confirm.
+  const events = [click(0, 'Export'), click(900, 'Confirm')];
+  run(events, [9_000]);
+
+  expect(events[0].outcome.download).toBe(true);
+  expect(events[1].outcome.download).toBe(false);
+});

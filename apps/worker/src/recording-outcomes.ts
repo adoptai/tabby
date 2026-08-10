@@ -36,6 +36,14 @@ export const OUTCOME_WINDOW_MS = 2500;
 export const DOWNLOAD_WINDOW_MS = 120_000;
 
 /**
+ * How close two clicks must be for a LABEL to outrank recency.
+ *
+ * Narrow on purpose: this is for an "Export" finished by a "Confirm" a second
+ * later, not for a link clicked before a whole navigation.
+ */
+export const LABEL_TIE_MS = 3_000;
+
+/**
  * Attach to each interaction what actually happened next.
  *
  * Without this the compiler has to INFER causality — which click caused which
@@ -121,15 +129,24 @@ export function deriveOutcomes(
     }
     if (before.length === 0) continue;
 
-    // The most recent click is usually the cause -- an "Export" that opens a
-    // dialog is finished by the "Confirm" inside it. But a human waiting on a
-    // slow export also dismisses banners and closes dialogs, and crediting one
-    // of THOSE yields an operation named "close" that reproduces nothing. So
-    // prefer the most recent candidate whose own label says it starts a
-    // download, and fall back to the most recent when none does.
-    const labelled = before.filter((i) => looksLikeDownloadControl(timed[i].ev));
-    const owner = labelled.length > 0 ? labelled[labelled.length - 1] : before[before.length - 1];
-    downloadOwner.set(owner, true);
+    // RECENCY decides; a label only breaks a near-tie.
+    //
+    // Preferring any labelled candidate was wrong, and an ICICI recording shows
+    // how badly: "download previous statement" is a LINK to the statements page,
+    // 19 events and a cross-host navigation before the file arrived, and it beat
+    // #DOWNLOAD_ESTATEMENT_PDF -- the unlabelled button that actually produced
+    // it. The compiled operation then ended at the link, cutting off the period
+    // radio, the year dropdown and the download button: everything that makes
+    // the download a download.
+    //
+    // A label is weak evidence and recency is strong. So take the most recent
+    // click, and let a label win only among clicks that happened alongside it --
+    // which is the case the preference was for: an "Export" finished by a
+    // "Confirm", or a banner dismissed while the file generated.
+    const newest = before[before.length - 1];
+    const tieBreak = before.filter((i) => timed[newest].t - timed[i].t <= LABEL_TIE_MS);
+    const labelled = tieBreak.filter((i) => looksLikeDownloadControl(timed[i].ev));
+    downloadOwner.set(labelled.length > 0 ? labelled[labelled.length - 1] : newest, true);
   }
 
   for (let i = 0; i < timed.length; i++) {
