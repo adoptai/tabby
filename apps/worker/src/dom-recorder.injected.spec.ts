@@ -443,3 +443,22 @@ describe('domRecorderScript — element evidence', () => {
     h.teardown();
   });
 });
+
+it('gives a nav div its own text candidate, not a zero count', async () => {
+  // ICICI's SPA nav is divs. actionableList() holds buttons, links and inputs,
+  // so counting matches only there returned 0 for a label the element plainly
+  // carries — and the compiler reads 0 as "resolves to nothing" and drops it.
+  // That left "Cards", "Past" and "download previous statement" with a
+  // positional css path and no text to fall back on: exactly the text a
+  // hand-written skill used successfully on the same portal.
+  const navDiv = node({ tagName: 'DIV', textContent: 'Credit Cards' });
+  const h = installRichDom({ actionableNodes: [] });   // nothing "actionable"
+  domRecorderScript({ rich: true });
+  h.listeners.click(clickOn(navDiv));
+  await Promise.resolve();
+
+  const text = h.emitted[0].candidates.find((c: any) => c.kind === 'text');
+  expect(text.value).toBe('Credit Cards');
+  expect(text.match_count).toBe(1);
+  h.teardown();
+});

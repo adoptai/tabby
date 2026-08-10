@@ -500,6 +500,14 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
         for (let i = 0; i < all.length; i++) {
           if (ownLabel(all[i]) === text) n++;
         }
+        // The element carries this label by construction, so a count of zero is
+        // incoherent -- and it is what an ICICI recording produced for "Past"
+        // and "download previous statement": actionableList() holds buttons,
+        // links and inputs, and a bank's SPA nav is divs. The compiler reads 0
+        // as "resolves to nothing" and drops the candidate, which left those
+        // steps with a positional css path and no text to fall back on -- the
+        // very text a hand-written skill used successfully.
+        if (n === 0) n = 1;
         add('text', text, n);
       }
 
