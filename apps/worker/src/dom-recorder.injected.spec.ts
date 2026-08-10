@@ -462,3 +462,57 @@ it('gives a nav div its own text candidate, not a zero count', async () => {
   expect(text.match_count).toBe(1);
   h.teardown();
 });
+
+describe('hover that reveals a menu', () => {
+  it('records the hover when the click lands inside what was hovered', async () => {
+    // ICICI's top nav opens on hover: hover "Cards", click "Credit Cards".
+    // Only the click was recorded, so nothing in the compiled path opened the
+    // menu and replay dead-ended on that hop.
+    const item = node({ tagName: 'A', textContent: 'Credit Cards' });
+    const menu = node({ tagName: 'DIV', textContent: 'Cards' });
+    (menu as any).contains = (n: any) => n === item;
+
+    const h = installRichDom({ actionableNodes: [menu, item] });
+    domRecorderScript({ rich: true });
+    h.listeners.mouseover({ target: menu });
+    h.listeners.click(clickOn(item));
+    await Promise.resolve();
+
+    const kinds = h.emitted.map((e: any) => e.event_type);
+    expect(kinds).toEqual(['hover', 'click']);   // hover FIRST, as replay needs
+    expect(h.emitted[0].text_content).toBe('Cards');
+    expect(h.emitted[1].text_content).toBe('Credit Cards');
+    h.teardown();
+  });
+
+  it('does not record a hover the click did not use', async () => {
+    // A mouse crossing the page is not a menu. Recording every mouseover would
+    // bury the bundle in noise.
+    const passed = node({ tagName: 'DIV', textContent: 'Offers' });
+    (passed as any).contains = () => false;
+    const other = node({ tagName: 'A', textContent: 'Accounts' });
+
+    const h = installRichDom({ actionableNodes: [passed, other] });
+    domRecorderScript({ rich: true });
+    h.listeners.mouseover({ target: passed });
+    h.listeners.click(clickOn(other));
+    await Promise.resolve();
+
+    expect(h.emitted.map((e: any) => e.event_type)).toEqual(['click']);
+    h.teardown();
+  });
+
+  it('does not record a hover on the control that was itself clicked', async () => {
+    const btn = node({ tagName: 'BUTTON', textContent: 'Download' });
+    (btn as any).contains = (n: any) => n === btn;
+
+    const h = installRichDom({ actionableNodes: [btn] });
+    domRecorderScript({ rich: true });
+    h.listeners.mouseover({ target: btn });
+    h.listeners.click(clickOn(btn));
+    await Promise.resolve();
+
+    expect(h.emitted.map((e: any) => e.event_type)).toEqual(['click']);
+    h.teardown();
+  });
+});

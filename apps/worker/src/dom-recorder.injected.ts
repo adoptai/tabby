@@ -661,7 +661,76 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     // Evidence is gathered from the element the human really touched — through
     // any shadow root, then up to the actionable ancestor — which is often not
     // the node `selector` above describes.
+    // If a hover opened what was just clicked, record the hover FIRST so a
+    // replay performs them in the order that works.
+    if (hoverRevealedTarget(target)) {
+      emitHoverStep();
+    }
+    lastHover = null;
+
     enrich(payload, () => realTarget(e));
+    emit(payload);
+  };
+
+  /**
+   * The hover that REVEALED the thing the human then clicked.
+   *
+   * A bank's top nav opens on hover: the human hovers "Cards", the menu appears,
+   * they click "Credit Cards". Only the click was recorded, so the compiled path
+   * had no step that opens the menu -- at replay the item is absent or hidden
+   * and the run dead-ends on exactly the hop that has failed every time. The
+   * recording could not contain what it never observed.
+   *
+   * Recording every mouseover would bury the bundle in mouse noise, so this
+   * keeps the last hovered actionable element and emits it ONLY when the next
+   * click lands on a descendant that the hover plausibly revealed -- the shape
+   * of a menu, not of a mouse crossing the page. Emitted just before the click,
+   * so the two arrive in the order a replay must perform them.
+   */
+  let lastHover: { el: any; at: number } | null = null;
+  const HOVER_REVEAL_WINDOW_MS = 5000;
+
+  const handleMouseOver = (e: any): void => {
+    try {
+      const el = actionableAncestor(e.target);
+      if (!el || el === lastHover?.el) return;
+      lastHover = { el: el, at: Date.now() };
+    } catch {
+      /* a hover we cannot resolve is simply not remembered */
+    }
+  };
+
+  /** Did this hover open something the click then used? */
+  const hoverRevealedTarget = (clicked: any): boolean => {
+    if (!lastHover || !clicked) return false;
+    if (Date.now() - lastHover.at > HOVER_REVEAL_WINDOW_MS) return false;
+    // The click must be INSIDE what was hovered, and not be the hovered thing
+    // itself -- clicking the control you hovered is an ordinary click.
+    if (lastHover.el === clicked) return false;
+    try {
+      return !!(lastHover.el.contains && lastHover.el.contains(clicked));
+    } catch {
+      return false;
+    }
+  };
+
+  const emitHoverStep = (): void => {
+    const el = lastHover && lastHover.el;
+    if (!el) return;
+    const at = stamp();
+    const payload: any = {
+      event_type: 'hover',
+      tag_name: el.tagName || '',
+      element_id: el.id || null,
+      class_name: (typeof el.className === 'string' ? el.className : '') || null,
+      text_content: ownLabel(el) || null,
+      selector: buildRichSelector(el),
+      url: window.location.href,
+      seq: at.seq,
+      event_time: at.eventTime,
+      timestamp: new Date().toISOString(),
+    };
+    enrich(payload, () => el);
     emit(payload);
   };
 
@@ -804,6 +873,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     emit(payload);
   };
 
+  document.addEventListener('mouseover', handleMouseOver, true);
   document.addEventListener('click', handleClick, true);
   document.addEventListener('input', handleInput, true);
   document.addEventListener('change', handleChange, true);
