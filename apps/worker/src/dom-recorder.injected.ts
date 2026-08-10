@@ -682,7 +682,14 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     // differently at replay, so the compiler needs to know not to address it by
     // text. Recorded on the second click, because that is when it becomes true.
     try {
-      if (lastClickEl && lastClickEl !== target && lastClickEl.contains && lastClickEl.contains(target)) {
+      // The previous click's PARENT, not the element itself. A dropdown's
+      // option list is a SIBLING of its trigger, not a child of it: ICICI's
+      // year widget put the trigger at div:nth-of-type(1) and the options at
+      // div:nth-of-type(2) under one shared container, so a `contains` test on
+      // the trigger never fired and the rule was inert. The shared parent is
+      // what actually relates them.
+      const opener = lastClickEl && lastClickEl.parentElement;
+      if (opener && lastClickEl !== target && opener.contains && opener.contains(target)) {
         payload.opened_by_previous = true;
       }
     } catch {

@@ -540,3 +540,39 @@ it('gathers evidence from the labelled element, not an unlabelled container', as
   expect(text.value).toBe('Credit Cards');
   h.teardown();
 });
+
+it('marks a dropdown option as opened by the trigger beside it', async () => {
+  // ICICI's year widget: the trigger is div:nth-of-type(1) and the option list
+  // div:nth-of-type(2), SIBLINGS under one container. A contains() test on the
+  // trigger never fired, so the rule was inert on the case it was written for.
+  const container = node({ tagName: 'DIV', textContent: '' });
+  const trigger = node({ tagName: 'DIV', textContent: 'FY2024-25' });
+  const option = node({ tagName: 'A', textContent: 'FY2025-26' });
+  (trigger as any).parentElement = container;
+  (container as any).contains = (n: any) => n === option || n === trigger;
+
+  const h = installRichDom({ actionableNodes: [trigger, option] });
+  domRecorderScript({ rich: true });
+  h.listeners.click(clickOn(trigger));
+  h.listeners.click(clickOn(option));
+  await Promise.resolve();
+
+  expect(h.emitted[0].opened_by_previous).toBeUndefined();   // the trigger opened nothing
+  expect(h.emitted[1].opened_by_previous).toBe(true);        // the option was opened by it
+  h.teardown();
+});
+
+it('does not relate two clicks that merely share a page', async () => {
+  const a = node({ tagName: 'A', textContent: 'Accounts' });
+  const b = node({ tagName: 'A', textContent: 'Offers' });
+  (a as any).parentElement = { contains: () => false };
+
+  const h = installRichDom({ actionableNodes: [a, b] });
+  domRecorderScript({ rich: true });
+  h.listeners.click(clickOn(a));
+  h.listeners.click(clickOn(b));
+  await Promise.resolve();
+
+  expect(h.emitted[1].opened_by_previous).toBeUndefined();
+  h.teardown();
+});
