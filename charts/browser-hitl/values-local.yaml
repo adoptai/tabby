@@ -144,6 +144,12 @@ config:
   streamProtocol: "ws"
   serviceAuthAllowedTenantIds: "*"
   serviceAuthAllowWildcardTenantScope: "true"
+  # Local only. Registering an agent client (POST /admin/agent-clients) needs
+  # Admin, and agent clients are per-tenant -- so without this there is no way
+  # to mint a NoUI token for a tenant whose profiles were auto-provisioned by a
+  # harness run, and verify_replay cannot be driven from a laptop at all.
+  # Staging and production keep the "Operator" default from values.yaml.
+  serviceAuthAllowedRoles: "Operator,Admin"
   idleShutdownSeconds: "3600"  # Auto-stop per-user sessions after 1h idle
   natsStreamMaxAgeHours: "8"
   minioOrphanMaxAgeHours: "2"
