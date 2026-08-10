@@ -312,7 +312,22 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     try {
       if (el.matches && el.matches(ACTIONABLE)) return el;
       const up = el.closest ? el.closest(ACTIONABLE) : null;
-      return up || el;
+      if (!up) return el;
+      // Do not climb past the label.
+      //
+      // A menu built from bare divs has nothing for ACTIONABLE to stop on, so
+      // the walk ran from the clicked `div.submenu-text` up to the whole nav
+      // container. Evidence was then gathered from the container -- which holds
+      // several items and therefore has no label of its own -- so "Credit Cards"
+      // produced no text candidate, while `text_content`, computed from the
+      // clicked element, said "Credit Cards" all along. The two disagreed about
+      // which element had been clicked, and the compiled step got a positional
+      // path with no text to fall back on: the hop that failed every run.
+      //
+      // If the ancestor cannot name itself and the element can, the element IS
+      // the control as far as anyone reading the page is concerned.
+      if (!ownLabel(up) && ownLabel(el)) return el;
+      return up;
     } catch {
       return el;
     }

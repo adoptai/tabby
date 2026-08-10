@@ -516,3 +516,27 @@ describe('hover that reveals a menu', () => {
     h.teardown();
   });
 });
+
+it('gathers evidence from the labelled element, not an unlabelled container', async () => {
+  // ICICI's nav is bare divs, so ACTIONABLE had nothing to stop on and the walk
+  // ran from the clicked div.submenu-text up to the whole nav box. Evidence came
+  // from the container — which holds several items and has no label — so
+  // "Credit Cards" produced NO text candidate, while text_content (taken from
+  // the clicked element) said "Credit Cards" all along. The two disagreed about
+  // which element was clicked, and the step compiled to a positional path with
+  // nothing to fall back on.
+  const item = node({ tagName: 'DIV', textContent: 'Credit Cards' });
+  const container = node({ tagName: 'DIV', textContent: 'CardsCredit CardsForex Card' });
+  (item as any).closest = () => container;          // ACTIONABLE matches the box
+  (container as any).matches = () => true;
+
+  const h = installRichDom({ actionableNodes: [container, item] });
+  domRecorderScript({ rich: true });
+  h.listeners.click(clickOn(item));
+  await Promise.resolve();
+
+  const text = h.emitted[0].candidates.find((c: any) => c.kind === 'text');
+  expect(text).toBeDefined();
+  expect(text.value).toBe('Credit Cards');
+  h.teardown();
+});
