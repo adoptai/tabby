@@ -18,6 +18,24 @@ import type {
 export const OUTCOME_WINDOW_MS = 2500;
 
 /**
+ * How long after an interaction a DOWNLOAD is still attributed to it.
+ *
+ * Downloads get their own, far longer budget because they are a different kind
+ * of evidence. Request noise needs a tight window — half the clicks on a bank
+ * portal fire XHRs, and crediting them all to one click says nothing. A file
+ * arriving is rare and unambiguous: it happens a handful of times in a
+ * recording, and the last thing the human clicked is the only plausible cause.
+ *
+ * At 2500ms the compiler emitted no download operation for ANY bank recording,
+ * because a statement PDF is generated server-side and arrives five to thirty
+ * seconds after the click. `_terminal_kind` saw no outcome.download, derived no
+ * terminal operation, and the skill came out as read-only — which is how an
+ * ICICI capture compiled to `read_overview` + `read_credit_card` for a session
+ * whose whole point was downloading a statement.
+ */
+export const DOWNLOAD_WINDOW_MS = 120_000;
+
+/**
  * Attach to each interaction what actually happened next.
  *
  * Without this the compiler has to INFER causality — which click caused which
@@ -36,6 +54,21 @@ export const OUTCOME_WINDOW_MS = 2500;
  * be parsed are left without one — an absent outcome means "not known", which is
  * honest, where a zeroed one would read as "nothing happened".
  */
+/** Words that name a control which STARTS a download, in its own label. */
+const DOWNLOAD_WORDS =
+  /\b(download|export|generate|e-?statement|statement|pdf|csv|xls|receipt|invoice)\b/i;
+
+/**
+ * Does this interaction's own label say it starts a download?
+ *
+ * Used only to break ties between several clicks preceding one file. Kept
+ * narrow and label-only: it never CREATES an attribution, it only picks the
+ * better of candidates already inside the window.
+ */
+function looksLikeDownloadControl(ev: { text_content?: string | null }): boolean {
+  return DOWNLOAD_WORDS.test(String(ev.text_content || ''));
+}
+
 export function deriveOutcomes(
   events: RecordedInteractionEvent[],
   urlEvents: RecordedUrlEvent[],
@@ -73,6 +106,32 @@ export function deriveOutcomes(
     })
     .filter((e) => !Number.isNaN(e.start));
 
+  // Assign each download to the LAST interaction at or before it, rather than
+  // asking of each click "did a file arrive in my window". Truncating at the
+  // next interaction is right for traffic and wrong for files: a human waiting
+  // on a slow export clicks other things while it generates, and that must not
+  // orphan the download. One owner per file, so two clicks never both claim it.
+  const downloadOwner = new Map<number, boolean>();
+  for (const d of dls) {
+    // Candidates: every interaction inside the budget before the file arrived.
+    const before: number[] = [];
+    for (let i = 0; i < timed.length; i++) {
+      if (timed[i].t > d) break;
+      if (d - timed[i].t <= DOWNLOAD_WINDOW_MS) before.push(i);
+    }
+    if (before.length === 0) continue;
+
+    // The most recent click is usually the cause -- an "Export" that opens a
+    // dialog is finished by the "Confirm" inside it. But a human waiting on a
+    // slow export also dismisses banners and closes dialogs, and crediting one
+    // of THOSE yields an operation named "close" that reproduces nothing. So
+    // prefer the most recent candidate whose own label says it starts a
+    // download, and fall back to the most recent when none does.
+    const labelled = before.filter((i) => looksLikeDownloadControl(timed[i].ev));
+    const owner = labelled.length > 0 ? labelled[labelled.length - 1] : before[before.length - 1];
+    downloadOwner.set(owner, true);
+  }
+
   for (let i = 0; i < timed.length; i++) {
     const { ev, t } = timed[i];
 
@@ -87,6 +146,8 @@ export function deriveOutcomes(
     const nav = urls.find((x) => inWindow(x.t));
     const fired = entries.filter((e) => inWindow(e.start));
 
+
+
     let settled: number | null = null;
     if (fired.length > 0) {
       let last = 0;
@@ -99,7 +160,7 @@ export function deriveOutcomes(
       to_url: nav ? nav.u.to_url : null,
       request_count: fired.length,
       settled_ms: settled,
-      download: dls.some(inWindow),
+      download: downloadOwner.get(i) === true,
     };
   }
 }
