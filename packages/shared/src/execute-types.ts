@@ -45,6 +45,13 @@ export const EXECUTE_LIMITS = {
 
 export const BROWSER_COMMANDS = [
   'navigate', 'click_element', 'click_by_text', 'click_at',
+  // hover opens what a click then uses: a bank nav whose submenu only exists
+  // while the pointer is over the parent. The recorder captures it and the
+  // worker has handled it for a while, but this list did not -- so every
+  // compiled hover step came back 400 Invalid command and the menu never
+  // opened. The list is the API's allowlist; a command missing here cannot
+  // reach the worker at all.
+  'hover',
   'type_text', 'type_into_label', 'press_key',
   'set_checked', 'select_option',
   'get_page_summary', 'get_page_info', 'screenshot',
