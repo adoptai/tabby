@@ -676,6 +676,20 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     // Evidence is gathered from the element the human really touched — through
     // any shadow root, then up to the actionable ancestor — which is often not
     // the node `selector` above describes.
+    // Did the PREVIOUS click open what this one lands on? A dropdown shows its
+    // current value, you click that to open it, then click the option you want.
+    // The opener's label is the widget's VALUE -- "FY2024-25" -- which will read
+    // differently at replay, so the compiler needs to know not to address it by
+    // text. Recorded on the second click, because that is when it becomes true.
+    try {
+      if (lastClickEl && lastClickEl !== target && lastClickEl.contains && lastClickEl.contains(target)) {
+        payload.opened_by_previous = true;
+      }
+    } catch {
+      /* an unresolvable relation is simply not asserted */
+    }
+    lastClickEl = target;
+
     // If a hover opened what was just clicked, record the hover FIRST so a
     // replay performs them in the order that works.
     if (hoverRevealedTarget(target)) {
@@ -703,6 +717,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * so the two arrive in the order a replay must perform them.
    */
   let lastHover: { el: any; at: number } | null = null;
+  let lastClickEl: any = null;
   const HOVER_REVEAL_WINDOW_MS = 5000;
 
   // mouseover fires on EVERY pixel of mouse movement. Doing anything real here
