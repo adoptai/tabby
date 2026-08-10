@@ -178,7 +178,18 @@ async function main() {
     const browserPolicy = appConfig.browser_policy || { downloads: false, clipboard: false, file_chooser: false };
     const recordingMode = (browserPolicy as { recording_mode?: RecordingMode }).recording_mode;
     const browserDriven = Boolean((browserPolicy as { browser_driven?: boolean }).browser_driven);
-    const downloadsEnabled = browserPolicy.downloads === true;
+    // Downloads are ALWAYS on while recording, whatever the policy says.
+    //
+    // Playwright silently cancels a download unless acceptDownloads is set at
+    // context creation, so an opt-in default meant a human recording a bank
+    // statement clicked Download and nothing happened -- no file, no download
+    // event, no outcome, and so no download operation could ever be compiled.
+    // A recording exists to capture what the human did; refusing the one action
+    // the whole session was booked for throws the session away.
+    //
+    // Runtime sessions keep the policy: whether an installed skill may pull
+    // files down is a real decision, and this is not the place to make it.
+    const downloadsEnabled = browserPolicy.downloads === true || Boolean(recordingMode);
 
     context = await browser.newContext({
       // VNC: null viewport => the page fills the actual browser window (which we
