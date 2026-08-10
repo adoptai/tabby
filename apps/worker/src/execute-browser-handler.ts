@@ -368,7 +368,47 @@ export async function dispatchCommand(
  * a DOM dispatch cannot help and would just burn a second timeout, so those
  * re-throw unchanged.
  */
+/**
+ * How long to wait before deciding a locator matches NOTHING.
+ *
+ * A control that exists appears within a second or two of the page settling; a
+ * locator that is simply wrong never appears at all, and waiting the full
+ * command timeout for it is pure delay. A replay driving a handful of wrong
+ * selectors spent thirty seconds on each and looked, from outside, like it had
+ * hung -- ten minutes of a live session to learn nothing the first two seconds
+ * would not have told us.
+ *
+ * Generous enough that a slow bank page is never mistaken for a bad selector.
+ */
+const ZERO_MATCH_GRACE_MS = 4_000;
+
+/** True when the locator still matches nothing after a short grace period. */
+async function matchesNothing(target: any, timeoutMs: number): Promise<boolean> {
+  const grace = Math.min(ZERO_MATCH_GRACE_MS, timeoutMs);
+  const deadline = Date.now() + grace;
+  for (;;) {
+    try {
+      if (typeof target.count === 'function') {
+        if ((await target.count()) > 0) return false;
+      } else {
+        return false; // not a locator we can count; let the click decide
+      }
+    } catch {
+      return false;
+    }
+    if (Date.now() >= deadline) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 async function clickThroughOverlays(target: any, timeoutMs: number): Promise<void> {
+  if (await matchesNothing(target, timeoutMs)) {
+    throw new Error(
+      'nothing on the page matches this control. Read the page (get_page_summary) ' +
+        'and address something that is actually there — waiting longer will not ' +
+        'make it appear, and if the content sits in an embedded frame, pass frame_url.',
+    );
+  }
   try {
     await target.click({ timeout: timeoutMs });
   } catch (err) {
