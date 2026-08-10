@@ -224,6 +224,44 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     return String(v).replace(/["\\]/g, '\\$&');
   };
 
+  /**
+   * The element's OWN visible label — never its subtree's aggregated text.
+   *
+   * `textContent` concatenates every descendant, so when a click resolves to a
+   * container the "label" became the whole menu: an ICICI recording compiled
+   * `click_by_text "CardsCards Credit CardsForex CardPrepaid Card"`, which can
+   * never match, and every replay attempt burned a 30-second timeout.
+   *
+   * Direct text nodes are the element's own words. A wrapper with exactly one
+   * element child is still a label (`<button><span>Download</span></button>`);
+   * anything with several text-bearing children is a container, and a container
+   * has no label to click by.
+   */
+  const ownLabel = (el: any): string | null => {
+    try {
+      const kids = el.childNodes || [];
+      // A node with no children owns whatever text it has — it is a leaf.
+      if (!kids.length) {
+        const leaf = normText(el.textContent);
+        return leaf ? leaf.slice(0, 120) : null;
+      }
+      let own = '';
+      for (let i = 0; i < kids.length; i++) {
+        if (kids[i] && kids[i].nodeType === 3) own += kids[i].textContent || '';
+      }
+      own = normText(own);
+      if (own) return own.slice(0, 120);
+      const els = el.children || [];
+      if (els.length === 1) {
+        const inner = normText(els[0].textContent);
+        return inner ? inner.slice(0, 120) : null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
   const countCss = (sel: string): number => {
     try {
       return document.querySelectorAll(sel).length;
@@ -332,15 +370,15 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       const title = el.getAttribute ? el.getAttribute('title') : null;
       if (title && title.trim()) return title.trim().slice(0, 120);
 
-      const tag = (el.tagName || '').toLowerCase();
+    
+  const tag = (el.tagName || '').toLowerCase();
       const type = String(el.type || '').toLowerCase();
       if (tag === 'input' && (type === 'submit' || type === 'button' || type === 'reset')) {
         const v = normText(el.value);
         if (v) return v.slice(0, 120);
       }
 
-      const text = normText(el.textContent);
-      return text ? text.slice(0, 120) : null;
+      return ownLabel(el);
     } catch {
       return null;
     }
@@ -453,12 +491,14 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
         }
       }
 
-      const text = normText(el.textContent).slice(0, 120);
+      // Own label only — a container's concatenated subtree is not something a
+      // replay can click by text.
+      const text = ownLabel(el);
       if (text) {
         let n = 0;
         const all = actionableList();
         for (let i = 0; i < all.length; i++) {
-          if (normText(all[i].textContent).slice(0, 120) === text) n++;
+          if (ownLabel(all[i]) === text) n++;
         }
         add('text', text, n);
       }
@@ -592,7 +632,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       tag_name: target.tagName || '',
       element_id: target.id || null,
       class_name: (typeof target.className === 'string' ? target.className : '') || null,
-      text_content: (target.textContent || '').trim().slice(0, 100) || null,
+      text_content: ownLabel(target) || null,
       href: target.href || null,
       selector: buildRichSelector(target),
       url: window.location.href,
