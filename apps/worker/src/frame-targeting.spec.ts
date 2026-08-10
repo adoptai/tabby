@@ -16,11 +16,20 @@ function makeFrame(url: string, name = '') {
     url: () => url,
     name: () => name,
     _clicked: clicked,
+    // Mirrors the parts of a Playwright locator these commands touch — count()
+    // included, since resolution now asks whether anything matched before
+    // falling back to the recording's other candidates.
     locator: (sel: string) => ({
+      count: async () => 1,
       filter: () => ({ count: async () => 1, first: () => frame._el(sel) }),
       first: () => frame._el(sel),
       fill: async (t: string) => clicked.push(`fill:${sel}=${t}`),
       waitFor: async () => clicked.push(`wait:${sel}`),
+    }),
+    getByText: (t: string) => ({
+      count: async () => 1,
+      filter: () => ({ count: async () => 1, first: () => frame._el(`text=${t}`) }),
+      first: () => frame._el(`text=${t}`),
     }),
     _el: (sel: string) => ({
       click: async () => clicked.push(`click:${sel}`),
@@ -132,5 +141,77 @@ describe('get_page_summary and frames', () => {
     const summary: any = await dispatchCommand(page, 'get_page_summary', {}, 1000);
     expect(summary.frames).toBeUndefined();
     expect(summary.frames_note).toBeUndefined();
+  });
+});
+
+/**
+ * When the compiled selector dies, the recording's other candidates are tried.
+ *
+ * ICICI's nav is icon divs, so the winning candidate is a positional css path,
+ * and one shifted node kills every nav step — while a hand-written skill
+ * clicking the same controls by TEXT worked on the same portal. The text was
+ * recorded alongside the path and thrown away at compile time.
+ */
+function pageWithOnly(present: string) {
+  const clicked: string[] = [];
+  // A real locator.first() answers count(), which is how the zero-match
+  // fast-fail decides a control simply is not there.
+  const mk = (sel: string) => ({
+    count: async () => (sel === present ? 1 : 0),
+    click: async () => clicked.push(`click:${sel}`),
+    scrollIntoViewIfNeeded: async () => undefined,
+    boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
+  });
+  const loc = (sel: string, n: number) => ({
+    count: async () => n,
+    filter: () => ({ count: async () => n, first: () => mk(sel) }),
+    first: () => mk(sel),
+  });
+  const page: any = {
+    _clicked: clicked,
+    mainFrame: () => page,
+    frames: () => [page],
+    locator: (sel: string) => loc(sel, sel === present ? 1 : 0),
+    getByText: (t: string) => loc(`text=${t}`, `text=${t}` === present ? 1 : 0),
+  };
+  return page;
+}
+
+describe('falling back to the recording’s other candidates', () => {
+  it('clicks by text when the compiled css path no longer matches', async () => {
+    const page = pageWithOnly('text=Cards');
+
+    const res: any = await dispatchCommand(
+      page,
+      'click_element',
+      {
+        selector: '#scroll-container > div > div:nth-of-type(5)',
+        fallbacks: [{ selector: '#gone' }, { text: 'Cards' }],
+      },
+      1000,
+    );
+
+    expect(page._clicked).toContain('click:text=Cards');
+    // And it says which one worked, so a repair pass can promote it.
+    expect(res.used_fallback).toBe('text=Cards');
+  });
+
+  it('uses the compiled selector when it still matches, and reports no fallback', async () => {
+    const page = pageWithOnly('#ok');
+    const res: any = await dispatchCommand(
+      page,
+      'click_element',
+      { selector: '#ok', fallbacks: [{ text: 'Cards' }] },
+      1000,
+    );
+    expect(page._clicked).toContain('click:#ok');
+    expect(res.used_fallback).toBeUndefined();
+  });
+
+  it('still refuses when neither the selector nor any fallback matches', async () => {
+    const page = pageWithOnly('#something-else');
+    await expect(
+      dispatchCommand(page, 'click_element', { selector: '#a', fallbacks: [{ text: 'B' }] }, 1000),
+    ).rejects.toThrow(/nothing on the page matches/);
   });
 });

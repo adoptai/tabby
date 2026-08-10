@@ -166,11 +166,10 @@ export async function dispatchCommand(
       // Same visible-first + overlay handling as click_by_text: a selector can
       // match hidden analytics/off-screen copies (strict-mode violation), and the
       // sticky-banner interception is not text-specific.
-      const all = resolveScope(page, params).locator(selector);
-      const vis = all.filter({ visible: true });
-      const el = (await vis.count()) > 0 ? vis.first() : all.first();
-      await clickThroughOverlays(el, timeoutMs);
-      return {};
+      const scope = resolveScope(page, params);
+      const el = await firstMatching(scope, selector, params);
+      await clickThroughOverlays(el.locator, timeoutMs);
+      return el.usedFallback ? { used_fallback: el.usedFallback } : {};
     }
 
     case 'click_by_text': {
@@ -399,6 +398,67 @@ async function matchesNothing(target: any, timeoutMs: number): Promise<boolean> 
     if (Date.now() >= deadline) return true;
     await new Promise((r) => setTimeout(r, 250));
   }
+}
+
+/**
+ * The recorded control, by the first way of addressing it that actually matches.
+ *
+ * The recorder ranks several ways to name a control -- id, aria-label, visible
+ * text, css path -- and the compiler commits to one. On a portal whose nav is
+ * icon divs the winner is a positional css path, and one shifted node kills the
+ * step even though the text that would have worked was recorded alongside it.
+ * An ICICI replay failed every nav step this way while a hand-written skill
+ * clicking the same controls by text worked.
+ *
+ * So try the alternatives the recording carries, in the order it ranked them,
+ * and report which one was used so a repair pass can promote it. This is cheap
+ * because a locator that matches nothing now fails in seconds rather than
+ * waiting out the command timeout.
+ */
+async function firstMatching(
+  scope: Page | Frame,
+  selector: string,
+  params: Record<string, any>,
+): Promise<{ locator: any; usedFallback?: string }> {
+  const visibleFirst = (loc: any) => {
+    const vis = loc.filter({ visible: true });
+    return { loc, vis };
+  };
+
+  const primary = scope.locator(selector);
+  const { vis } = visibleFirst(primary);
+  if ((await primary.count()) > 0) {
+    return { locator: (await vis.count()) > 0 ? vis.first() : primary.first() };
+  }
+
+  const fallbacks = Array.isArray(params.fallbacks) ? params.fallbacks : [];
+  for (const fb of fallbacks) {
+    if (!fb || typeof fb !== 'object') continue;
+    let loc: any = null;
+    let label = '';
+    if (typeof fb.selector === 'string' && fb.selector) {
+      loc = scope.locator(fb.selector);
+      label = fb.selector;
+    } else if (typeof fb.text === 'string' && fb.text) {
+      loc = scope.getByText(fb.text, { exact: true });
+      label = `text=${fb.text}`;
+    }
+    if (!loc) continue;
+    try {
+      if ((await loc.count()) > 0) {
+        const v = loc.filter({ visible: true });
+        return {
+          locator: (await v.count()) > 0 ? v.first() : loc.first(),
+          usedFallback: label,
+        };
+      }
+    } catch {
+      /* a malformed fallback is not a reason to stop trying the others */
+    }
+  }
+
+  // Nothing matched: hand back the primary so the caller reports it by name.
+  return { locator: primary.first() };
 }
 
 async function clickThroughOverlays(target: any, timeoutMs: number): Promise<void> {
