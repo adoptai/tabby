@@ -43,12 +43,24 @@ const APP_HTML = `<!doctype html><html><body>
   </script>
 </body></html>`;
 
+// The download only works after the tab and the period are chosen — the shape
+// of every bank statement screen, and what a single-click compile lost.
 const FRAME_HTML = `<!doctype html><html><body>
-  <button id="PDF_Download">Download Statement</button>
+  <button id="tab-past">Past Statements</button>
+  <button id="period-annual" disabled>Annual</button>
+  <button id="PDF_Download" disabled>Download Statement</button>
   <script>
+    var period = '';
+    document.getElementById('tab-past').addEventListener('click', function () {
+      document.getElementById('period-annual').disabled = false;
+    });
+    document.getElementById('period-annual').addEventListener('click', function () {
+      period = 'annual';
+      document.getElementById('PDF_Download').disabled = false;
+    });
     document.getElementById('PDF_Download').addEventListener('click', function () {
       var a = document.createElement('a');
-      a.href = '/statement.pdf';                          // server delays it
+      a.href = '/statement.pdf?period=' + period;         // server delays it
       a.download = 'statement.pdf';
       document.body.appendChild(a);
       a.click();
@@ -123,6 +135,8 @@ describe('record → replay reaches the same end state', () => {
     await page.goto(`${base}/app`);
     await page.click('#nav-statements');                       // SPA route change
     const frame = page.frameLocator('#finacle');
+    await frame.locator('#tab-past').click();                  // lead-in: the tab
+    await frame.locator('#period-annual').click();             // lead-in: the period
     const downloadPromise = page.waitForEvent('download', { timeout: 30_000 });
     await frame.locator('#PDF_Download').click();              // the click that matters
     await downloadPromise;
@@ -148,6 +162,12 @@ describe('record → replay reaches the same end state', () => {
     // 3. the file itself was recorded, which is what a compiled download
     //    operation asserts on at replay.
     expect((bundle.download_events || []).length).toBeGreaterThan(0);
+
+    // 4. the clicks that DECIDE what is downloaded are recorded before it, in
+    //    order — a download compiled from the last click alone would replay
+    //    against a disabled button.
+    const frameClicks = clicks.filter((c: any) => c?.element?.in_iframe);
+    expect(frameClicks.length).toBeGreaterThanOrEqual(3);
   });
 
   it('replays those steps and reaches the same end state — the file arrives', async () => {
@@ -163,7 +183,11 @@ describe('record → replay reaches the same end state', () => {
 
     await dispatchCommand(page, 'navigate', { url: `${base}/app` }, 15_000);
     await dispatchCommand(page, 'click_by_text', { text: 'Statements', exact: true }, 15_000);
-    await dispatchCommand(page, 'wait_for_selector', { selector: '#PDF_Download', frame_url: frameUrl }, 15_000);
+    await dispatchCommand(page, 'wait_for_selector', { selector: '#tab-past', frame_url: frameUrl }, 15_000);
+    // The lead-in the compiler now emits. Without these the download button is
+    // disabled and no file arrives, which is the whole point of keeping them.
+    await dispatchCommand(page, 'click_element', { selector: '#tab-past', frame_url: frameUrl }, 15_000);
+    await dispatchCommand(page, 'click_element', { selector: '#period-annual', frame_url: frameUrl }, 15_000);
     const waitDownload = page.waitForEvent('download', { timeout: 30_000 });
     await dispatchCommand(page, 'click_element', { selector: '#PDF_Download', frame_url: frameUrl }, 15_000);
     await waitDownload;
