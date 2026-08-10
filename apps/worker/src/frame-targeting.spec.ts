@@ -273,3 +273,50 @@ describe('when nothing matches, say what is there', () => {
     ).rejects.toThrow(/no addressable controls to suggest/);
   });
 });
+
+
+describe('hover opens what the next click needs', () => {
+  it('hovers the named control, including inside a frame', async () => {
+    const hovered: string[] = [];
+    const mk = (sel: string) => ({
+      count: async () => 1,
+      hover: async () => hovered.push(`hover:${sel}`),
+      click: async () => undefined,
+      scrollIntoViewIfNeeded: async () => undefined,
+      boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    });
+    const loc = (sel: string) => ({
+      count: async () => 1,
+      filter: () => ({ count: async () => 1, first: () => mk(sel) }),
+      first: () => mk(sel),
+    });
+    const frame: any = { url: () => 'https://finacle.test/x', name: () => '', locator: loc, getByText: loc };
+    const page: any = {
+      mainFrame: () => page,
+      frames: () => [page, frame],
+      locator: loc,
+      getByText: loc,
+    };
+
+    await dispatchCommand(page, 'hover', { selector: '#nav-cards' }, 1000);
+    expect(hovered).toContain('hover:#nav-cards');
+
+    await dispatchCommand(
+      page, 'hover', { selector: '#menu', frame_url: 'https://finacle.test/x' }, 1000,
+    );
+    expect(hovered).toContain('hover:#menu');
+  });
+
+  it('refuses to hover a control that is not there, listing what is', async () => {
+    const page: any = {
+      mainFrame: () => page,
+      frames: () => [page],
+      locator: () => ({ count: async () => 0, filter: () => ({ count: async () => 0, first: () => ({ count: async () => 0 }) }), first: () => ({ count: async () => 0 }) }),
+      getByText: () => ({ count: async () => 0, filter: () => ({ count: async () => 0, first: () => ({}) }), first: () => ({}) }),
+      evaluate: async () => ({ elements: [{ text: 'Cards', selector: '#cards' }] }),
+    };
+    await expect(
+      dispatchCommand(page, 'hover', { selector: '#gone' }, 1000),
+    ).rejects.toThrow(/nothing on the page matches.*Cards/s);
+  });
+});

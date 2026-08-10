@@ -161,6 +161,24 @@ export async function dispatchCommand(
       return { url: page.url(), title: await page.title() };
     }
 
+    case 'hover': {
+      // Opening a menu that only appears on hover.
+      //
+      // A bank's top nav reveals its items on hover, so the click that follows
+      // targets something that does not exist until the pointer is over the
+      // parent. Playwright's click moves a real mouse, but only to the element
+      // it is clicking -- nothing opens the parent first, and the run dead-ends
+      // on a control that is absent or hidden.
+      const selector = requireParam(params, 'selector', 'string');
+      const scope = resolveScope(page, params);
+      const el = await firstMatching(scope, selector, params);
+      if (!el.matched) {
+        throw new Error(await noMatchMessage(page, scope, selector, params));
+      }
+      await el.locator.hover({ timeout: timeoutMs });
+      return el.usedFallback ? { used_fallback: el.usedFallback } : {};
+    }
+
     case 'click_element': {
       const selector = requireParam(params, 'selector', 'string');
       // Same visible-first + overlay handling as click_by_text: a selector can
