@@ -151,6 +151,13 @@ config:
   publicBaseUrl: "http://localhost:18080"
   streamHost: "localhost:18080"
   streamProtocol: "ws"
+  # An hour locally, against the 600s default. A viewer link is handed over for
+  # a human to sign in with, and ten minutes is shorter than the gap between
+  # "here is the link" and someone getting to it -- three links lapsed unused in
+  # one session, each costing a mint-and-resend round trip. Staging and
+  # production keep the short default from values.yaml: a link that reaches a
+  # real member's inbox should not stay live for an hour.
+  streamTtlSeconds: "3600"
   serviceAuthAllowedTenantIds: "*"
   serviceAuthAllowWildcardTenantScope: "true"
   # Local only. Registering an agent client (POST /admin/agent-clients) needs
