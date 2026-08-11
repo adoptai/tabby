@@ -130,7 +130,7 @@ function resolveScope(page: Page, params: Record<string, any>): Page | Frame {
   );
 }
 
-async function resolveOne(page: Page | Frame, params: Record<string, any>) {
+export async function resolveOne(page: Page | Frame, params: Record<string, any>) {
   if (typeof params.selector === 'string' && params.selector) {
     const all = page.locator(params.selector);
     // Visible-first, but fall back to the first match: the whole point of
@@ -141,7 +141,21 @@ async function resolveOne(page: Page | Frame, params: Record<string, any>) {
   if (typeof params.label === 'string' && params.label) {
     return page.getByLabel(params.label).first();
   }
-  throw new Error('Provide either "selector" or "label" to identify the control');
+  // role + accessible name, which is sometimes the ONLY unique handle.
+  //
+  // ICICI's Monthly and Annual radios share an id AND a name, so no selector
+  // picks one of them: the recorder's only unique candidate was
+  // `role_name: radio|Annual`. Without this the step fell back to clicking the
+  // label text, which reported success while the form stayed on Monthly -- and
+  // the replay downloaded a monthly statement while asking for the annual one.
+  if (typeof params.role === 'string' && params.role && typeof params.name === 'string') {
+    return page
+      .getByRole(params.role as Parameters<Page['getByRole']>[0], { name: params.name, exact: true })
+      .first();
+  }
+  throw new Error(
+    'Provide "selector", "label", or "role" + "name" to identify the control',
+  );
 }
 
 export async function dispatchCommand(

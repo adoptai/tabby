@@ -1,5 +1,5 @@
 import { BROWSER_COMMANDS, EXECUTE_LIMITS } from '@browser-hitl/shared';
-import { dispatchCommand, registerBrowserHandler, requireVisible } from './execute-browser-handler';
+import { dispatchCommand, registerBrowserHandler, requireVisible, resolveOne } from './execute-browser-handler';
 
 // A minimal Playwright Locator/Page mock that records how click_by_text resolves
 // its target. getByText → filter({visible}) → nth → click is the chain we assert.
@@ -440,5 +440,46 @@ describe('the recorded settle decides how long an invisible control gets', () =>
   it('caps a pathological recording', async () => {
     await requireVisible(target, 60_000, 90_000);
     expect(waited[0]).toBe(15_000);
+  });
+});
+
+describe('set_checked by role and accessible name', () => {
+  // ICICI's Monthly and Annual radios share an id AND a name, so no selector
+  // picks one of them. The recorder's only unique candidate was
+  // `role_name: radio|Annual`.
+  function fakePage() {
+    const calls: any[] = [];
+    const locator = { first: () => locator, filter: () => locator, count: async () => 1 };
+    return {
+      calls,
+      getByRole: (role: string, opts: any) => {
+        calls.push(['getByRole', role, opts]);
+        return locator;
+      },
+      getByLabel: (l: string) => {
+        calls.push(['getByLabel', l]);
+        return locator;
+      },
+      locator: (sel: string) => {
+        calls.push(['locator', sel]);
+        return locator;
+      },
+    } as any;
+  }
+
+  it('resolves a radio by its role and name', async () => {
+    const page = fakePage();
+    await resolveOne(page, { role: 'radio', name: 'Annual' });
+    expect(page.calls[0]).toEqual(['getByRole', 'radio', { name: 'Annual', exact: true }]);
+  });
+
+  it('prefers an explicit selector when one is given', async () => {
+    const page = fakePage();
+    await resolveOne(page, { selector: '#x', role: 'radio', name: 'Annual' });
+    expect(page.calls[0][0]).toBe('locator');
+  });
+
+  it('says what it accepts when nothing identifies the control', async () => {
+    await expect(resolveOne(fakePage(), {})).rejects.toThrow(/role.*name/i);
   });
 });
