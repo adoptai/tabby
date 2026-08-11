@@ -374,7 +374,25 @@ export async function dispatchCommand(
     }
 
     case 'get_page_info': {
-      return { url: page.url(), title: await page.title() };
+      // ready_state, because "where are you" is not "are you ready".
+      //
+      // A caller deciding whether it may act next had only the URL to go on,
+      // and a form postback re-renders WITHOUT changing it: ICICI's statement
+      // portal answered a click while still processing the previous one, kept
+      // the earlier selection, and showed "we are unable to process your
+      // request". Clicking a page that has not finished loading is not a
+      // faster click, it is a lost one.
+      //
+      // Additive: url and title are unchanged for every existing caller.
+      let readyState = 'unknown';
+      try {
+        readyState = await page.evaluate(() => document.readyState);
+      } catch {
+        // Mid-navigation the execution context is destroyed — which is itself
+        // the answer, so report it rather than failing the command.
+        readyState = 'loading';
+      }
+      return { url: page.url(), title: await page.title(), ready_state: readyState };
     }
 
     case 'screenshot': {
