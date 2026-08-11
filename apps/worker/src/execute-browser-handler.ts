@@ -202,6 +202,27 @@ export async function dispatchCommand(
       // match hidden analytics/off-screen copies (strict-mode violation), and the
       // sticky-banner interception is not text-specific.
       const scope = resolveScope(page, params);
+
+      // hover_first: do the whole gesture in ONE command.
+      //
+      // A menu that only exists while the pointer rests on its trigger cannot
+      // survive an HTTP round trip. Measured on ICICI: hover returned ok, and
+      // the submenu was not visible on any subsequent call -- checked at 1s, 2s,
+      // 3s and 4s. As two commands the click was racing the menu closing, which
+      // looked like a timing problem and got "fixed" twice by waiting LONGER,
+      // the exact opposite of the cure.
+      //
+      // Held here: the pointer is still on the trigger when the target resolves,
+      // because nothing returns to the caller in between.
+      const hoverFirst = typeof params.hover_first === 'string' ? params.hover_first : '';
+      if (hoverFirst) {
+        const opener = await firstMatching(scope, hoverFirst, { ...params, selector: hoverFirst });
+        if (!opener.matched) {
+          throw new Error(await noMatchMessage(page, scope, hoverFirst, params));
+        }
+        await opener.locator.hover({ timeout: timeoutMs });
+      }
+
       const el = await firstMatching(scope, selector, params);
       if (!el.matched) {
         throw new Error(await noMatchMessage(page, scope, selector, params));
