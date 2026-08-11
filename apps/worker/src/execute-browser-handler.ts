@@ -161,6 +161,22 @@ export async function dispatchCommand(
       return { url: page.url(), title: await page.title() };
     }
 
+    case 'go_back': {
+      // Returning to an earlier page WITHOUT a full load.
+      //
+      // A recorded journey can cross origins -- ICICI's statement portal is a
+      // different host from the net-banking SPA -- and once there, nothing on
+      // the page links back to the landing page. `navigate` is refused on these
+      // apps because a full load destroys the session, so a replay that needed
+      // to start its next operation from the beginning had no way home at all.
+      //
+      // History is that way: same tab, same cookies, and for an in-app SPA hop
+      // it is a client-side pop rather than a load.
+      const before = page.url();
+      const resp = await page.goBack({ timeout: timeoutMs });
+      return { url: page.url(), moved: page.url() !== before, had_entry: resp !== null };
+    }
+
     case 'hover': {
       // Opening a menu that only appears on hover.
       //

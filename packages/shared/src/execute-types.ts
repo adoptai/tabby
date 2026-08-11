@@ -52,6 +52,9 @@ export const BROWSER_COMMANDS = [
   // opened. The list is the API's allowlist; a command missing here cannot
   // reach the worker at all.
   'hover',
+  // Walking history home. The only way back to the entry page on an app that
+  // forbids navigate and whose deep pages link nowhere near it.
+  'go_back',
   'type_text', 'type_into_label', 'press_key',
   'set_checked', 'select_option',
   'get_page_summary', 'get_page_info', 'screenshot',
