@@ -191,7 +191,7 @@ export async function dispatchCommand(
       if (!el.matched) {
         throw new Error(await noMatchMessage(page, scope, selector, params));
       }
-      await requireVisible(el.locator, timeoutMs);
+      await requireVisible(el.locator, timeoutMs, Number(params.settle_ms) || 0);
       await el.locator.hover({ timeout: timeoutMs });
       return el.usedFallback ? { used_fallback: el.usedFallback } : {};
     }
@@ -206,7 +206,7 @@ export async function dispatchCommand(
       if (!el.matched) {
         throw new Error(await noMatchMessage(page, scope, selector, params));
       }
-      await clickThroughOverlays(el.locator, timeoutMs);
+      await clickThroughOverlays(el.locator, timeoutMs, Number(params.settle_ms) || 0);
       return el.usedFallback ? { used_fallback: el.usedFallback } : {};
     }
 
@@ -434,10 +434,21 @@ export async function dispatchCommand(
 const INVISIBLE_GRACE_MS = 3_000;
 
 /** Stop early when a control exists but stays hidden, instead of retrying into it. */
-export async function requireVisible(target: any, timeoutMs: number): Promise<void> {
+export async function requireVisible(
+  target: any,
+  timeoutMs: number,
+  settleMs = 0,
+): Promise<void> {
   if (typeof target.waitFor !== 'function') return;
+  // The RECORDING knows how long this control took to appear. ICICI's nav
+  // submenu was measured at 4322ms; the flat 3s grace gave up while it was
+  // still animating open, and the click after a successful hover failed as
+  // "on the page but not visible". A measurement of this app on this
+  // connection beats a constant -- the constant is the floor, and the cap
+  // keeps one slow recording from stalling every step.
+  const grace = Math.min(Math.max(INVISIBLE_GRACE_MS, settleMs), timeoutMs, 15000);
   try {
-    await target.waitFor({ state: 'visible', timeout: Math.min(INVISIBLE_GRACE_MS, timeoutMs) });
+    await target.waitFor({ state: 'visible', timeout: grace });
   } catch {
     throw new Error(
       'this control is on the page but not visible, so acting on it would either ' +
@@ -593,7 +604,11 @@ async function noMatchMessage(
   );
 }
 
-async function clickThroughOverlays(target: any, timeoutMs: number): Promise<void> {
+async function clickThroughOverlays(
+  target: any,
+  timeoutMs: number,
+  settleMs = 0,
+): Promise<void> {
   if (await matchesNothing(target, timeoutMs)) {
     throw new Error(
       'nothing on the page matches this control. Read the page (get_page_summary) ' +
@@ -601,7 +616,7 @@ async function clickThroughOverlays(target: any, timeoutMs: number): Promise<voi
         'make it appear, and if the content sits in an embedded frame, pass frame_url.',
     );
   }
-  await requireVisible(target, timeoutMs);
+  await requireVisible(target, timeoutMs, settleMs);
   try {
     await target.click({ timeout: timeoutMs });
   } catch (err) {
@@ -667,7 +682,7 @@ async function clickByText(
     const exactCount = await scope.getByText(text, { exact: true }).count();
     target = await resolve(exactCount > 0);
   }
-  await clickThroughOverlays(target, timeoutMs);
+  await clickThroughOverlays(target, timeoutMs, Number(params.settle_ms) || 0);
 }
 
 function requireParam(params: Record<string, any>, name: string, type: string): any {

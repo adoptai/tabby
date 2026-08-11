@@ -407,3 +407,38 @@ describe('a control that exists but stays hidden', () => {
     await expect(requireVisible({}, 30_000)).resolves.toBeUndefined();
   });
 });
+
+describe('the recorded settle decides how long an invisible control gets', () => {
+  // ICICI's nav submenu was measured at 4322ms. The flat 3s grace gave up while
+  // it was still animating open, so the click after a successful hover failed
+  // as "on the page but not visible" — on the one operation that had been
+  // passing all along.
+  const waited: number[] = [];
+  const target = {
+    waitFor: async (opts: any) => {
+      waited.push(opts.timeout);
+    },
+  };
+
+  beforeEach(() => (waited.length = 0));
+
+  it('uses the recorded settle when it exceeds the floor', async () => {
+    await requireVisible(target, 30_000, 4322);
+    expect(waited[0]).toBe(4322);
+  });
+
+  it('keeps the floor when the recording is quicker', async () => {
+    await requireVisible(target, 30_000, 200);
+    expect(waited[0]).toBe(3000);
+  });
+
+  it('never waits longer than the command timeout', async () => {
+    await requireVisible(target, 2_000, 9_000);
+    expect(waited[0]).toBe(2_000);
+  });
+
+  it('caps a pathological recording', async () => {
+    await requireVisible(target, 60_000, 90_000);
+    expect(waited[0]).toBe(15_000);
+  });
+});
