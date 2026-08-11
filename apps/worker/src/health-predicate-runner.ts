@@ -15,6 +15,20 @@ import {
  *
  * Returns PASS/TRANSIENT_FAIL/AUTH_FAIL per check.
  */
+/**
+ * Pages that mean "this session is over", when a profile names none itself.
+ *
+ * Narrow on purpose. "auth" is absent because ICICI serves its statement portal
+ * from AuthenticationController, and matching that would fail a healthy session
+ * in the middle of the workflow it is meant to protect.
+ */
+export const DEFAULT_AUTH_REDIRECT_PATTERN =
+  '(session[-_]?expire|session[-_]?timeout|logged[-_]?out|/logout|/login|/signin|/sign-in)' +
+  // Not followed by more word characters: /accounts/logins-history is an
+  // ordinary page and matched "/login" without this. /login-page still does,
+  // because a hyphen ends the word.
+  '(?![a-z0-9])';
+
 export class HealthPredicateRunner {
   constructor(
     private readonly page: Page,
@@ -99,10 +113,19 @@ export class HealthPredicateRunner {
     // expired" (observed on ICICI: HEALTHY/PASS on /session-expire). If the
     // browser page itself is already sitting on an auth/expiry URL, that is
     // ground truth the HTTP probe cannot override.
-    if (check.auth_redirect_pattern) {
+    // A DEFAULT when the profile configures none. This detection existed and
+    // never ran on ICICI, whose profile sets no auth_redirect_pattern -- so the
+    // session reported HEALTHY/PASS while the browser sat on /session-expire,
+    // and every downstream failure looked like a mystery instead of an expiry.
+    //
+    // Deliberately narrow: no bare "auth", because this bank serves its
+    // statement portal from a controller named AuthenticationController and
+    // flagging that would kill healthy sessions mid-workflow.
+    const authPattern = check.auth_redirect_pattern || DEFAULT_AUTH_REDIRECT_PATTERN;
+    if (authPattern) {
       try {
         const liveUrl = this.page.url();
-        if (new RegExp(check.auth_redirect_pattern, 'i').test(liveUrl)) {
+        if (new RegExp(authPattern, 'i').test(liveUrl)) {
           return {
             result: HealthResultType.AUTH_FAIL,
             detail: `Live page is on an auth/expiry URL: ${liveUrl}`,

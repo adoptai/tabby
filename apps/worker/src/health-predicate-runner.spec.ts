@@ -1,4 +1,4 @@
-import { HealthPredicateRunner } from './health-predicate-runner';
+import { HealthPredicateRunner, DEFAULT_AUTH_REDIRECT_PATTERN } from './health-predicate-runner';
 import { HealthResultType } from '@browser-hitl/shared';
 
 /**
@@ -289,5 +289,42 @@ describe('HealthPredicateRunner — a universal selector cannot prove a session 
     }).evaluate();
 
     expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
+  });
+});
+
+describe('DEFAULT_AUTH_REDIRECT_PATTERN', () => {
+  // The detection existed and never ran on ICICI: its profile sets no
+  // auth_redirect_pattern, so the session reported HEALTHY/PASS while the
+  // browser sat on /session-expire.
+  const re = () => new RegExp(DEFAULT_AUTH_REDIRECT_PATTERN, 'i');
+
+  it('catches the pages that mean the session is over', () => {
+    for (const u of [
+      'https://retailnetbanking.icici.bank.in/session-expire',
+      'https://retailnetbanking.icici.bank.in/login-page',
+      'https://x.test/session_timeout',
+      'https://x.test/logout',
+      'https://x.test/signin?next=/a',
+    ]) {
+      expect(re().test(u)).toBe(true);
+    }
+  });
+
+  it('does NOT flag a bank page that merely says Authentication', () => {
+    // ICICI serves its STATEMENT portal from AuthenticationController. Matching
+    // a bare "auth" would fail a healthy session mid-workflow — the exact thing
+    // this check exists to protect.
+    expect(re().test('https://infinity.icici.bank.in/corp/AuthenticationController;jsessionid=x'))
+      .toBe(false);
+  });
+
+  it('does not flag ordinary app pages', () => {
+    for (const u of [
+      'https://retailnetbanking.icici.bank.in/overview',
+      'https://retailnetbanking.icici.bank.in/credit-card',
+      'https://x.test/accounts/logins-history',
+    ]) {
+      expect(re().test(u)).toBe(false);
+    }
   });
 });

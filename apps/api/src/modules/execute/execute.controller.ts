@@ -103,6 +103,23 @@ export class ExecuteController {
   @ApiResponse({ status: 504, description: 'Worker request timed out' })
   @HttpCode(200)
   async fetch(@Body() dto: ExecuteFetchDto, @Req() req: any) {
+    // Audited for the same reason as execute/browser: this runs fetch() inside
+    // the authenticated session and inherits its cookies, so it can act on a
+    // member's account. Method and URL are recorded; headers and body are not,
+    // because they carry credentials and whatever was being sent with them.
+    await this.auditService.log({
+      tenant_id: req.user.tenant_id,
+      actor_type: req.user.owner_user_id ? 'human' : 'system',
+      actor_id: String(req.user.sub ?? req.user.user_id ?? 'unknown'),
+      event_type: 'execute.fetch.requested',
+      payload: {
+        profile_id: dto.profile_id,
+        method: dto.method || 'GET',
+        url: String(dto.url || '').split('?')[0],
+        owner_user_id: req.user.owner_user_id ?? null,
+        role: req.user.role,
+      },
+    });
     return this.executeService.executeFetch({
       tenantId: req.user.tenant_id,
       profileId: dto.profile_id,
