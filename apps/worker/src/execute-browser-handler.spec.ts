@@ -1,5 +1,5 @@
 import { BROWSER_COMMANDS, EXECUTE_LIMITS } from '@browser-hitl/shared';
-import { dispatchCommand, registerBrowserHandler } from './execute-browser-handler';
+import { dispatchCommand, registerBrowserHandler, requireVisible } from './execute-browser-handler';
 
 // A minimal Playwright Locator/Page mock that records how click_by_text resolves
 // its target. getByText → filter({visible}) → nth → click is the chain we assert.
@@ -360,5 +360,50 @@ describe('select_option', () => {
 
     expect(out).toEqual({ selected: ['ANNUAL'] });
     expect(target.selectOption).toHaveBeenLastCalledWith({ label: 'Annual' }, expect.anything());
+  });
+});
+
+describe('a control that exists but stays hidden', () => {
+  // One ICICI session lost its auth cookie during three of these: 30s of hover,
+  // then 30s of click, against a positional selector on a page where the element
+  // was hidden. Retrying a click into a re-rendering sidebar is not a no-op.
+  const hidden = () => ({
+    waitFor: async () => {
+      throw new Error('Timeout 3000ms exceeded waiting for visible');
+    },
+    hover: async () => {
+      throw new Error('should never be attempted');
+    },
+    click: async () => {
+      throw new Error('should never be attempted');
+    },
+    count: async () => 1,
+    first() {
+      return this;
+    },
+  });
+
+  it('stops instead of retrying, and says what is likely wrong', async () => {
+    const el = hidden();
+    await expect(requireVisible(el, 30_000)).rejects.toThrow(/not visible/i);
+    await expect(requireVisible(el, 30_000)).rejects.toThrow(/opens on hover|read the page/i);
+  });
+
+  it('never waits longer than the grace period, however long the timeout', async () => {
+    const started = Date.now();
+    await expect(requireVisible(hidden(), 30_000)).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(1_000); // the fake throws at once
+  });
+
+  it('lets a visible control through untouched', async () => {
+    let asked = false;
+    const visible = { waitFor: async () => { asked = true; } };
+    await expect(requireVisible(visible, 30_000)).resolves.toBeUndefined();
+    expect(asked).toBe(true);
+  });
+
+  it('does not block a target that cannot be asked', async () => {
+    // Not every target is a locator; a missing waitFor must not fail the action.
+    await expect(requireVisible({}, 30_000)).resolves.toBeUndefined();
   });
 });

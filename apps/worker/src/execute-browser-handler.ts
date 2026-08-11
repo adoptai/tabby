@@ -191,6 +191,7 @@ export async function dispatchCommand(
       if (!el.matched) {
         throw new Error(await noMatchMessage(page, scope, selector, params));
       }
+      await requireVisible(el.locator, timeoutMs);
       await el.locator.hover({ timeout: timeoutMs });
       return el.usedFallback ? { used_fallback: el.usedFallback } : {};
     }
@@ -416,6 +417,38 @@ export async function dispatchCommand(
  *
  * Generous enough that a slow bank page is never mistaken for a bad selector.
  */
+/**
+ * How long an element that EXISTS may take to become visible before we stop.
+ *
+ * Playwright's click and hover auto-wait for visibility, so a control that
+ * resolves but never appears burns the whole timeout retrying -- and retrying
+ * a click against a sidebar that is still re-rendering is not a safe no-op. One
+ * ICICI session lost its auth cookie during three such attempts: 30s of hover,
+ * then 30s of click, against a positional selector on a page where the element
+ * was hidden. Whatever moved under the cursor got clicked.
+ *
+ * Short, because an element that is going to appear appears quickly once it is
+ * in the DOM; long enough that a transition or a slow render is not mistaken
+ * for a hidden control.
+ */
+const INVISIBLE_GRACE_MS = 3_000;
+
+/** Stop early when a control exists but stays hidden, instead of retrying into it. */
+export async function requireVisible(target: any, timeoutMs: number): Promise<void> {
+  if (typeof target.waitFor !== 'function') return;
+  try {
+    await target.waitFor({ state: 'visible', timeout: Math.min(INVISIBLE_GRACE_MS, timeoutMs) });
+  } catch {
+    throw new Error(
+      'this control is on the page but not visible, so acting on it would either ' +
+        'do nothing or hit whatever is on top of it. Something that should have ' +
+        'revealed it has not run — a menu that opens on hover, a tab, an accordion — ' +
+        'or the page is not the one these steps were recorded for. Read the page ' +
+        '(get_page_summary) and check where you actually are.',
+    );
+  }
+}
+
 const ZERO_MATCH_GRACE_MS = 4_000;
 
 /** True when the locator still matches nothing after a short grace period. */
@@ -568,6 +601,7 @@ async function clickThroughOverlays(target: any, timeoutMs: number): Promise<voi
         'make it appear, and if the content sits in an embedded frame, pass frame_url.',
     );
   }
+  await requireVisible(target, timeoutMs);
   try {
     await target.click({ timeout: timeoutMs });
   } catch (err) {
