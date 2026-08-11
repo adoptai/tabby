@@ -125,7 +125,22 @@ export class LoginDslRunner {
         } else {
           throw new Error('DSL goto requires either url or url_expression');
         }
-        await this.page.goto(gotoUrl, { timeout });
+        // The DOM, not every last beacon.
+        //
+        // Playwright's default is `load`, which waits for EVERY subresource --
+        // tag managers, analytics, session-replay agents, fraud-fingerprint
+        // scripts. ICICI's login page pulls 27 of them across five hosts and
+        // took 21s just to reach DOMContentLoaded; `load` could not finish
+        // inside the 30s step timeout on any attempt, so the login DSL aborted
+        // at step 0 and the session never started its health loop -- which also
+        // means a human signing in over VNC could not rescue it, because nothing
+        // was left watching.
+        //
+        // A login page is usable when its DOM exists. What actually proves
+        // readiness is the step AFTER this one: every login flow continues with
+        // a wait_for/fill on a specific control, which carries its own timeout
+        // and fails loudly if the page really is not ready.
+        await this.page.goto(gotoUrl, { timeout, waitUntil: 'domcontentloaded' });
         break;
       }
 
