@@ -202,6 +202,25 @@ export class KeepaliveRunner {
       const healthResult = await this.healthRunner.evaluate();
       // Remember the verdict so the NEXT cycle can gate the 'activity' nudge
       // (see Step 1) — a not-PASS session is likely sitting on a login page.
+      // An unevaluable cycle records NOTHING.
+      //
+      // Every non-PASS check was one that could not be asked -- the page was
+      // mid-navigation -- and none produced a real verdict. TRANSIENT_FAIL is
+      // still a verdict: the state machine turns it into UNHEALTHY,
+      // execute/browser then refuses, and a replay dies on a session that was
+      // never unwell. Observed exactly that: a dom_check waited on ICICI's
+      // cross-origin hop, and the run stopped one operation from the end while
+      // the next cycle passed.
+      //
+      // Leaving the previous result standing is the honest record. The session
+      // has not been re-measured, so nothing about it has changed.
+      if ((healthResult as { unevaluable?: boolean }).unevaluable) {
+        console.log(
+          `Health check: not evaluated (page was mid-navigation) — keeping ${this.lastHealthOverall ?? 'the previous result'}`,
+        );
+        return;
+      }
+
       this.lastHealthOverall = healthResult.overall;
       await this.db.updateHealthResult(this.sessionId, healthResult.overall);
 

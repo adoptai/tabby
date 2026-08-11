@@ -354,3 +354,23 @@ describe('a health check that raced a pending navigation', () => {
     expect(classifyDomCheckError(plain)).toBeNull();
   });
 });
+
+describe('an unevaluable cycle is not a verdict', () => {
+  // TRANSIENT_FAIL is still a verdict: the state machine turns it into
+  // UNHEALTHY, execute/browser then refuses, and a replay dies on a session
+  // that was never unwell.
+  it('marks the classifier verdicts as unevaluable', () => {
+    const raced = classifyDomCheckError(
+      new Error('locator.waitFor: Timeout 5000ms exceeded.\n  - waiting for "https://x/" navigation to finish...'),
+    );
+    expect(raced!.unevaluable).toBe(true);
+
+    const closed = classifyDomCheckError(new Error('target page, context or browser has been closed'));
+    expect(closed!.unevaluable).toBe(true);
+  });
+
+  it('leaves a genuine timeout unclassified, so it is judged normally', () => {
+    // The auth signal this check exists for must still get through.
+    expect(classifyDomCheckError(new Error('locator.waitFor: Timeout 5000ms exceeded.'))).toBeNull();
+  });
+});

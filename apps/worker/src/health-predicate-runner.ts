@@ -46,11 +46,16 @@ export class HealthPredicateRunner {
     const quorumN = this.keepaliveConfig?.quorum_n;
 
     const results: HealthCheckResult[] = [];
+    // A check that could not be ASKED is not a check that failed. Tracked apart
+    // so the caller can decline to record a verdict rather than inventing one.
+    const unevaluableOnly: HealthCheck[] = [];
+    const realVerdicts: HealthCheck[] = [];
 
     for (const check of checks) {
       const start = Date.now();
       let result: HealthResultType;
       let detail: string | undefined;
+      let unevaluable = false;
 
       try {
         switch (check.type) {
@@ -58,7 +63,7 @@ export class HealthPredicateRunner {
             ({ result, detail } = await this.runUrlCheck(check));
             break;
           case 'dom_check':
-            ({ result, detail } = await this.runDomCheck(check));
+            ({ result, detail, unevaluable = false } = await this.runDomCheck(check) as any);
             break;
           case 'network_check':
             ({ result, detail } = await this.runNetworkCheck(check));
@@ -86,6 +91,8 @@ export class HealthPredicateRunner {
       if (result !== HealthResultType.PASS) {
         console.log(`[Health] ${check.type} -> ${result}${detail ? `: ${detail}` : ''}`);
       }
+      if (result !== HealthResultType.PASS && unevaluable) unevaluableOnly.push(check);
+      else if (result !== HealthResultType.PASS) realVerdicts.push(check);
     }
 
     const overall = evaluateHealthPolicy(results, policy, quorumN);
@@ -95,7 +102,13 @@ export class HealthPredicateRunner {
       checks: results,
       policy,
       evaluated_at: new Date().toISOString(),
-    };
+      // Nothing here is a measurement: every non-PASS was a check that could
+      // not be asked (the page was mid-navigation), and no check produced a
+      // real verdict. Recording TRANSIENT_FAIL for that drives the session to
+      // UNHEALTHY, execute/browser then refuses, and a replay dies on a session
+      // that was never unwell.
+      unevaluable: unevaluableOnly.length > 0 && realVerdicts.length === 0,
+    } as HealthEvaluationResult & { unevaluable: boolean };
   }
 
   /**
@@ -363,7 +376,7 @@ export function isUniversalSelector(selector: unknown): boolean {
 
 export function classifyDomCheckError(
   error: unknown,
-): { result: HealthResultType; detail: string } | null {
+): { result: HealthResultType; detail: string; unevaluable: true } | null {
   const message = error instanceof Error ? error.message : String(error);
 
   // Page moved (navigation / SPA re-render) while the locator was resolving.
@@ -384,6 +397,7 @@ export function classifyDomCheckError(
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check raced a navigation, no auth signal: ${message}`,
+      unevaluable: true as const,
     };
   }
 
@@ -392,6 +406,7 @@ export function classifyDomCheckError(
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check ran against a closed page, no auth signal: ${message}`,
+      unevaluable: true as const,
     };
   }
 
@@ -400,6 +415,7 @@ export function classifyDomCheckError(
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check selector is invalid — fix the app's health_checks config: ${message}`,
+      unevaluable: true as const,
     };
   }
 
