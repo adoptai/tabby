@@ -458,6 +458,47 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
 
   const TESTID_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
 
+  //: Containers whose identity is their CONTENT, not their position.
+  const ROW_CONTAINERS = 'tr,li,[role="row"],[role="listitem"],[role="option"]';
+
+  /**
+   * The row a control belongs to, named by what the row SAYS.
+   *
+   * A statement table gives every row an identical "Download" button --
+   * measured on HSBCnet: 25 of them, same testid, same aria-label, same
+   * accessible name. The only thing that separates them is a positional path
+   * (`tbody > tr:nth-of-type(3)`), and a position is not an identity: replay it
+   * next month and the same path is a different statement. Nothing captured the
+   * date, which is the only thing that says WHICH statement was downloaded.
+   *
+   * `ownLabel` cannot help and should not: a row has several text-bearing cells,
+   * so it is a container with no label of its own. That rule is right for menus
+   * and wrong here, because a row's identity IS its cells.
+   *
+   * So: name the row by its text and the control within it, which is how a
+   * person reads the table. Playwright resolves `:has-text()`, and the compiler
+   * gets a locator that means "the download button in the row for 31 Jan 2025"
+   * rather than "the third row".
+   *
+   * match_count is -1 (unevaluable): `:has-text()` is Playwright's engine, not
+   * CSS, so it cannot be counted with querySelectorAll here. The contract
+   * already defines -1 for exactly this.
+   */
+  const rowScopedCandidate = (el: any, controlSel: string): string | null => {
+    try {
+      if (!controlSel || !el.closest) return null;
+      const row = el.closest(ROW_CONTAINERS);
+      if (!row || row === el) return null;
+      const text = normText(row.textContent);
+      // Long enough to identify a row, short enough not to be the whole table.
+      if (!text || text.length < 3 || text.length > 120) return null;
+      const rowTag = String(row.tagName || '').toLowerCase();
+      return rowTag + ':has-text("' + text.replace(/"/g, '\\"') + '") ' + controlSel;
+    } catch {
+      return null;
+    }
+  };
+
   const buildCandidates = (el: any): any[] => {
     const out: any[] = [];
     const add = (kind: string, value: string, matchCount: number): void => {
@@ -545,6 +586,28 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
 
       const path = cssPath(el);
       if (path) add('css_path', path, countCss(path));
+
+      // Last, and only when the control is one of MANY identical ones: the row
+      // it belongs to, named by what that row says. Built from the best
+      // CSS-expressible candidate already found, so it inherits whatever the
+      // page offered (testid, aria-label, name) rather than inventing anything.
+      //
+      // Skipped when some earlier candidate already resolves to exactly one
+      // node -- that control does not need its row to be identified.
+      let unique = false;
+      let controlSel = '';
+      for (let i = 0; i < out.length; i++) {
+        const c = out[i];
+        if (c.match_count === 1 && c.kind !== 'css_path') unique = true;
+        if (!controlSel && c.value && c.kind !== 'css_path' && c.kind !== 'text'
+            && c.kind !== 'role_name' && c.kind !== 'label') {
+          controlSel = c.value;
+        }
+      }
+      if (!unique && controlSel) {
+        const scoped = rowScopedCandidate(el, controlSel);
+        if (scoped) add('row_scoped', scoped, -1);
+      }
     } catch {
       /* a partial candidate list beats failing the interaction */
     }
