@@ -73,8 +73,17 @@ export class KeepaliveRunner {
 
     // Schedule subsequent cycles
     this.timer = setInterval(async () => {
+      // Instrumentation for a loop that goes silent after a busy-skip: two pods
+      // logged "skipping cycle (1/3)" and then nothing at all, while a pod that
+      // never skipped cycled every 60s. Four explanations have been ruled out --
+      // the skip does not exit the loop, the busy flag is decremented, `running`
+      // is cleared in a finally, and the nudge itself is correct. This says
+      // whether the callback is still entered and, if so, what the guard sees.
+      console.log(`Keepalive tick: running=${this.running}`);
       if (!this.running) {
         await this.runCycle();
+      } else {
+        console.log('Keepalive tick: SKIPPED — a cycle is still marked in progress');
       }
     }, intervalSeconds * 1000);
 
