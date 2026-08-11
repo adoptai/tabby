@@ -1,4 +1,4 @@
-import { HealthPredicateRunner, DEFAULT_AUTH_REDIRECT_PATTERN } from './health-predicate-runner';
+import { HealthPredicateRunner, DEFAULT_AUTH_REDIRECT_PATTERN, classifyDomCheckError } from './health-predicate-runner';
 import { HealthResultType } from '@browser-hitl/shared';
 
 /**
@@ -326,5 +326,31 @@ describe('DEFAULT_AUTH_REDIRECT_PATTERN', () => {
     ]) {
       expect(re().test(u)).toBe(false);
     }
+  });
+});
+
+describe('a health check that raced a pending navigation', () => {
+  // A cross-origin hop completes asynchronously AFTER the command that caused
+  // it returns. A health cycle landing in that window waits on a navigation
+  // nobody is failing.
+  const playwrightTimeout = new Error(
+    'locator.waitFor: Timeout 5000ms exceeded.\n' +
+      'Call log:\n' +
+      '  - waiting for "https://infinity.icici.bank.in/corp/AuthenticationController?FORMSGROUP_ID__=…" navigation to finish...\n' +
+      '  - navigated to "https://infinity.icici.bank.in/corp/AuthenticationController?FORMSGROUP_ID__=…"',
+  );
+
+  it('is transient, not an auth failure', () => {
+    const got = classifyDomCheckError(playwrightTimeout);
+    expect(got).not.toBeNull();
+    expect(got!.result).toBe(HealthResultType.TRANSIENT_FAIL);
+    expect(got!.detail).toMatch(/raced a navigation/i);
+  });
+
+  it('does not swallow an ordinary timeout with no navigation in it', () => {
+    // A selector that is genuinely absent on a settled page must still be
+    // judged normally — that is the auth signal this check exists for.
+    const plain = new Error('locator.waitFor: Timeout 5000ms exceeded.');
+    expect(classifyDomCheckError(plain)).toBeNull();
   });
 });

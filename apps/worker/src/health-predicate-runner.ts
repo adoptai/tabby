@@ -367,7 +367,20 @@ export function classifyDomCheckError(
   const message = error instanceof Error ? error.message : String(error);
 
   // Page moved (navigation / SPA re-render) while the locator was resolving.
-  if (/execution context was destroyed|because of a navigation|frame (was |got )?detached/i.test(message)) {
+  //
+  // "navigation to finish" is the case that bit: a cross-origin hop completes
+  // asynchronously AFTER the command that caused it returns, so a health cycle
+  // landing in that window waits on a navigation nobody is failing. Observed on
+  // ICICI: dom_check on `body` timed out after 5s waiting for the statement
+  // portal, reported a fault on a healthy session, and stopped a replay one
+  // operation from the end -- the next cycle passed. With a non-universal
+  // selector the same race returns AUTH_FAIL, which shows a member a sign-in
+  // card in the middle of a working task.
+  if (
+    /execution context was destroyed|because of a navigation|frame (was |got )?detached|navigation to finish/i.test(
+      message,
+    )
+  ) {
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check raced a navigation, no auth signal: ${message}`,
