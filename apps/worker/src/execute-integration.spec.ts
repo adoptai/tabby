@@ -271,7 +271,11 @@ describe('execute handlers (integration)', () => {
       }, auth());
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.data).toEqual({ url: 'https://example.com', title: 'Example' });
+      // ready_state too: a caller deciding whether it may act next needs to know
+      // whether the page has finished loading, not only where it is.
+      expect(res.body.data).toEqual({
+        url: 'https://example.com', title: 'Example', ready_state: expect.any(String),
+      });
     });
 
     it('returns success for screenshot command', async () => {

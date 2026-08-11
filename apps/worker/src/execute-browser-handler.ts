@@ -386,7 +386,11 @@ export async function dispatchCommand(
       // Additive: url and title are unchanged for every existing caller.
       let readyState = 'unknown';
       try {
-        readyState = await page.evaluate(() => document.readyState);
+        // Only a string is an answer. Anything else means we did not actually
+        // read document.readyState, and reporting it verbatim would let a
+        // caller's "is the page settled?" check compare against nonsense.
+        const observed = await page.evaluate(() => document.readyState);
+        readyState = typeof observed === 'string' ? observed : 'unknown';
       } catch {
         // Mid-navigation the execution context is destroyed — which is itself
         // the answer, so report it rather than failing the command.

@@ -251,9 +251,26 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       }
       own = normText(own);
       if (own) return own.slice(0, 120);
+      // Children that BEAR TEXT, which is what the rule above is actually
+      // about. Counting every element child instead made an icon disqualify a
+      // label: ICICI's nav item is `<a><i class="icon"/><span>Credit Cards
+      // </span></a>`, two children of which only one says anything, so this
+      // returned null and the item was captured with NO text at all.
+      //
+      // The consequences ran the length of the pipeline. No text meant no text
+      // candidate; a falsy ownLabel also stopped `actionableAncestor` returning
+      // the element, so evidence was gathered from the nav container instead and
+      // the click came out with the same positional path as the hover plus a
+      // class every submenu item shares. Replay then resolved whichever match
+      // came first in the document and failed "not visible" about half the time
+      // -- while clicking that item BY TEXT works every time.
+      const labelled = [];
       const els = el.children || [];
-      if (els.length === 1) {
-        const inner = normText(els[0].textContent);
+      for (let i = 0; i < els.length; i++) {
+        if (normText(els[i].textContent)) labelled.push(els[i]);
+      }
+      if (labelled.length === 1) {
+        const inner = normText(labelled[0].textContent);
         return inner ? inner.slice(0, 120) : null;
       }
       return null;
