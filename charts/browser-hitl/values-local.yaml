@@ -67,9 +67,18 @@ worker:
       # 4 cores: the node has 16 idle; the old 1.5 cap starved x11vnc's encoder
       # against Chromium during page load (multi-minute first paint).
       cpu: "4000m"
-      # Memory held at 1536Mi — the Kind node has only ~3.6Gi total. The 1440x900
-      # framebuffer (down from 1920x1080) lowers the footprint to compensate.
-      memory: "1536Mi"
+      # 2560Mi, matching values.yaml. The 1536Mi it used to hold was chosen when
+      # the Kind node had ~3.6Gi; it now has 7.65Gi with ~2Gi in use, so the
+      # premise is gone -- and values.yaml already carries the warning this
+      # override was ignoring: "A 1536Mi worker was OOM-killed mid-export on an
+      # ICICI login recording."
+      #
+      # It happened again, differently: a worker driving an ICICI replay was
+      # OOMKilled at 32 minutes, mid-session. Nothing in its log complained --
+      # heartbeats, health PASS, artifacts fresh, then gone -- so it surfaced as
+      # "Worker unreachable: fetch failed" and read as a flaky skill. Four
+      # explanations were chased and discarded before the pod status was read.
+      memory: "2560Mi"
 slackBot:
   enabled: false  # No Slack credentials locally — disable to avoid secret errors
 teamsBot:
