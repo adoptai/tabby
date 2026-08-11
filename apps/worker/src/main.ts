@@ -414,6 +414,23 @@ async function main() {
       await keepaliveRunner.start();
     }
 
+    // Diagnostic heartbeat, independent of the keepalive timer.
+    //
+    // One pod logged a keepalive tick every 60s; another logged "Keepalive loop
+    // started" and then never entered the callback at all, and the session it
+    // was holding idled out. stop() is wired only to SIGTERM, so the interval is
+    // not being cleared -- which leaves the timer never being scheduled, or the
+    // event loop being blocked so it can never fire.
+    //
+    // This separates those two: if the heartbeat ticks while the keepalive does
+    // not, the keepalive timer specifically is dead. If both go silent, nothing
+    // on this event loop can run and the cause is upstream of both.
+    let beat = 0;
+    setInterval(() => {
+      beat += 1;
+      console.log(`Event-loop heartbeat #${beat}`);
+    }, 15000);
+
     // Start recycling monitor (FR-34)
     const maxAgeHours = parseInt(process.env.MAX_SESSION_AGE_HOURS || '24', 10);
     recyclingMonitor = new RecyclingMonitor(sessionId, maxAgeHours, 2560, async (reason) => {

@@ -345,6 +345,63 @@ describe('PodManagerService not-found handling', () => {
     expect(readNamespacedPod).toHaveBeenCalledTimes(2);
   });
 
+  it('reports why a worker container died, from the pod status', async () => {
+    // An OOM-killed worker is SIGKILLed mid-instruction and writes nothing to
+    // its own log. The pod status is the ONLY place the cause exists, and it is
+    // gone once the pod is swept -- so a session that simply stopped responding
+    // surfaced as "Worker unreachable: fetch failed".
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        containerStatuses: [
+          { name: 'novnc', state: { running: {} }, restartCount: 0 },
+          {
+            name: 'browser',
+            restartCount: 1,
+            lastState: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+          },
+        ],
+      },
+    });
+
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: 'browser: OOMKilled (exit 137, restarts: 1)',
+    });
+  });
+
+  it('reports a live pod with nothing terminated', async () => {
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: { containerStatuses: [{ name: 'browser', state: { running: {} }, restartCount: 0 }] },
+    });
+
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: null,
+    });
+  });
+
+  it('reports a missing pod without retrying past the 404', async () => {
+    const error = new Error('HTTP-Code: 404');
+    (error as any).body = '{"kind":"Status","reason":"NotFound","code":404}';
+    const readNamespacedPod = jest.fn().mockRejectedValue(error);
+
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+
+    await expect(service.getPodRuntime('worker-gone')).resolves.toEqual({
+      exists: false,
+      terminated: null,
+    });
+    // A 404 is an answer, not a call-signature mismatch worth retrying.
+    expect(readNamespacedPod).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores Kubernetes 404 payload when deleting pod', async () => {
     const error = new Error('Unknown API Status Code');
     (error as any).body = '{"kind":"Status","reason":"NotFound","code":404}';

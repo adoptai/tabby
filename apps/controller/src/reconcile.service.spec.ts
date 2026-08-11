@@ -25,6 +25,7 @@ function buildService(overrides: Record<string, any> = {}) {
     syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
     listWorkerPods: jest.fn().mockResolvedValue([]),
     podExists: jest.fn().mockResolvedValue(true),
+    getPodRuntime: jest.fn().mockResolvedValue({ exists: true, terminated: null }),
   };
 
   const templateRepo = { findByIds: jest.fn().mockResolvedValue([]) };
@@ -213,6 +214,7 @@ describe('ReconcileService restart_requested', () => {
       syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
       listWorkerPods: jest.fn().mockResolvedValue([]),
       podExists: jest.fn().mockResolvedValue(true),
+      getPodRuntime: jest.fn().mockResolvedValue({ exists: true, terminated: null }),
     };
 
     // Stub dataSource.transaction to execute the callback with a manager that
@@ -308,6 +310,7 @@ describe('ReconcileService DISABLE_NETWORK_POLICY', () => {
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
       listWorkerPods: jest.fn().mockResolvedValue([]),
       podExists: jest.fn().mockResolvedValue(true),
+      getPodRuntime: jest.fn().mockResolvedValue({ exists: true, terminated: null }),
       resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
     };
     const sessionRepo = {
@@ -346,6 +349,7 @@ describe('ReconcileService DISABLE_NETWORK_POLICY', () => {
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
       listWorkerPods: jest.fn().mockResolvedValue([]),
       podExists: jest.fn().mockResolvedValue(true),
+      getPodRuntime: jest.fn().mockResolvedValue({ exists: true, terminated: null }),
       resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
     };
     const sessionRepo = {
@@ -700,6 +704,7 @@ describe('ReconcileService FAILED session runtime reap', () => {
       deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
       listWorkerPods: jest.fn().mockResolvedValue([]),
       podExists: jest.fn().mockResolvedValue(true),
+      getPodRuntime: jest.fn().mockResolvedValue({ exists: true, terminated: null }),
       resolveStreamingMode: jest.fn().mockReturnValue('vnc'),
     };
   }
@@ -802,3 +807,62 @@ describe('ReconcileService FAILED session runtime reap', () => {
     expect(sessionRepo.update).not.toHaveBeenCalledWith('sess-failed-3', { pod_name: null });
   });
 });
+
+describe('ReconcileService worker termination', () => {
+  /**
+   * A worker that is OOM-killed writes nothing to its own log — it is SIGKILLed
+   * mid-instruction. The pod status is the only record, and it is gone once the
+   * pod is swept, so the reason has to be captured while the pod is still there.
+   */
+  function runDrift(terminated: string | null, existing: string | null = null) {
+    const session = {
+      id: 'sess-1', app_id: 'app-1', pod_name: 'worker-1',
+      state: 'HEALTHY', last_runtime_error: existing,
+    };
+    const sessionRepo = {
+      find: jest.fn().mockResolvedValue([session]),
+      count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue({}),
+    };
+    const podManager = {
+      deleteWorkerPod: jest.fn().mockResolvedValue(undefined),
+      deleteNoVncService: jest.fn().mockResolvedValue(undefined),
+      deleteCdpService: jest.fn().mockResolvedValue(undefined),
+      deleteWorkerService: jest.fn().mockResolvedValue(undefined),
+      deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+      syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
+      listWorkerPods: jest.fn().mockResolvedValue([]),
+      podExists: jest.fn().mockResolvedValue(true),
+      getPodRuntime: jest.fn().mockResolvedValue({ exists: true, terminated }),
+    };
+    const service = buildService({ sessionRepo, podManager });
+    return { service, sessionRepo, podManager };
+  }
+
+  it('records why the worker container died, on a pod that still exists', async () => {
+    const { service, sessionRepo } = runDrift('browser: OOMKilled (exit 137, restarts: 1)');
+
+    await (service as any).reconcileRuntimeDrift();
+
+    expect(sessionRepo.update).toHaveBeenCalledWith('sess-1', {
+      last_runtime_error: 'browser: OOMKilled (exit 137, restarts: 1)',
+    });
+  });
+
+  it('writes nothing when the worker is healthy', async () => {
+    const { service, sessionRepo } = runDrift(null);
+
+    await (service as any).reconcileRuntimeDrift();
+
+    expect(sessionRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('does not rewrite the same reason every tick', async () => {
+    const { service, sessionRepo } = runDrift('browser: OOMKilled (exit 137)', 'browser: OOMKilled (exit 137)');
+
+    await (service as any).reconcileRuntimeDrift();
+
+    expect(sessionRepo.update).not.toHaveBeenCalled();
+  });
+});
+

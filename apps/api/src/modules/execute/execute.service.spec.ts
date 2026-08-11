@@ -25,7 +25,10 @@ function makeCredSet(headers: Array<{ name: string; value: string }>): Credentia
   };
 }
 
-function makeService(credOverrides: Partial<Record<string, any>> = {}) {
+function makeService(
+  credOverrides: Partial<Record<string, any>> = {},
+  runtimeError: string | null = null,
+) {
   const credentialsService = {
     resolveActiveProfile: jest.fn().mockResolvedValue({
       app_id: 'app-1', profile_id: 'quickbooks-sandbox', target_domains: ['sandbox.qbo.intuit.com'],
@@ -36,8 +39,18 @@ function makeService(credOverrides: Partial<Record<string, any>> = {}) {
     ...credOverrides,
   };
   const jwtService = { sign: jest.fn().mockReturnValue('worker-token') };
-  const service = new ExecuteService(credentialsService as any, jwtService as any);
-  return { service, credentialsService };
+  // Only read when a command cannot reach its worker, to say why it died.
+  const sessionRepo = {
+    findOne: jest.fn().mockResolvedValue(
+      runtimeError === null ? { id: 'sess-1' } : { id: 'sess-1', last_runtime_error: runtimeError },
+    ),
+  };
+  const service = new ExecuteService(
+    credentialsService as any,
+    jwtService as any,
+    sessionRepo as any,
+  );
+  return { service, credentialsService, sessionRepo };
 }
 
 /** Capture the JSON body forwarded to the worker via global fetch. */
@@ -222,5 +235,29 @@ describe('ExecuteService.executeFetch — attach_captured_credentials', () => {
       expect.anything(), expect.anything(), 'tenant-1', expect.any(String),
       { forceRefresh: true, waitSeconds: 5 },
     );
+  });
+
+  it('says WHY the worker is gone when Kubernetes recorded a reason', async () => {
+    // An OOM-killed worker is SIGKILLed mid-instruction and logs nothing, so
+    // "fetch failed" was the whole of what anyone saw -- and it reads as a flaky
+    // skill. Four theories were chased on one session before the pod status was
+    // read. The controller stores the reason; this is where it reaches the caller.
+    global.fetch = jest.fn().mockRejectedValue(new Error('fetch failed')) as any;
+    const { service } = makeService({}, 'browser: OOMKilled (exit 137, restarts: 1)');
+
+    await expect(service.executeBrowser({
+      ...baseParams,
+      request: { command: 'get_page_info', params: {} },
+    })).rejects.toThrow(/OOMKilled/);
+  });
+
+  it('still reports the original failure when nothing was recorded', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error('fetch failed')) as any;
+    const { service } = makeService();
+
+    await expect(service.executeBrowser({
+      ...baseParams,
+      request: { command: 'get_page_info', params: {} },
+    })).rejects.toThrow(/Worker unreachable: fetch failed$/);
   });
 });
