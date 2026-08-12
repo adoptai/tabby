@@ -230,7 +230,20 @@ export async function dispatchCommand(
       // because nothing returns to the caller in between.
       const hoverFirst = typeof params.hover_first === 'string' ? params.hover_first : '';
       if (hoverFirst) {
-        const opener = await firstMatching(scope, hoverFirst, { ...params, selector: hoverFirst });
+        // The opener gets ITS OWN fallbacks, never the click's.
+        //
+        // Spreading params handed the opener the fallbacks belonging to the
+        // control it is supposed to reveal: on ICICI, when the positional
+        // hover_first missed, the opener fell through to
+        // `a.sub-menu-list-item-link:text-is("Credit Cards")` -- a submenu item,
+        // which cannot exist until the menu it lives in has been opened. The
+        // hover could only ever fail, and every locator after it then correctly
+        // found nothing.
+        const opener = await firstMatching(scope, hoverFirst, {
+          ...params,
+          selector: hoverFirst,
+          fallbacks: Array.isArray(params.hover_fallbacks) ? params.hover_fallbacks : [],
+        });
         if (!opener.matched) {
           throw new Error(await noMatchMessage(page, scope, hoverFirst, params));
         }
@@ -265,7 +278,12 @@ export async function dispatchCommand(
       // the pointer across the resolve is the only shape that works.
       const hoverFirst = typeof params.hover_first === 'string' ? params.hover_first : '';
       if (hoverFirst) {
-        const opener = await firstMatching(textScope, hoverFirst, { ...params, selector: hoverFirst });
+        // Same separation as click_element: the opener never borrows the click's fallbacks.
+        const opener = await firstMatching(textScope, hoverFirst, {
+          ...params,
+          selector: hoverFirst,
+          fallbacks: Array.isArray(params.hover_fallbacks) ? params.hover_fallbacks : [],
+        });
         if (!opener.matched) {
           throw new Error(await noMatchMessage(page, textScope, hoverFirst, params));
         }
