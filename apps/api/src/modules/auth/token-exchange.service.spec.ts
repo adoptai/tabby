@@ -55,6 +55,11 @@ describe('TokenExchangeService', () => {
     it('issues user-scoped token when agent vouches for end-user', async () => {
       const { service, jwtService, auditService } = buildService();
 
+      // The exchange now resolves the MEMBER's role rather than inheriting the
+      // agent's, so the user must exist in the agent's tenant.
+      (service as any).userRepo.findOne.mockResolvedValue({
+        id: 'end-user-123', tenant_id: 'tenant-1', role: 'Admin',
+      });
       const result = await service.exchange({
         subject_token: 'agent-jwt',
         subject_token_type: 'agent_assertion',
@@ -77,6 +82,9 @@ describe('TokenExchangeService', () => {
           token_type: 'federated',
           owner_user_id: 'end-user-123',
           allowed_profiles: ['sfdc-standard'],
+          // The agent vouching here is role 'Operator'; the member is 'Admin'.
+          // The user-scoped token must say Admin.
+          role: 'Admin',
         }),
         expect.any(Object),
       );
@@ -116,6 +124,9 @@ describe('TokenExchangeService', () => {
     it('propagates unrestricted_profiles: true into the issued federated token', async () => {
       const { service, jwtService } = buildService();
 
+      (service as any).userRepo.findOne.mockResolvedValue({
+        id: 'end-user-456', tenant_id: 'tenant-1', role: 'Operator',
+      });
       await service.exchange({
         subject_token: 'agent-jwt',
         subject_token_type: 'agent_assertion',

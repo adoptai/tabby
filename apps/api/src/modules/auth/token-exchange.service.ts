@@ -253,12 +253,35 @@ export class TokenExchangeService {
       throw new UnauthorizedException('agent_assertion requires target_user_id');
     }
 
+    // The token being minted is USER-scoped -- it carries the member's sub and
+    // owner_user_id -- so it must carry the member's role. It used to inherit
+    // `params.agent_payload.role`, which /auth/agent-token hardcodes to 'Agent',
+    // so an Admin exchanging through a bot came back as an Agent and was
+    // refused by every route the member was entitled to. The symptom was
+    // opaque: the VNC viewer streamed fine while POST /sessions/:id/takeover
+    // 403'd, leaving an inert screen and nothing on it saying why.
+    //
+    // The oidc_jwt branch has always resolved the role properly (see
+    // resolveRoleFromIdp above); only this branch skipped it.
+    //
+    // Loading the user also closes a gap: target_user_id was previously trusted
+    // as a bare string, so the exchange would mint a token for a user id that
+    // belongs to another tenant, or to nobody at all.
+    const targetUser = await this.userRepo.findOne({
+      where: { id: params.target_user_id, tenant_id: params.agent_payload.tenant_id },
+    });
+    if (!targetUser) {
+      throw new UnauthorizedException(
+        'target_user_id does not name a user in the agent token\'s tenant',
+      );
+    }
+
     const ttl = params.requested_ttl_seconds || 3600;
     const jti = crypto.randomUUID();
     const payload: JwtPayload = {
       sub: `federated:${params.target_user_id}`,
       tenant_id: params.agent_payload.tenant_id,
-      role: params.agent_payload.role || 'Operator',
+      role: targetUser.role,
       jti,
       kid: process.env.JWT_SIGNING_KEY_ID || 'v1',
       token_type: 'federated',
