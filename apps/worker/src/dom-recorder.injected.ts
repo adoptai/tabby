@@ -1016,6 +1016,28 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   const hoverRevealedTarget = (clicked: any): boolean => {
     hoverEl = null;
     if (!clicked) return false;
+    // Containment first, and the OUTERMOST match wins.
+    //
+    // The pointer crosses the trigger on its way to the item, so the trail holds
+    // both: `.sidenav-icon-box` (entered first) and `a.sub-menu-list-item-link`
+    // (entered last). Both contain the clicked element, so a newest-first walk
+    // stopped at the anchor -- which is INSIDE the menu it was supposed to open.
+    // The recorded hover then aimed at a control that only exists once the menu
+    // is already up, which reproduces the bug it was meant to fix.
+    //
+    // ICICI's rule is `.sidenav-icon-box:hover .sub-container`, so the element
+    // that reveals is the one furthest OUT. Picking by containment rather than
+    // by recency also makes this independent of the path the pointer took.
+    let outermost: any = null;
+    for (let i = 0; i < hoverTrail.length; i++) {
+      const el = containmentReveal(hoverTrail[i], clicked);
+      if (!el) continue;
+      if (!outermost || (el.contains && el.contains(outermost))) outermost = el;
+    }
+    if (outermost) {
+      hoverEl = outermost;
+      return true;
+    }
     // Newest first: the nearest thing that could have revealed the target is the
     // best answer, and walking back stops at the first one that fits.
     for (let i = hoverTrail.length - 1; i >= 0; i--) {
@@ -1024,32 +1046,29 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     return false;
   };
 
+  /** The hovered element that CONTAINS the clicked one, or null. */
+  const containmentReveal = (entry: { el: any; at: number } | null, clicked: any): any => {
+    if (!entry || !clicked) return null;
+    if (Date.now() - entry.at > HOVER_REVEAL_WINDOW_MS) return null;
+    try {
+      const el = actionableAncestor(entry.el);
+      if (!el || el === clicked) return null;
+      return el.contains && el.contains(clicked) ? el : null;
+    } catch {
+      return null;
+    }
+  };
+
   const revealedBy = (entry: { el: any; at: number } | null, clicked: any): boolean => {
     if (!entry || !clicked) return false;
     if (Date.now() - entry.at > HOVER_REVEAL_WINDOW_MS) return false;
     try {
       const el = actionableAncestor(entry.el);
       if (!el || el === clicked) return false;
-      // Containment is the STRONGEST reveal signal, not a disqualifier.
-      //
-      // This returned false for a descendant on the theory that a revealed menu
-      // is a sibling of its trigger. ICICI's is not, and its rule says so
-      // outright:
-      //
-      //   .sub-container                   { display: none }
-      //   .sidenav-icon-box:hover .sub-container { display: block !important }
-      //
-      // A descendant combinator -- the flyout lives INSIDE the box you hover.
-      // Measured on the live page: the box's class list is byte-identical
-      // before and after, and `.sub-container`'s computed display goes
-      // none -> block on nothing but the pointer arriving. A pure CSS :hover
-      // fires no JS event, so the click is the only interaction there is to
-      // record, and rejecting it here left the compiled step clicking a control
-      // that does not exist until something hovers its parent.
-      if (el.contains && el.contains(clicked)) {
-        hoverEl = el;
-        return true;
-      }
+      // Containment is handled by containmentReveal, ahead of this walk, so that
+      // the OUTERMOST container wins rather than the most recently entered one.
+      // What remains here is the sibling/portal case.
+      if (el.contains && el.contains(clicked)) return false;
       // Scope is the hovered element's PARENT, not the element itself.
       //
       // A revealed menu is almost never a descendant of the thing you hovered:
