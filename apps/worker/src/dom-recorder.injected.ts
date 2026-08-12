@@ -726,6 +726,26 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       if (el.name) {
         const sel = tag + '[name="' + cssEsc(el.name) + '"]';
         add('name', sel, countCss(sel));
+
+        // A radio group SHARES its name and often its id, so neither addresses
+        // one option. What separates them is the submitted value.
+        //
+        // ICICI's statement period is two radios both called
+        // CustomViewEStatementsFG.PERIOD_TYPE, distinguished only by value M and
+        // Y -- and their labels read "M" and "Y", not "Monthly" and "Annual".
+        // The name and id candidates each matched 2, so the compiler fell back
+        // to role+name and emitted set_checked{name: "Annual"}, which resolves
+        // to nothing on that page: no control there is called Annual. The
+        // download ran on whatever was already selected -- Monthly -- and every
+        // check passed, because a monthly statement is still a statement.
+        //
+        // Measured live: [name][value="Y"] matches exactly 1, where [name]
+        // alone matches 2.
+        const inputType = String(el.type || '').toLowerCase();
+        if ((inputType === 'radio' || inputType === 'checkbox') && el.value) {
+          const valueSel = tag + '[name="' + cssEsc(el.name) + '"][value="' + cssEsc(el.value) + '"]';
+          add('name', valueSel, countCss(valueSel));
+        }
       }
 
       const ariaLabel = el.getAttribute ? el.getAttribute('aria-label') : null;
