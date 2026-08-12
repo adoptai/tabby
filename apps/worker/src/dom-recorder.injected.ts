@@ -1030,7 +1030,26 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     try {
       const el = actionableAncestor(entry.el);
       if (!el || el === clicked) return false;
-      if (el.contains && el.contains(clicked)) return false;
+      // Containment is the STRONGEST reveal signal, not a disqualifier.
+      //
+      // This returned false for a descendant on the theory that a revealed menu
+      // is a sibling of its trigger. ICICI's is not, and its rule says so
+      // outright:
+      //
+      //   .sub-container                   { display: none }
+      //   .sidenav-icon-box:hover .sub-container { display: block !important }
+      //
+      // A descendant combinator -- the flyout lives INSIDE the box you hover.
+      // Measured on the live page: the box's class list is byte-identical
+      // before and after, and `.sub-container`'s computed display goes
+      // none -> block on nothing but the pointer arriving. A pure CSS :hover
+      // fires no JS event, so the click is the only interaction there is to
+      // record, and rejecting it here left the compiled step clicking a control
+      // that does not exist until something hovers its parent.
+      if (el.contains && el.contains(clicked)) {
+        hoverEl = el;
+        return true;
+      }
       // Scope is the hovered element's PARENT, not the element itself.
       //
       // A revealed menu is almost never a descendant of the thing you hovered:
