@@ -608,6 +608,43 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * CSS, so it cannot be counted with querySelectorAll here. The contract
    * already defines -1 for exactly this.
    */
+  /** tag + up to two authored classes; framework build noise stripped. */
+  const stableBase = (el: any): string => {
+    const raw = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
+    const classes = String(raw || '')
+      .split(/\s+/)
+      .filter((c: string) => c && !/^ng-/.test(c) && !/^_ngcontent/.test(c) && !/\d{4,}/.test(c));
+    const tag = String(el.tagName || 'div').toLowerCase();
+    return classes.length ? tag + '.' + classes.slice(0, 2).join('.') : tag;
+  };
+
+  /**
+   * A control that NAMES ITSELF, addressed by that name rather than by position.
+   *
+   * Its own label is its whole text, so `:text-is()` -- Playwright's EXACT match
+   * -- applies, and exactness is the point. Measured on ICICI:
+   *   a.sub-menu-list-item-link:has-text("Credit Cards")  -> 9 nodes
+   *   ...:text-is("Credit Cards")                          -> the one that says it
+   * Substring matching would hand the runtime nine candidates and let it take
+   * whichever came first, which is a silent wrong click rather than a clean
+   * failure. On a bank portal that is the worse outcome by a wide margin.
+   *
+   * Emitted ALONGSIDE the element's other candidates, not instead of them: when
+   * a self-labelling control's only other locator is a positional css_path, that
+   * path is the whole locator and there is nothing behind it. An ICICI replay
+   * lost operation 1 exactly that way -- `#subContainer4 > ul > li:nth-of-type(1)
+   * > a` matched in the session it was recorded in and matched nothing in the
+   * next, with `fallbacks: null`.
+   */
+  const selfLabelCandidate = (el: any, label: string): string | null => {
+    try {
+      if (!label || label.length > 40) return null;
+      return stableBase(el) + ':text-is("' + label.replace(/"/g, '\\"') + '")';
+    } catch {
+      return null;
+    }
+  };
+
   /**
    * A selector that names a label-less container by the text it leads with.
    *
@@ -628,13 +665,10 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
         if (t && t.length <= 40) { lead = t; break; }
       }
       if (!lead) return null;
-      const raw = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
-      const classes = String(raw || '')
-        .split(/\s+/)
-        .filter((c: string) => c && !/^ng-/.test(c) && !/^_ngcontent/.test(c) && !/\d{4,}/.test(c));
-      const tag = String(el.tagName || 'div').toLowerCase();
-      const base = classes.length ? tag + '.' + classes.slice(0, 2).join('.') : tag;
-      return base + ':has-text("' + lead.replace(/"/g, '\\"') + '")';
+      // :has-text() is SUBSTRING. Correct here: a container's text is its whole
+      // concatenated subtree ("CardsCards Credit CardsForex Card..."), so an
+      // exact match would find nothing.
+      return stableBase(el) + ':has-text("' + lead.replace(/"/g, '\\"') + '")';
     } catch {
       return null;
     }
@@ -793,10 +827,10 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       // where an index cannot. match_count is -1 (unevaluable) because
       // :has-text() is Playwright's engine, not querySelectorAll's, exactly as
       // for row_scoped.
-      if (!text) {
-        const named = containerLabelCandidate(el);
-        if (named) add('container_label', named, -1);
-      }
+      // Every element gets one, by whichever route fits: a control that names
+      // itself is addressed by its own name, a container by what it leads with.
+      const named = text ? selfLabelCandidate(el, text) : containerLabelCandidate(el);
+      if (named) add('container_label', named, -1);
 
       const path = cssPath(el);
       if (path) add('css_path', path, countCss(path));
