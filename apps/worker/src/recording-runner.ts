@@ -24,6 +24,25 @@ import { deriveOutcomes } from './recording-outcomes';
  * passive — they do not navigate or mutate the page, so they never conflict
  * with the human driving via VNC.
  */
+/**
+ * Rewrite every event's `seq` as 1..N in the order the rebase established.
+ *
+ * Ordering is preserved exactly -- this only removes the holes that
+ * `seqBase + raw` leaves behind when a document does not use its whole local
+ * range. Events with no usable seq keep their place at the end rather than
+ * being renumbered into the middle of the run.
+ */
+function renumberDensely(...streams: Array<Array<{ seq?: unknown }> | undefined>): void {
+  const all: Array<{ seq?: unknown }> = [];
+  for (const stream of streams) {
+    for (const ev of stream || []) {
+      if (ev && typeof ev.seq === 'number' && Number.isFinite(ev.seq)) all.push(ev);
+    }
+  }
+  all.sort((a, b) => (a.seq as number) - (b.seq as number));
+  for (let i = 0; i < all.length; i++) all[i].seq = i + 1;
+}
+
 export class RecordingRunner {
   private readonly events: RecordedInteractionEvent[] = [];
   private readonly urlEvents: RecordedUrlEvent[] = [];
@@ -493,6 +512,25 @@ export class RecordingRunner {
         `har_entries=${har.log.entries.length}, events=${this.events.length}, urls=${this.urlEvents.length}, ` +
         `cookies=${cookies?.length ?? 0}, recorder_installed=${this.installSeen}`,
     );
+
+    // Close the gaps before anyone reads this.
+    //
+    // `rebaseSeq` numbers a page-local ordinal as `seqBase + raw`, which orders
+    // events correctly even when beacons arrive out of order -- but it skips
+    // every local number a document did not use. The recorder restarts at 1 in
+    // each document AND each subframe, so a long journey through a login, a
+    // portal and an embedded app leaves dozens of unused numbers: one ICICI
+    // capture had 25 holes in 52. Consumers cannot tell those from an event
+    // that was observed and lost, which made the sequence useless as a signal
+    // that a recording is incomplete -- and cost real time reading structural
+    // holes as missing interactions.
+    //
+    // Renumbering here, not at allocation: the ordering the rebase produces is
+    // the thing worth keeping, and it is only fully known once every beacon has
+    // arrived. So order by the rebased value, then hand out 1..N densely.
+    // Downloads carry no ordinal of their own -- they are attributed to an
+    // interaction by time, not by sequence -- so they are not renumbered.
+    renumberDensely(this.events, this.urlEvents);
 
     const bundle: RecordingBundle = {
       schema_version: RECORDING_SCHEMA_VERSION,
