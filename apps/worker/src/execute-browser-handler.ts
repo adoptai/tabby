@@ -601,14 +601,43 @@ async function firstMatching(
   selector: string,
   params: Record<string, any>,
 ): Promise<{ locator: any; usedFallback?: string; matched: boolean }> {
+  // Short by design. This is "has the page finished painting", not "will this
+  // control ever appear" -- the caller's own timeout still governs the action.
+  const settleTimeoutMs = Math.min(Number(params.timeout_ms) || 5000, 5000);
   const visibleFirst = (loc: any) => {
     const vis = loc.filter({ visible: true });
     return { loc, vis };
   };
 
+  // count() is a SNAPSHOT -- it is the one Playwright call here that does not
+  // auto-wait. hover(), click() and filter().first() all do, so a control that
+  // renders a moment late made this function alone declare "nothing matches",
+  // for the primary AND every fallback at once.
+  //
+  // That is what an operation running immediately after the session lands looks
+  // like: an ICICI replay failed read_credit_card on
+  // `#subContainer4 > ul > li:nth-of-type(1) > a` while that exact selector was
+  // present, visible and reading "Credit Cards" when probed seconds later. The
+  // same skill passed on other runs. Intermittent, every locator failing
+  // together, and a DOM that always looked healthy by the time anyone checked --
+  // all of it explained by asking a still-painting page a question that does not
+  // wait for an answer.
+  //
+  // Bounded and cheap: nothing here waits longer than the caller's own timeout,
+  // and a selector that is genuinely absent still falls through to the
+  // fallbacks, just a beat later.
+  const attached = async (loc: any): Promise<boolean> => {
+    try {
+      await loc.first().waitFor({ state: 'attached', timeout: settleTimeoutMs });
+      return true;
+    } catch {
+      return (await loc.count()) > 0;
+    }
+  };
+
   const primary = scope.locator(selector);
   const { vis } = visibleFirst(primary);
-  if ((await primary.count()) > 0) {
+  if (await attached(primary)) {
     return { locator: (await vis.count()) > 0 ? vis.first() : primary.first(), matched: true };
   }
 
@@ -626,6 +655,10 @@ async function firstMatching(
     }
     if (!loc) continue;
     try {
+      // Snapshot, deliberately: the primary above already waited out the paint,
+      // so a fallback that counts 0 now is genuinely absent. Waiting again per
+      // fallback would multiply the cost of a miss by the number of alternatives
+      // for no new information.
       if ((await loc.count()) > 0) {
         const v = loc.filter({ visible: true });
         return {
