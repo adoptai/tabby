@@ -433,9 +433,28 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       // which element had been clicked, and the compiled step got a positional
       // path with no text to fall back on: the hop that failed every run.
       //
-      // If the ancestor cannot name itself and the element can, the element IS
-      // the control as far as anyone reading the page is concerned.
-      if (!ownLabel(up) && ownLabel(el)) return el;
+      // If the ancestor cannot name itself, the control is whichever element
+      // BETWEEN here and there can.
+      //
+      // Checking only the starting element misses the common case, because the
+      // start is composedPath()[0] -- the innermost node under the pointer,
+      // which for ICICI's nav is the icon `<i>` inside the link and has no text
+      // at all. ACTIONABLE requires `a[href]` while an Angular routerLink
+      // carries no href, so the walk sailed past the anchor to the enclosing
+      // nav box and gathered evidence there: candidates held the box's ordinal
+      // css_path while the event's own text_content said "Credit Cards". The
+      // compiler cannot reconcile a disagreement like that -- it emitted a
+      // click on the box, which opens the menu and navigates nowhere.
+      //
+      // Walking the chain finds the anchor, which is what a human would say
+      // they clicked.
+      if (!ownLabel(up)) {
+        let node = el;
+        while (node && node !== up) {
+          if (ownLabel(node)) return node;
+          node = node.parentElement;
+        }
+      }
       return up;
     } catch {
       return el;
