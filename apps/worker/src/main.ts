@@ -324,7 +324,14 @@ async function main() {
         // locator candidates, no element evidence, no outcomes, no downloads, no
         // popups. Must run before the navigation below so the real target is
         // captured under the right mode.
-        if (recording_mode) recordingRunner?.adoptMode(recording_mode, browser_driven);
+        // Adopt whenever EITHER is specified. Gating on the mode alone lost
+        // `browser_driven` for every bind that did not change mode -- which is
+        // every combined ICICI capture: mode stayed 'login', so this never ran,
+        // so richCapture stayed false and the recording captured none of the
+        // evidence a browser skill is compiled from.
+        if (recording_mode || typeof browser_driven === 'boolean') {
+          recordingRunner?.adoptMode(recording_mode, browser_driven);
+        }
         // Seed cookies synchronously — the human must start authenticated before
         // they interact — but do NOT await the navigation. Loading the target
         // through the residential proxy can take tens of seconds, and the API

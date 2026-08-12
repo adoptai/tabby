@@ -197,7 +197,15 @@ export class HealthServer {
       this.bindHandler({
         start_url: startUrl,
         seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [],
-        recording_mode: body.recording_mode === 'workflow' ? 'workflow' : undefined,
+        // Pass the mode through, whichever it is. Collapsing anything but
+        // 'workflow' to undefined meant a 'login' bind carried no mode at all,
+        // and main.ts only adopts when one is present -- so `browser_driven`
+        // never reached the runner either, and a combined capture recorded with
+        // rich capture OFF: no locator candidates, no hovers, no downloads.
+        recording_mode:
+          body.recording_mode === 'workflow' || body.recording_mode === 'login'
+            ? body.recording_mode
+            : undefined,
         browser_driven: body.browser_driven === true,
       })
         .then(() => res.json({ success: true }))

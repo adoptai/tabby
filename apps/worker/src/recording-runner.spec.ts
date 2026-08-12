@@ -565,3 +565,36 @@ describe('RecordingRunner — adopting the requested mode at bind', () => {
     expect(bundle.download_events).toBeUndefined();
   });
 });
+
+describe('RecordingRunner — browser_driven arriving without a mode change', () => {
+  it('turns rich capture on even when the mode stays the same', () => {
+    // A combined ICICI capture stays in 'login' mode from start to finish, so
+    // the mode never changes at bind. Gating adoption on a mode change meant
+    // `browser_driven` never landed, richCapture stayed false, and the
+    // recording came back with no locator candidates, no hovers and no
+    // downloads — none of the evidence a browser skill is compiled from.
+    // `on` because turning rich capture on attaches download capture.
+    const page: any = { evaluate: jest.fn().mockResolvedValue(undefined), on: jest.fn() };
+    const context: any = { on: jest.fn(), addInitScript: jest.fn() };
+    const runner: any = new RecordingRunner(page, context, 'sess-driven', 'login');
+    runner.started = true;
+
+    expect(runner.richCapture).toBe(false);
+    runner.adoptMode(undefined, true);
+
+    expect(runner.richCapture).toBe(true);
+    // The live document is upgraded, not left recording under the old flag.
+    expect(page.evaluate).toHaveBeenCalled();
+  });
+
+  it('is still a no-op when neither the mode nor browser_driven changes', () => {
+    const page: any = { evaluate: jest.fn().mockResolvedValue(undefined) };
+    const context: any = { on: jest.fn(), addInitScript: jest.fn() };
+    const runner: any = new RecordingRunner(page, context, 'sess-same', 'login');
+    runner.started = true;
+
+    runner.adoptMode('login', false);
+
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+});

@@ -404,16 +404,27 @@ export class RecordingRunner {
    * moments later). Listeners that only exist in workflow mode are attached
    * here, since start() ran before the mode was known.
    */
-  adoptMode(mode: RecordingMode, browserDriven?: boolean): void {
-    if (typeof browserDriven === 'boolean' && browserDriven !== this.browserDriven) {
-      this.browserDriven = browserDriven;
+  adoptMode(mode: RecordingMode | undefined, browserDriven?: boolean): void {
+    const modeChanged = Boolean(mode && mode !== this.recordingMode);
+    const drivenChanged =
+      typeof browserDriven === 'boolean' && browserDriven !== this.browserDriven;
+
+    // Nothing to adopt. Kept as an early return so a bind that changes nothing
+    // does not tear down and reinstall the recorder in the live page.
+    if (!modeChanged && !drivenChanged) return;
+
+    if (drivenChanged) {
+      this.browserDriven = browserDriven as boolean;
       console.log(`[Recording] browser_driven adopted at bind: ${browserDriven}`);
     }
-    if (mode === this.recordingMode) return;
     const previous = this.recordingMode;
-    this.recordingMode = mode;
+    if (modeChanged) this.recordingMode = mode as RecordingMode;
 
-    if (this.isWorkflow && this.started && !this.onPopup) {
+    // Gate the rich attach on richCapture BECOMING true, not on the mode
+    // changing. `browser_driven` alone turns it on -- a combined capture stays
+    // in 'login' mode throughout -- and returning early on an unchanged mode
+    // meant those recordings never attached download or popup capture.
+    if (this.richCapture && this.started && !this.onPopup) {
       this.attachDownloadCapture(this.page, 0);
       this.onPopup = (popup: Page) => this.attachPopupCapture(popup);
       this.context.on('page', this.onPopup);
