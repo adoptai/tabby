@@ -1099,6 +1099,21 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     const at = stamp();
     const payload: any = {
       event_type: 'hover',
+      // This hover OPENED the click that follows it, as decided by revealedBy.
+      //
+      // Without the mark the relationship is lost the moment the event leaves
+      // the page, and the compiler has to re-derive it from position -- which
+      // cannot work, because an incidental hover is also
+      // hover-immediately-then-click. A capture of ICICI's nav holds both:
+      //
+      //   hover Deposits box -> click Cards box     (pointer passing through)
+      //   hover Cards box    -> click "Credit Cards" (the actual reveal)
+      //
+      // Pairing on adjacency folded the first into the second's step, so the
+      // compiled gesture hovered Deposits and clicked Cards. Only the recorder
+      // knows which hover revealed which click; say so rather than make the
+      // compiler guess.
+      reveal: true,
       tag_name: el.tagName || '',
       element_id: el.id || null,
       class_name: (typeof el.className === 'string' ? el.className : '') || null,
