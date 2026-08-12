@@ -11,6 +11,7 @@ function makeTemplate(overrides: Partial<AppTemplateEntity> = {}): AppTemplateEn
   return {
     id: 'tpl-uuid-1',
     tenant_id: 'tenant-1',
+    created_by_user_id: null,
     name: 'Salesforce Template',
     profile_name_pattern: 'salesforce-*',
     login_config: { login_url: 'https://login.salesforce.com' },
