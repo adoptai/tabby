@@ -247,7 +247,32 @@ export async function dispatchCommand(
 
     case 'click_by_text': {
       const text = requireParam(params, 'text', 'string');
-      await clickByText(resolveScope(page, params), params, text, timeoutMs);
+      const textScope = resolveScope(page, params);
+
+      // hover_first, for the same reason click_element honours it: the whole
+      // gesture has to be ONE command.
+      //
+      // It was implemented only on click_element, and nothing here rejected the
+      // parameter -- it was simply ignored. The compiler emits the reveal
+      // gesture as click_by_text whenever the control has usable text, which is
+      // the common case for a nav item, so the hover silently never happened.
+      // ICICI's submenu is not merely hidden until hovered, it is ABSENT from
+      // the DOM, so the failure read "nothing on the page matches this control"
+      // and looked like a bad locator rather than a skipped hover.
+      //
+      // Measured: the flyout goes display:none -> block while the pointer rests
+      // on the box and is back to none within 500ms of it leaving, so holding
+      // the pointer across the resolve is the only shape that works.
+      const hoverFirst = typeof params.hover_first === 'string' ? params.hover_first : '';
+      if (hoverFirst) {
+        const opener = await firstMatching(textScope, hoverFirst, { ...params, selector: hoverFirst });
+        if (!opener.matched) {
+          throw new Error(await noMatchMessage(page, textScope, hoverFirst, params));
+        }
+        await opener.locator.hover({ timeout: timeoutMs });
+      }
+
+      await clickByText(textScope, params, text, timeoutMs);
       return {};
     }
 
