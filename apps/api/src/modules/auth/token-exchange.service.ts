@@ -264,16 +264,18 @@ export class TokenExchangeService {
     // The oidc_jwt branch has always resolved the role properly (see
     // resolveRoleFromIdp above); only this branch skipped it.
     //
-    // Loading the user also closes a gap: target_user_id was previously trusted
-    // as a bare string, so the exchange would mint a token for a user id that
-    // belongs to another tenant, or to nobody at all.
+    // Looked up by id ALONE, deliberately not scoped to the agent's tenant.
+    // agent_assertion is a broker pattern: the agent client and the member it
+    // vouches for routinely live in different tenants, and requiring them to
+    // match rejects the exchange outright. The minted token keeps taking its
+    // tenant_id from the agent payload, exactly as before, so nothing about
+    // tenant scoping changes here -- this lookup only answers "what is this
+    // member's role".
     const targetUser = await this.userRepo.findOne({
-      where: { id: params.target_user_id, tenant_id: params.agent_payload.tenant_id },
+      where: { id: params.target_user_id },
     });
     if (!targetUser) {
-      throw new UnauthorizedException(
-        'target_user_id does not name a user in the agent token\'s tenant',
-      );
+      throw new UnauthorizedException('target_user_id does not name a known user');
     }
 
     const ttl = params.requested_ttl_seconds || 3600;

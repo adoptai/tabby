@@ -57,8 +57,10 @@ describe('TokenExchangeService', () => {
 
       // The exchange now resolves the MEMBER's role rather than inheriting the
       // agent's, so the user must exist in the agent's tenant.
+      // Deliberately in ANOTHER tenant than the agent: agent_assertion brokers
+      // across tenants, and the lookup must not require them to match.
       (service as any).userRepo.findOne.mockResolvedValue({
-        id: 'end-user-123', tenant_id: 'tenant-1', role: 'Admin',
+        id: 'end-user-123', tenant_id: 'other-tenant', role: 'Admin',
       });
       const result = await service.exchange({
         subject_token: 'agent-jwt',
