@@ -68,6 +68,10 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   })();
 
   const emit = (data: any): void => {
+    // This number is accounted for now.
+    if (data && typeof data === 'object' && typeof data.seq === 'number') {
+      pendingSeq.delete(data.seq);
+    }
     // Prefer the Playwright binding, which CSP cannot touch.
     //
     // The fetch beacon is a network request, so a frame served with
@@ -123,10 +127,64 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * navigation and does not depend on beacon delivery order.
    */
   let seq = 0;
-  const stamp = (): { seq: number; eventTime: string } => ({
-    seq: ++seq,
-    eventTime: new Date().toISOString(),
-  });
+
+  //: Numbers taken but not yet emitted, and when they were taken. A handler
+  //: stamps on entry and can still decide not to record -- so without this a
+  //: dropped event leaves a numbered hole and nothing says it existed.
+  const pendingSeq = new Map<number, string>();
+
+  //: Longer than the input debounce (500ms), which legitimately holds a stamp
+  //: across a burst of keystrokes before flushing. Anything still unemitted
+  //: after this was not waiting, it was dropped.
+  const ABANDONED_MS = 5000;
+
+  /**
+   * WHEN an interaction happened, and the number that records it.
+   *
+   * Taken at handler entry so `seq` means the order things HAPPENED -- the
+   * debounced input handler flushes late, and ordering by emission would number
+   * a click before the typing that preceded it.
+   *
+   * The cost of stamping early is that a handler which then bails burns a
+   * number. One ICICI capture came back missing 5, 17, 19, 20 and 21, and the
+   * single gap between the page landing and the "Credit Cards" click was the
+   * gesture that opened the menu -- its absence made the skill unreplayable, and
+   * nothing in the bundle said anything was missing at all. It cost a sign-in
+   * and twenty minutes of an agent guessing before the hole was even noticed.
+   *
+   * So an abandoned number is reported rather than left silent. See sweepAbandoned.
+   */
+  const stamp = (): { seq: number; eventTime: string } => {
+    const at = { seq: ++seq, eventTime: new Date().toISOString() };
+    pendingSeq.set(at.seq, at.eventTime);
+    return at;
+  };
+
+  /**
+   * Report numbers that were taken and never recorded.
+   *
+   * A tombstone says "an interaction was observed at seq N and not kept". It
+   * does not say what it was -- the handler that dropped it is the only thing
+   * that knew, and it is long gone. That is still the difference between a
+   * consumer being able to see that something is missing and a bundle that
+   * quietly lies about being complete.
+   */
+  const sweepAbandoned = (): void => {
+    if (!pendingSeq.size) return;
+    const cutoff = Date.now() - ABANDONED_MS;
+    for (const [n, when] of Array.from(pendingSeq.entries())) {
+      if (Date.parse(when) > cutoff) continue;
+      pendingSeq.delete(n);
+      emit({
+        event_type: 'dropped',
+        seq: n,
+        event_time: when,
+        url: window.location.href,
+        reason: 'observed but not recorded',
+        timestamp: new Date().toISOString(),
+      });
+    }
+  };
 
   const getDataAttrs = (el: any): string | null => {
     const attrs: Record<string, string> = {};
@@ -1010,6 +1068,12 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   };
 
   document.addEventListener('mouseover', handleMouseOver, true);
+  // Report abandoned numbers on a timer rather than at teardown: a recording
+  // ends by navigation or by the pod going away, and neither is a moment this
+  // script reliably gets. A sweep every few seconds means a gap is visible in
+  // the bundle even if the page never unloads cleanly.
+  setInterval(sweepAbandoned, ABANDONED_MS);
+
   document.addEventListener('click', handleClick, true);
   document.addEventListener('input', handleInput, true);
   document.addEventListener('change', handleChange, true);
