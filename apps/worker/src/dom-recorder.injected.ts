@@ -387,6 +387,19 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     }
   };
 
+  //: Everything that could carry a label, for counting how many controls share
+  //: one. Capped: this runs per interaction, and a count that stops early can
+  //: only under-report, which costs a candidate instead of inventing certainty.
+  const LABEL_SCAN_MAX = 4000;
+  const allElements = (): any[] => {
+    try {
+      const all = Array.prototype.slice.call(document.querySelectorAll('*'));
+      return all.length > LABEL_SCAN_MAX ? all.slice(0, LABEL_SCAN_MAX) : all;
+    } catch {
+      return [];
+    }
+  };
+
   /**
    * The element the human actually touched. `e.target` is retargeted to the
    * shadow HOST for anything inside a web component, so a document-level
@@ -719,10 +732,35 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       // replay can click by text.
       const text = ownLabel(el);
       if (text) {
+        // Counted over everything that could CARRY this label, not over
+        // actionableList().
+        //
+        // That list holds buttons, links and inputs. A bank's SPA nav is <p> and
+        // <div>, so none of the elements sharing the label were ever in the
+        // population -- the count came back 0 for every one of them, and the
+        // `n === 0 -> 1` guard below then turned "counted nothing" into
+        // "counted exactly one". Measured on ICICI's overview page: NINE leaf
+        // nodes have the exact text "Credit Cards", and the bundle recorded
+        // match_count 1 for it.
+        //
+        // The compiler reads 1 as unique and emits a bare click_by_text, so the
+        // replay had to choose between nine and correctly refused -- "on the
+        // page but not visible". The ambiguity was real at capture time; only
+        // the measurement was wrong.
+        //
+        // Bounded because this runs on every interaction and a bank dashboard is
+        // a large document. The cap only matters on pages far past the point
+        // where a text locator was ever going to be trustworthy, and stopping
+        // early can only UNDER-count -- which now costs a candidate rather than
+        // fabricating confidence in one.
         let n = 0;
-        const all = actionableList();
-        for (let i = 0; i < all.length; i++) {
-          if (ownLabel(all[i]) === text) n++;
+        const seenEl: any[] = [];
+        const pool = allElements().concat(actionableList());
+        for (let i = 0; i < pool.length; i++) {
+          const cand = pool[i];
+          if (seenEl.indexOf(cand) !== -1) continue;
+          seenEl.push(cand);
+          if (ownLabel(cand) === text) n++;
         }
         // The element carries this label by construction, so a count of zero is
         // incoherent -- and it is what an ICICI recording produced for "Past"
