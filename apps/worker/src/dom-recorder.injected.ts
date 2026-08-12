@@ -576,6 +576,38 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * CSS, so it cannot be counted with querySelectorAll here. The contract
    * already defines -1 for exactly this.
    */
+  /**
+   * A selector that names a label-less container by the text it leads with.
+   *
+   * Classes are kept only if they look authored: Angular stamps `ng-tns-c123`,
+   * `_ngcontent-x` and similar per-build noise that changes between deploys, so
+   * a selector built on those is no more durable than the index it replaces.
+   * If nothing authored survives, the tag alone still scopes the :has-text().
+   */
+  const containerLabelCandidate = (el: any): string | null => {
+    try {
+      const kids = el.querySelectorAll ? el.querySelectorAll('*') : [];
+      let lead = '';
+      // The container's own name precedes the items it reveals, so the FIRST
+      // labelled descendant is the one to take. Bounded because a flyout can
+      // hold a lot of nodes and this runs on every interaction.
+      for (let i = 0; i < kids.length && i < 40; i++) {
+        const t = ownLabel(kids[i]);
+        if (t && t.length <= 40) { lead = t; break; }
+      }
+      if (!lead) return null;
+      const raw = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
+      const classes = String(raw || '')
+        .split(/\s+/)
+        .filter((c: string) => c && !/^ng-/.test(c) && !/^_ngcontent/.test(c) && !/\d{4,}/.test(c));
+      const tag = String(el.tagName || 'div').toLowerCase();
+      const base = classes.length ? tag + '.' + classes.slice(0, 2).join('.') : tag;
+      return base + ':has-text("' + lead.replace(/"/g, '\\"') + '")';
+    } catch {
+      return null;
+    }
+  };
+
   const rowScopedCandidate = (el: any, controlSel: string): string | null => {
     try {
       if (!controlSel || !el.closest) return null;
@@ -682,6 +714,31 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
         // very text a hand-written skill used successfully.
         if (n === 0) n = 1;
         add('text', text, n);
+      }
+
+      // No label of its own, but it SAYS something: name it by what it says.
+      //
+      // A nav box holds an icon, its own name, and its whole flyout, so several
+      // text-bearing children make it a container and ownLabel correctly
+      // declines to name it. Its class is shared by every sibling box. With no
+      // text and no distinguishing class, the only candidate left was cssPath's
+      // positional `#scroll-container > div > div:nth-of-type(4)` -- which
+      // encodes "the 4th box", not "the Cards box".
+      //
+      // That is a locator with a clock on it. An ICICI recording compiled a
+      // hover on nth-of-type(4) when Cards sat 4th; the nav later shifted by one
+      // and the same step hovered Deposits, so the "Credit Cards" click that
+      // followed matched nothing and the whole 6-operation replay died on step
+      // one.
+      //
+      // The container's FIRST text-bearing descendant is its own name ("Cards")
+      // -- the submenu entries come after it -- and a name survives reordering
+      // where an index cannot. match_count is -1 (unevaluable) because
+      // :has-text() is Playwright's engine, not querySelectorAll's, exactly as
+      // for row_scoped.
+      if (!text) {
+        const named = containerLabelCandidate(el);
+        if (named) add('container_label', named, -1);
       }
 
       const path = cssPath(el);
