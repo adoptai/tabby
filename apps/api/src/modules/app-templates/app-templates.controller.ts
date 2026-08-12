@@ -122,18 +122,19 @@ export class AppTemplatesController {
     return this.templateService.findOne(resolveTenantScope(req.user), id);
   }
 
+  // No @Roles here: the role check moved into the service so that the template's
+  // CREATOR is also allowed, which @Roles cannot express. Admin/Editor still
+  // pass exactly as before; everyone else is rejected there with a 403.
   @Put(':id')
-  @Roles('Admin', 'Editor')
-  @ApiOperation({ summary: 'Update app template' })
+  @ApiOperation({ summary: 'Update app template', description: 'Requires the Admin or Editor role, or being the template\'s creator.' })
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateAppTemplateDto, @Req() req: any) {
-    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id);
+    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id, req.user.role);
   }
 
   @Patch(':id')
-  @Roles('Admin', 'Editor')
-  @ApiOperation({ summary: 'Partially update app template' })
+  @ApiOperation({ summary: 'Partially update app template', description: 'Requires the Admin or Editor role, or being the template\'s creator.' })
   async patch(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateAppTemplateDto, @Req() req: any) {
-    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id);
+    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id, req.user.role);
   }
 
   @Delete(':id')

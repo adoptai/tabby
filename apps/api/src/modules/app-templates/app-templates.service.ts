@@ -1,4 +1,10 @@
-import { Injectable, ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  ForbiddenException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { createHash } from 'crypto';
@@ -29,7 +35,11 @@ export class AppTemplatesService {
       throw new ConflictException(`Template "${data.name}" already exists`);
     }
 
-    const template = this.templateRepo.create({ ...data, tenant_id: tenantId });
+    const template = this.templateRepo.create({
+      ...data,
+      tenant_id: tenantId,
+      created_by_user_id: actorId ?? null,
+    });
     const saved = await this.templateRepo.save(template);
 
     await this.auditService.log({
@@ -66,8 +76,36 @@ export class AppTemplatesService {
     });
   }
 
-  async update(tenantId: string | undefined, id: string, data: Partial<AppTemplateEntity>, actorId: string) {
+  /**
+   * Update a template. Permitted for Admin/Editor, or for the user who created
+   * it.
+   *
+   * Creating a template is open to any authenticated user, so requiring
+   * Admin/Editor to update one left an Operator able to create a template it
+   * could never finish. NoUI's combined capture hit this: it registers the
+   * login template and then PATCHes it to extend the profile scope for the
+   * workflow half, and that second call 403'd while the first succeeded.
+   *
+   * The creator check is deliberately narrow. A NULL `created_by_user_id`
+   * (every row predating the column) grants nothing — those templates still
+   * require Admin/Editor, so no existing template becomes more editable than it
+   * is today. Tenant scoping is unchanged and still applied by findOne.
+   */
+  async update(
+    tenantId: string | undefined,
+    id: string,
+    data: Partial<AppTemplateEntity>,
+    actorId: string,
+    actorRole?: string,
+  ) {
     const template = await this.findOne(tenantId, id);
+    const privileged = actorRole === 'Admin' || actorRole === 'Editor';
+    const isCreator = !!template.created_by_user_id && template.created_by_user_id === actorId;
+    if (actorRole !== undefined && !privileged && !isCreator) {
+      throw new ForbiddenException(
+        'Updating an app template requires the Admin or Editor role, or being its creator',
+      );
+    }
     Object.assign(template, data);
     await this.templateRepo.save(template);
 

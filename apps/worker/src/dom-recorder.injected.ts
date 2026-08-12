@@ -189,7 +189,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   const getDataAttrs = (el: any): string | null => {
     const attrs: Record<string, string> = {};
     for (const attr of el.attributes || []) {
-      if (attr.name.startsWith('data-')) attrs[attr.name] = attr.value;
+      if (attr.name.startsWith('data-')) attrs[attr.name] = maskSensitive(attr.value);
     }
     return Object.keys(attrs).length > 0 ? JSON.stringify(attrs) : null;
   };
@@ -204,9 +204,17 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     if (ac && ac !== 'off') return `${tag}[autocomplete="${ac}"]`;
     const parts = [tag];
     if (el.type && tag === 'input') parts.push(`[type="${el.type}"]`);
+    // A selector has to match the live DOM, so the attribute value cannot be
+    // masked here — it would simply stop matching. When the value carries an
+    // account/card number we therefore SKIP that strategy rather than emit a
+    // selector with the number embedded in it, and fall through to the
+    // structural path below. A slightly weaker selector beats a PAN in the
+    // artifact.
     const ariaLabel = el.getAttribute('aria-label');
-    if (ariaLabel) parts.push(`[aria-label="${ariaLabel}"]`);
-    else if (el.placeholder) parts.push(`[placeholder="${el.placeholder}"]`);
+    if (ariaLabel && maskSensitive(ariaLabel) === ariaLabel) parts.push(`[aria-label="${ariaLabel}"]`);
+    else if (el.placeholder && maskSensitive(el.placeholder) === el.placeholder) {
+      parts.push(`[placeholder="${el.placeholder}"]`);
+    }
     if (parts.length > 1) return parts.join('');
     if (el.className && typeof el.className === 'string') {
       const classes = el.className.trim().split(/\s+/).slice(0, 2).join('.');
@@ -270,7 +278,33 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     '[role="menuitem"],[role="tab"],[role="option"],[role="checkbox"],[role="radio"],' +
     '[onclick],[tabindex]:not([tabindex="-1"])';
 
-  const normText = (s: any): string => String(s || '').replace(/\s+/g, ' ').trim();
+  /**
+   * Mask account/card numbers out of any text we are about to record.
+   *
+   * Value redaction (`shouldRedact`) only covers what the user TYPES, keyed on
+   * the field's role. It cannot see numbers the page already displays, and an
+   * ICICI capture leaked a full PAN into a locator that way: the card-select
+   * radio's own label is "Credit Card Number Select 4315810557625005(INR) -
+   * NAVJOT SINGH", so the number travelled into `text_content` and then into a
+   * compiled `click_by_text` fallback in the skill artifact.
+   *
+   * 12-19 digits is the ISO/IEC 7812 PAN range and covers bank account numbers
+   * too. Separators are allowed between digits because portals print cards
+   * grouped ("4315 8105 5762 5005"). Shorter runs are left alone: dates,
+   * amounts, OTP boxes and row indices are what make labels selectable, and
+   * masking those would blind the locators for no privacy gain.
+   *
+   * Masking deliberately happens BEFORE match counting, so two cards whose
+   * labels differ only by number both collapse to the same masked string and
+   * the candidate is scored ambiguous rather than unique. That is the honest
+   * result — the masked locator genuinely cannot tell them apart — and it stops
+   * the compiler from trusting a text fallback that could pick the wrong card.
+   */
+  const maskSensitive = (s: string): string =>
+    s.replace(/\d(?:[ .\-]?\d){11,18}/g, (m) => (m.replace(/\D/g, '').length <= 19 ? '[REDACTED]' : m));
+
+  const normText = (s: any): string =>
+    maskSensitive(String(s || '').replace(/\s+/g, ' ').trim());
 
   const cssEsc = (v: string): string => {
     try {
@@ -435,7 +469,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   const accessibleName = (el: any): string | null => {
     try {
       const aria = el.getAttribute ? el.getAttribute('aria-label') : null;
-      if (aria && aria.trim()) return aria.trim().slice(0, 120);
+      if (aria && aria.trim()) return maskSensitive(aria.trim()).slice(0, 120);
 
       const labelledBy = el.getAttribute ? el.getAttribute('aria-labelledby') : null;
       if (labelledBy) {
@@ -455,10 +489,10 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       }
 
       const alt = el.getAttribute ? el.getAttribute('alt') : null;
-      if (alt && alt.trim()) return alt.trim().slice(0, 120);
+      if (alt && alt.trim()) return maskSensitive(alt.trim()).slice(0, 120);
 
       const title = el.getAttribute ? el.getAttribute('title') : null;
-      if (title && title.trim()) return title.trim().slice(0, 120);
+      if (title && title.trim()) return maskSensitive(title.trim()).slice(0, 120);
 
     
   const tag = (el.tagName || '').toLowerCase();
@@ -560,6 +594,14 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   const buildCandidates = (el: any): any[] => {
     const out: any[] = [];
     const add = (kind: string, value: string, matchCount: number): void => {
+      // A masked locator is a dead locator: `click_by_text "[REDACTED]"` matches
+      // nothing, and `:has-text("[REDACTED]")` scopes to nothing. Emitting one
+      // would spend a replay's 30-second timeout to discover that. Text-derived
+      // candidates are already masked by normText/accessibleName upstream, so
+      // the marker's presence is the signal that this candidate was built out of
+      // an account/card number — drop it and let the structural candidates
+      // (css_path, id, name) carry the element.
+      if (value && value.indexOf('[REDACTED]') !== -1) return;
       if (value) out.push({ kind: kind, value: value, match_count: matchCount });
     };
     try {
@@ -801,8 +843,8 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       y: Math.round(e.clientY),
       input_type: target.type || null,
       autocomplete: target.getAttribute ? target.getAttribute('autocomplete') : null,
-      placeholder: target.placeholder || null,
-      aria_label: target.getAttribute ? target.getAttribute('aria-label') : null,
+      placeholder: normText(target.placeholder) || null,
+      aria_label: target.getAttribute ? normText(target.getAttribute('aria-label')) || null : null,
       role_attr: target.getAttribute ? target.getAttribute('role') : null,
       data_attrs_json: getDataAttrs(target),
       seq: at.seq,
@@ -1001,8 +1043,8 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
           field_role: fieldRole,
           is_redacted: redact,
           autocomplete: target.getAttribute('autocomplete') || null,
-          placeholder: target.placeholder || null,
-          aria_label: target.getAttribute('aria-label') || null,
+          placeholder: normText(target.placeholder) || null,
+          aria_label: normText(target.getAttribute('aria-label')) || null,
           role_attr: target.getAttribute('role') || null,
           data_attrs_json: getDataAttrs(target),
           seq: at.seq,
@@ -1049,8 +1091,8 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       field_role: fieldRole,
       is_redacted: redact,
       autocomplete: target.getAttribute('autocomplete') || null,
-      placeholder: target.placeholder || null,
-      aria_label: target.getAttribute('aria-label') || null,
+      placeholder: normText(target.placeholder) || null,
+      aria_label: normText(target.getAttribute('aria-label')) || null,
       role_attr: target.getAttribute('role') || null,
       data_attrs_json: getDataAttrs(target),
       seq: at.seq,
