@@ -840,7 +840,8 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     if (hoverRevealedTarget(target)) {
       emitHoverStep();
     }
-    lastHover = null;
+    // Consumed. A reveal belongs to the click that used it, not to the next one.
+    hoverTrail.length = 0;
 
     enrich(payload, () => realTarget(e));
     emit(payload);
@@ -861,7 +862,6 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * of a menu, not of a mouse crossing the page. Emitted just before the click,
    * so the two arrive in the order a replay must perform them.
    */
-  let lastHover: { el: any; at: number } | null = null;
   let lastClickEl: any = null;
   const HOVER_REVEAL_WINDOW_MS = 5000;
 
@@ -872,18 +872,47 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   // raw target and nothing else; the walk happens once, at click time, when we
   // actually need to know whether the hover revealed anything.
   const handleMouseOver = (e: any): void => {
-    lastHover = { el: e.target, at: Date.now() };
+    // A TRAIL, not just the last one.
+    //
+    // mouseover fires on every element the pointer enters, so by the time the
+    // human clicks "Credit Cards" the most recent entry IS "Credit Cards" --
+    // `el === clicked`, the reveal test bails, and nothing records what opened
+    // the menu. It only ever passed when the pointer happened to go from the
+    // opener straight to the click without touching another actionable node in
+    // between, which is why the same journey recorded six times captured the
+    // nav reveal twice.
+    //
+    // Keeping the recent path lets the reveal be found where it actually is:
+    // a few elements back. Bounded hard -- this runs on raw mouse movement.
+    hoverTrail.push({ el: e.target, at: Date.now() });
+    if (hoverTrail.length > HOVER_TRAIL_MAX) hoverTrail.shift();
   };
 
-  /** Did this hover open something the click then used? Resolved at click time. */
+  //: How much of the pointer's recent path to keep. Enough to step back over
+  //: the handful of elements crossed between an opener and the item it reveals.
+  const HOVER_TRAIL_MAX = 12;
+  const hoverTrail: Array<{ el: any; at: number }> = [];
+
+  /** Did a hover open something the click then used? Resolved at click time. */
   let hoverEl: any = null;
   const hoverRevealedTarget = (clicked: any): boolean => {
     hoverEl = null;
-    if (!lastHover || !clicked) return false;
-    if (Date.now() - lastHover.at > HOVER_REVEAL_WINDOW_MS) return false;
+    if (!clicked) return false;
+    // Newest first: the nearest thing that could have revealed the target is the
+    // best answer, and walking back stops at the first one that fits.
+    for (let i = hoverTrail.length - 1; i >= 0; i--) {
+      if (revealedBy(hoverTrail[i], clicked)) return true;
+    }
+    return false;
+  };
+
+  const revealedBy = (entry: { el: any; at: number } | null, clicked: any): boolean => {
+    if (!entry || !clicked) return false;
+    if (Date.now() - entry.at > HOVER_REVEAL_WINDOW_MS) return false;
     try {
-      const el = actionableAncestor(lastHover.el);
+      const el = actionableAncestor(entry.el);
       if (!el || el === clicked) return false;
+      if (el.contains && el.contains(clicked)) return false;
       // Scope is the hovered element's PARENT, not the element itself.
       //
       // A revealed menu is almost never a descendant of the thing you hovered:
