@@ -1324,6 +1324,72 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     emit(payload);
   };
 
+  /**
+   * A <select> whose value was set by SCRIPT, which fires no `change` event.
+   *
+   * Finacle renders a styled div over each native select: the human clicks the
+   * overlay, the widget assigns `select.value` itself, and no event reaches
+   * handleChange. An ICICI capture of the statement form recorded ZERO events on
+   * its three selects -- account type, card number and period -- so the compiler
+   * had only the overlay clicks to work with and emitted three fragile steps for
+   * each dropdown, keyed on classes that encode the widget's CURRENT state
+   * (`newListSelected`) and on `:text-is` strings holding the whole option list.
+   * Replay stalled there every time: the second click needs the panel still
+   * open, the third needs to land on a floating option.
+   *
+   * Polling is the only way to see an assignment. It is cheap -- a handful of
+   * selects, a string compare each -- and it emits the same `change` payload the
+   * real event would have, so nothing downstream needs to know the difference.
+   * The compiler can then address the select directly instead of choreographing
+   * clicks through an overlay.
+   */
+  const selectValues = new WeakMap<any, string>();
+  const SELECT_POLL_MS = 400;
+
+  const sweepSelects = (): void => {
+    try {
+      const selects = document.querySelectorAll('select');
+      for (let i = 0; i < selects.length; i++) {
+        const el: any = selects[i];
+        const now = String(el.value == null ? '' : el.value);
+        if (!selectValues.has(el)) {
+          // First sighting is the baseline, not a change: the page's own default
+          // is not something the human chose.
+          selectValues.set(el, now);
+          continue;
+        }
+        if (selectValues.get(el) === now) continue;
+        selectValues.set(el, now);
+        const at = stamp();
+        const payload: any = {
+          event_type: 'change',
+          tag_name: el.tagName || 'SELECT',
+          element_id: el.id || null,
+          class_name: (typeof el.className === 'string' ? el.className : '') || null,
+          selector: buildRichSelector(el),
+          url: window.location.href,
+          input_type: 'select',
+          value: now.slice(0, 500),
+          field_name: el.name || el.id || null,
+          field_role: detectFieldRole(el),
+          is_redacted: false,
+          autocomplete: el.getAttribute ? el.getAttribute('autocomplete') : null,
+          placeholder: null,
+          aria_label: el.getAttribute ? normText(el.getAttribute('aria-label')) || null : null,
+          role_attr: el.getAttribute ? el.getAttribute('role') : null,
+          data_attrs_json: getDataAttrs(el),
+          seq: at.seq,
+          event_time: at.eventTime,
+          timestamp: new Date().toISOString(),
+        };
+        enrich(payload, () => el);
+        emit(payload);
+      }
+    } catch {
+      /* a poll that throws must not tear the recorder down */
+    }
+  };
+
   const handleSubmit = (e: any): void => {
     const form = e.target;
     if (!form || (form.tagName && form.tagName.toLowerCase() !== 'form')) return;
@@ -1365,6 +1431,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   // script reliably gets. A sweep every few seconds means a gap is visible in
   // the bundle even if the page never unloads cleanly.
   setInterval(sweepAbandoned, ABANDONED_MS);
+  const selectTimer = setInterval(sweepSelects, SELECT_POLL_MS);
 
   document.addEventListener('click', handleClick, true);
   document.addEventListener('input', handleInput, true);
@@ -1380,6 +1447,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('input', handleInput, true);
     document.removeEventListener('change', handleChange, true);
+    clearInterval(selectTimer);
     document.removeEventListener('submit', handleSubmit, true);
     delete w.__tabbyDomRecorder;
     delete w.__tabbyDomRecorderRich;
