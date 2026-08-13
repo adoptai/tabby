@@ -40,7 +40,25 @@ function renumberDensely(...streams: Array<Array<{ seq?: unknown }> | undefined>
     }
   }
   all.sort((a, b) => (a.seq as number) - (b.seq as number));
-  for (let i = 0; i < all.length; i++) all[i].seq = i + 1;
+  // old (global) seq -> new (dense) seq, so anything REFERENCING a seq can be
+  // remapped alongside the seqs themselves.
+  const remap = new Map<number, number>();
+  for (let i = 0; i < all.length; i++) {
+    remap.set(all[i].seq as number, i + 1);
+    all[i].seq = i + 1;
+  }
+  // `supersedes` references other events by seq; compact those too, or the
+  // reference survives the renumber pointing at the wrong event.
+  for (const stream of streams) {
+    for (const ev of stream || []) {
+      const sup = (ev as any)?.supersedes;
+      if (Array.isArray(sup)) {
+        (ev as any).supersedes = sup
+          .map((sq: unknown) => (typeof sq === 'number' ? remap.get(sq) : undefined))
+          .filter((sq: unknown): sq is number => typeof sq === 'number');
+      }
+    }
+  }
 }
 
 export class RecordingRunner {
@@ -280,7 +298,20 @@ export class RecordingRunner {
         // Rebase the page-local ordinal onto the session-global counter. Runs
         // for popups as well as the main page, so one total order covers every
         // document in the recording.
-        ev.seq = this.rebaseSeq(ev.seq);
+        const rawSeq = ev.seq;
+        ev.seq = this.rebaseSeq(rawSeq);
+        // `supersedes` holds page-local ordinals from the SAME document (the
+        // clicks that drove a dropdown, captured just before its change), so
+        // they rebase by the SAME offset. Without this they stayed page-local
+        // while everything else went global, and a select's supersedes pointed
+        // at whatever unrelated events happened to hold those low numbers -- a
+        // period dropdown claimed two login-page buttons.
+        if (Array.isArray((ev as any).supersedes) && typeof rawSeq === 'number') {
+          const delta = ev.seq - rawSeq;
+          (ev as any).supersedes = (ev as any).supersedes.map((sq: unknown) =>
+            typeof sq === 'number' ? sq + delta : sq,
+          );
+        }
         this.events.push(ev);
       }
     } catch {
