@@ -1061,6 +1061,10 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
       /* an unresolvable relation is simply not asserted */
     }
     lastClickEl = target;
+    // Remembered so a select whose value changes moments later can say which
+    // clicks were its widget. See sweepSelects/`supersedes`.
+    recentClicks.push({ el: target, seq: at.seq, at: Date.now() });
+    if (recentClicks.length > RECENT_CLICK_MAX) recentClicks.shift();
 
     // If a hover opened what was just clicked, record the hover FIRST so a
     // replay performs them in the order that works.
@@ -1360,6 +1364,13 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * The compiler can then address the select directly instead of choreographing
    * clicks through an overlay.
    */
+  //: Clicks that may turn out to be a dropdown widget's, resolved when the
+  //: select behind it changes. Small and time-bounded: this is "what did the
+  //: human just click near this control", not a history.
+  const recentClicks: Array<{ el: any; seq: number; at: number }> = [];
+  const RECENT_CLICK_MAX = 12;
+  const WIDGET_WINDOW_MS = 2500;
+
   const selectValues = new WeakMap<any, string>();
   const SELECT_POLL_MS = 400;
 
@@ -1377,9 +1388,40 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
         }
         if (selectValues.get(el) === now) continue;
         selectValues.set(el, now);
+        // The clicks that WERE this dropdown's widget.
+        //
+        // A portal draws a styled div over the native select: the human clicks
+        // the overlay, picks an option, and the select's value changes a moment
+        // later. Those clicks are the same act as the change -- not separate
+        // work -- but nothing downstream could tell, so the compiler emitted
+        // both. An ICICI download ended up clicking a container labelled
+        // "Monthly" immediately after setting Annual, then opening a panel and
+        // hunting a floating option, before finally issuing the select_option
+        // that would have done it outright. The same stall, identically, on
+        // four consecutive replays.
+        //
+        // Scoped by containment, not just recency: only clicks inside the
+        // select's own neighbourhood count, so a click elsewhere on the page
+        // that happens to land in the window is not swallowed.
+        let scope: any = el;
+        for (let up = 0; up < 4 && scope && scope.parentElement; up++) scope = scope.parentElement;
+        const seenAt = Date.now();
+        const supersedes: number[] = [];
+        for (let j = 0; j < recentClicks.length; j++) {
+          const rc = recentClicks[j];
+          if (seenAt - rc.at > WIDGET_WINDOW_MS) continue;
+          if (!rc.el || rc.el === el) continue;
+          try {
+            if (scope && scope.contains && scope.contains(rc.el)) supersedes.push(rc.seq);
+          } catch {
+            /* a detached node is simply not claimed */
+          }
+        }
+
         const at = stamp();
         const payload: any = {
           event_type: 'change',
+          supersedes: supersedes,
           tag_name: el.tagName || 'SELECT',
           element_id: el.id || null,
           class_name: (typeof el.className === 'string' ? el.className : '') || null,
