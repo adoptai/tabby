@@ -101,7 +101,12 @@ export class AppTemplatesService {
     const template = await this.findOne(tenantId, id);
     const privileged = actorRole === 'Admin' || actorRole === 'Editor';
     const isCreator = !!template.created_by_user_id && template.created_by_user_id === actorId;
-    if (actorRole !== undefined && !privileged && !isCreator) {
+    // Fail CLOSED. The route used to carry @Roles('Admin','Editor'); moving the
+    // check here to also allow the creator must not weaken it, but `actorRole !==
+    // undefined` did exactly that — a token whose role claim resolves to undefined
+    // (federated/agent) skipped the gate and could update any template in scope.
+    // A missing role is not a privileged role.
+    if (!privileged && !isCreator) {
       throw new ForbiddenException(
         'Updating an app template requires the Admin or Editor role, or being its creator',
       );

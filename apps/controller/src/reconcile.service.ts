@@ -662,6 +662,12 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
           await this.sessionRepo.update(session.id, {
             last_runtime_error: runtime.terminated,
           });
+        } else if (!runtime.terminated && session.last_runtime_error) {
+          // The pod is healthy now (worker recovered, or it was replaced), but the
+          // session still carries the old cause — and execute() would later cite it
+          // to explain an unrelated failure. A reason outlives the event it
+          // describes only if nobody clears it, so clear it once the pod is well.
+          await this.sessionRepo.update(session.id, { last_runtime_error: null });
         }
         continue;
       }
