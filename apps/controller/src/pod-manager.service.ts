@@ -383,11 +383,29 @@ export class PodManagerService {
       ...(status.containerStatuses ?? []),
       ...(status.initContainerStatuses ?? []),
     ];
-    for (const container of containers) {
-      const ended = container?.state?.terminated ?? container?.lastState?.terminated;
-      if (!ended?.reason) {
-        continue;
-      }
+    // Only an ABNORMAL termination is a death cause. An init container that ran to
+    // completion (Istio's istio-init: Completed, exit 0) and a clean worker exit
+    // both terminate normally, and returning that turns healthy startup into a
+    // phantom "runtime error" — which then gets surfaced by execute() as the cause
+    // of a much later, unrelated failure. Skip reason=Completed / exitCode=0.
+    const abnormal = containers
+      .map((container) => ({
+        container,
+        ended: container?.state?.terminated ?? container?.lastState?.terminated,
+      }))
+      .filter(
+        ({ ended }) => ended?.reason && ended.reason !== 'Completed' && ended.exitCode !== 0,
+      );
+    // The WORKER's death is the signal this column exists for; a noVNC sidecar
+    // restart is secondary and must not shadow it, and container order is not
+    // guaranteed worker-first. Prefer the container named 'worker'.
+    abnormal.sort(
+      (a, b) => (b.container.name === 'worker' ? 1 : 0) - (a.container.name === 'worker' ? 1 : 0),
+    );
+
+    const picked = abnormal[0];
+    if (picked) {
+      const { container, ended } = picked;
       const restarts = typeof container.restartCount === 'number' ? container.restartCount : 0;
       const exitCode = typeof ended.exitCode === 'number' ? ended.exitCode : null;
       const detail = [

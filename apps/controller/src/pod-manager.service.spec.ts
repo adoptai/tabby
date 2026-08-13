@@ -372,6 +372,75 @@ describe('PodManagerService not-found handling', () => {
     });
   });
 
+  it('ignores an init container that completed normally, and reports the worker', async () => {
+    // Under Istio a healthy pod carries istio-init: Completed (exit 0). Returning
+    // that as the runtime error turned normal startup into a phantom death cause.
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        initContainerStatuses: [
+          { name: 'istio-init', state: { terminated: { reason: 'Completed', exitCode: 0 } } },
+        ],
+        containerStatuses: [
+          {
+            name: 'worker',
+            restartCount: 0,
+            state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+          },
+        ],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: 'worker: OOMKilled (exit 137)',
+    });
+  });
+
+  it('does not let a noVNC sidecar restart shadow the worker death', async () => {
+    // Container order is not guaranteed worker-first; the worker's death is the
+    // signal, a sidecar restart is secondary and must not win.
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        containerStatuses: [
+          {
+            name: 'novnc',
+            restartCount: 1,
+            lastState: { terminated: { reason: 'Error', exitCode: 1 } },
+          },
+          {
+            name: 'worker',
+            restartCount: 0,
+            state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+          },
+        ],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: 'worker: OOMKilled (exit 137)',
+    });
+  });
+
+  it('reports nothing terminated when only an init container completed', async () => {
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        initContainerStatuses: [
+          { name: 'istio-init', state: { terminated: { reason: 'Completed', exitCode: 0 } } },
+        ],
+        containerStatuses: [{ name: 'worker', state: { running: {} }, restartCount: 0 }],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: null,
+    });
+  });
+
   it('reports a live pod with nothing terminated', async () => {
     const readNamespacedPod = jest.fn().mockResolvedValue({
       status: { containerStatuses: [{ name: 'browser', state: { running: {} }, restartCount: 0 }] },
