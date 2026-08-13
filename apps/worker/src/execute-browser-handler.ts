@@ -376,11 +376,31 @@ export async function dispatchCommand(
       }
       // Match by value first, then by visible label — a recording carries
       // whichever the page exposed.
+      //
+      // force, because the select we need is usually INVISIBLE. Portals like
+      // Finacle draw a styled div over the native control and hide it; without
+      // force, selectOption waits for actionability on an element that will
+      // never be actionable, and the command hangs until the worker times out
+      // (observed as `HTTP 504 Worker browser command timed out` on every
+      // dropdown of an ICICI statement replay). force skips the actionability
+      // wait, which is exactly right here: the element is real and settable, it
+      // is simply not something a human would click.
+      //
+      // A short timeout on top, so a genuinely missing select fails fast rather
+      // than burning the caller's whole budget.
+      const selectOpts = { timeout: Math.min(timeoutMs, 5000), force: true };
       let chosen: string[];
       try {
-        chosen = await target.selectOption({ value }, { timeout: timeoutMs });
+        chosen = await target.selectOption({ value }, selectOpts);
       } catch {
-        chosen = await target.selectOption({ label: value }, { timeout: timeoutMs });
+        chosen = await target.selectOption({ label: value }, selectOpts);
+      }
+      // The widget that hid the select is listening for `change`, not for
+      // Playwright's internal update -- an overlay that renders the chosen label
+      // stays stale otherwise, and any form that reads the DOM on change never
+      // runs. Dispatched after the value is set, so listeners see the new one.
+      if (typeof target.dispatchEvent === 'function') {
+        await target.dispatchEvent('change').catch(() => undefined);
       }
       return { selected: chosen };
     }
