@@ -110,7 +110,7 @@ export class ExecuteController {
     await this.auditService.log({
       tenant_id: req.user.tenant_id,
       actor_type: req.user.owner_user_id ? 'human' : 'system',
-      actor_id: String(req.user.sub ?? req.user.user_id ?? 'unknown'),
+      actor_id: String(req.user.user_id ?? 'unknown'),
       event_type: 'execute.fetch.requested',
       payload: {
         profile_id: dto.profile_id,
@@ -169,7 +169,7 @@ export class ExecuteController {
     await this.auditService.log({
       tenant_id: req.user.tenant_id,
       actor_type: req.user.owner_user_id ? 'human' : 'system',
-      actor_id: String(req.user.sub ?? req.user.user_id ?? 'unknown'),
+      actor_id: String(req.user.user_id ?? 'unknown'),
       event_type: 'execute.browser.requested',
       payload: {
         profile_id: dto.profile_id,

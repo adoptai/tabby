@@ -112,10 +112,17 @@ const addressOf = (el: Element): { selector: string; kind: string; match_count: 
 const VISIBLE_CAP = 50;
 const HIDDEN_CAP = 30;
 
+// Bank portals print account/card numbers in plain text, and this summary is
+// read by the model. The recorder masks 12-19 digit PANs (ISO/IEC 7812) before
+// anything leaves the page; the summary path must not undo that. Same pattern as
+// dom-recorder's maskSensitive.
+const maskPII = (s: string): string =>
+  s.replace(/\d(?:[ .\-]?\d){11,18}/g, (m) => (m.replace(/\D/g, '').length <= 19 ? '[REDACTED]' : m));
+
 const describe = (el: Element) => {
   const e = el as HTMLElement;
   const out: Record<string, unknown> = {
-    text: (e.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    text: maskPII((e.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 120),
     tag: e.tagName.toLowerCase(),
   };
   const addr = addressOf(e);
@@ -170,7 +177,7 @@ const buttons = collect(buttonSel, describe);
 const inputs = collect(inputSel, describeInput);
 const headings = collect(headingSel, (el) => ({
   level: el.tagName,
-  text: (el as HTMLElement).textContent?.trim().slice(0, 200) || '',
+  text: maskPII((el as HTMLElement).textContent?.trim() || '').slice(0, 200),
 }));
 
 const droppedTotal = links.dropped + buttons.dropped + inputs.dropped + headings.dropped;
