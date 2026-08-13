@@ -122,9 +122,21 @@ export function deriveOutcomes(
   const downloadOwner = new Map<number, boolean>();
   for (const d of dls) {
     // Candidates: every interaction inside the budget before the file arrived.
+    //
+    // Hovers excluded. Moving a pointer cannot start a download, and letting one
+    // compete is worse than useless because the label tie-break below reads
+    // TEXT: an ICICI statement page carries the instruction "Please click on the
+    // icon below to download a printable copy of your e-Statement", a human
+    // hovered it on the way to the button, and that paragraph beat
+    // #DOWNLOAD_ESTATEMENT_PDF -- the unlabelled control that actually produced
+    // the file. The compiled operation then ended in a click_by_text on the
+    // instruction rather than on the icon it describes.
     const before: number[] = [];
     for (let i = 0; i < timed.length; i++) {
       if (timed[i].t > d) break;
+      // Compared as a string: the event_type union here predates hover events,
+      // which is part of why a hover could quietly win this in the first place.
+      if (String(timed[i].ev.event_type || 'click') === 'hover') continue;
       if (d - timed[i].t <= DOWNLOAD_WINDOW_MS) before.push(i);
     }
     if (before.length === 0) continue;
