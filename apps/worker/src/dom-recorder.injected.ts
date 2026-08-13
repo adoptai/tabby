@@ -639,6 +639,23 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   const selfLabelCandidate = (el: any, label: string): string | null => {
     try {
       if (!label || label.length > 40) return null;
+      // A label is the element's OWN words, not an accumulation of its
+      // children's.
+      //
+      // ICICI's year dropdown is a container holding four options, and its text
+      // reads "FY2024-25FY2023-24FY2022-23FY2025-26" -- 36 characters, so the
+      // length guard let it through, and it compiled to
+      // `div.SSContainerDivWrapper:text-is("FY2024-25FY2023-24FY2022-23FY2025-26")`.
+      // That names nothing a human would recognise, breaks the moment a year is
+      // added, and Playwright choked on it outright.
+      //
+      // If any descendant carries a label of its own, this element's text is a
+      // concatenation and :text-is() is the wrong tool. The structural
+      // candidates still address it.
+      const kids = el.querySelectorAll ? el.querySelectorAll('*') : [];
+      for (let i = 0; i < kids.length && i < 40; i++) {
+        if (ownLabel(kids[i])) return null;
+      }
       return stableBase(el) + ':text-is("' + label.replace(/"/g, '\\"') + '")';
     } catch {
       return null;
