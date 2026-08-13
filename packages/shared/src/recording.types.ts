@@ -41,11 +41,23 @@ export interface RecordedLocatorCandidate {
     | 'role_name'
     | 'label'
     | 'text'
+    // Emitted by the recorder for elements the CSS-expressible kinds cannot
+    // pin: `container_label` names an element by its own leading text or its
+    // container's (a nav box named "Cards"), `row_scoped` names the row a
+    // repeated control sits in by what that row says. Both resolve via
+    // Playwright's `:has-text()` engine, so both carry match_count -1
+    // (unevaluable by querySelectorAll). Listed here because the injected
+    // recorder is untyped `any` and would otherwise emit kinds no consumer can
+    // exhaustively match — silently dropping the two the ICICI evidence shows
+    // are emitted most.
+    | 'container_label'
+    | 'row_scoped'
     | 'css_path';
   /**
    * The addressing value. A CSS selector for css-expressible kinds; for
-   * `role_name` / `text` / `label` it is the accessible name or text to match,
-   * which the runtime resolves semantically (getByRole / getByText / getByLabel)
+   * `role_name` / `text` / `label` / `container_label` it is the accessible name
+   * or text to match, and `row_scoped` is a row-scoped compound the runtime
+   * resolves semantically (getByRole / getByText / getByLabel / `:has-text()`)
    * rather than as CSS.
    */
   value: string;

@@ -424,6 +424,31 @@ describe('PodManagerService not-found handling', () => {
     });
   });
 
+  it('reports nothing when a noVNC sidecar crashed but the worker is healthy', async () => {
+    // The dual of the shadow case: with the worker container running, a noVNC
+    // restart is NOT a worker runtime error. Reporting "novnc: ..." here would
+    // land in session.last_runtime_error and resurface as the phantom cause of a
+    // much later, unrelated execute() failure.
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        containerStatuses: [
+          {
+            name: 'novnc',
+            restartCount: 2,
+            lastState: { terminated: { reason: 'Error', exitCode: 1 } },
+          },
+          { name: 'worker', restartCount: 0, state: { running: {} } },
+        ],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: null,
+    });
+  });
+
   it('reports nothing terminated when only an init container completed', async () => {
     const readNamespacedPod = jest.fn().mockResolvedValue({
       status: {

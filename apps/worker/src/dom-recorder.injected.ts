@@ -300,8 +300,15 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
    * result — the masked locator genuinely cannot tell them apart — and it stops
    * the compiler from trusting a text fallback that could pick the wrong card.
    */
+  // The separator class is `[\s.,_-]`, not just `[ .\-]`: bank UIs group card and
+  // account numbers with a non-breaking space, a thin space, a comma or an
+  // underscore as readily as with a plain space, and `normText` is the only
+  // caller that pre-collapses whitespace -- the aria-label, accessible-name and
+  // data-attr paths mask raw. `\s` (JS) already covers NBSP/thin-space/etc., so a
+  // number the eye reads as grouped is masked whatever the separator between the
+  // groups, instead of slipping through unredacted into the persisted bundle.
   const maskSensitive = (s: string): string =>
-    s.replace(/\d(?:[ .\-]?\d){11,18}/g, (m) => (m.replace(/\D/g, '').length <= 19 ? '[REDACTED]' : m));
+    s.replace(/\d(?:[\s.,_-]?\d){11,18}/g, (m) => (m.replace(/\D/g, '').length <= 19 ? '[REDACTED]' : m));
 
   const normText = (s: any): string =>
     maskSensitive(String(s || '').replace(/\s+/g, ' ').trim());

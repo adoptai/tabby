@@ -463,6 +463,38 @@ it('gives a nav div its own text candidate, not a zero count', async () => {
   h.teardown();
 });
 
+describe('masking survives whatever separator groups the number', () => {
+  // The aria-label / accessible-name / data-attr paths mask a raw string, unlike
+  // normText which pre-collapses whitespace. A bank that groups a PAN with a
+  // non-breaking space, a comma or an underscore must still have it redacted
+  // before it lands in the persisted bundle, not just the plain-space case.
+  const PAN_DIGITS = '4315';
+  for (const [label, sep] of [
+    ['plain space', ' '],
+    ['non-breaking space', ' '],
+    ['thin space', ' '],
+    ['comma', ','],
+    ['underscore', '_'],
+  ] as const) {
+    it(`redacts a card number grouped by ${label}`, async () => {
+      const pan = `Card ${['4315', '8105', '5762', '5005'].join(sep)}`;
+      const btn = node({ tagName: 'BUTTON', id: 'pan', attrs: { 'aria-label': pan } });
+      const h = installRichDom();
+      domRecorderScript({ rich: true });
+      h.listeners.click(clickOn(btn));
+      await Promise.resolve();
+
+      const name = h.emitted[0].element.accessible_name as string;
+      expect(name).toContain('[REDACTED]');
+      expect(name).not.toContain(PAN_DIGITS);
+      // ...and the raw number never rides into the selector either: an aria-label
+      // that masking changed is excluded from buildRichSelector.
+      expect(h.emitted[0].selector).not.toContain(PAN_DIGITS);
+      h.teardown();
+    });
+  }
+});
+
 describe('hover that reveals a menu', () => {
   it('records the hover when the click lands on what the hover revealed', async () => {
     // ICICI's top nav opens on hover: hover "Cards", click "Credit Cards".

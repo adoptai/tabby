@@ -379,31 +379,45 @@ export class PodManagerService {
     }
 
     const status = result?.body?.status ?? result?.status ?? {};
-    const containers: any[] = [
-      ...(status.containerStatuses ?? []),
-      ...(status.initContainerStatuses ?? []),
-    ];
+    const regular: any[] = status.containerStatuses ?? [];
+    const inits: any[] = status.initContainerStatuses ?? [];
+
     // Only an ABNORMAL termination is a death cause. An init container that ran to
     // completion (Istio's istio-init: Completed, exit 0) and a clean worker exit
     // both terminate normally, and returning that turns healthy startup into a
     // phantom "runtime error" — which then gets surfaced by execute() as the cause
     // of a much later, unrelated failure. Skip reason=Completed / exitCode=0.
-    const abnormal = containers
-      .map((container) => ({
-        container,
-        ended: container?.state?.terminated ?? container?.lastState?.terminated,
-      }))
-      .filter(
-        ({ ended }) => ended?.reason && ended.reason !== 'Completed' && ended.exitCode !== 0,
-      );
-    // The WORKER's death is the signal this column exists for; a noVNC sidecar
-    // restart is secondary and must not shadow it, and container order is not
-    // guaranteed worker-first. Prefer the container named 'worker'.
-    abnormal.sort(
-      (a, b) => (b.container.name === 'worker' ? 1 : 0) - (a.container.name === 'worker' ? 1 : 0),
-    );
+    const abnormalEnd = (container: any) => {
+      const ended = container?.state?.terminated ?? container?.lastState?.terminated;
+      return ended?.reason && ended.reason !== 'Completed' && ended.exitCode !== 0 ? ended : null;
+    };
 
-    const picked = abnormal[0];
+    // The WORKER's death is the signal this column exists for, so decide on the
+    // worker FIRST. If the worker container is present and did not terminate
+    // abnormally, the pod is up as far as this column cares — and a noVNC sidecar
+    // that crashed or restarted is NOT a worker runtime error. Reporting it would
+    // write "novnc: ..." into last_runtime_error, then resurface as the phantom
+    // cause of a much later, unrelated execute() failure. A non-worker container
+    // becomes the cause only when it explains a MISSING worker: an init container
+    // that failed (the worker never started), or — if there is no worker container
+    // at all — any abnormal one, so a pod that died before the worker still says
+    // something. (The prior code merged all containers and only sorted worker
+    // first, so a sidecar crash while the worker was healthy still won.)
+    const worker = regular.find((c) => c?.name === 'worker');
+    const workerEnded = worker ? abnormalEnd(worker) : null;
+
+    let picked: { container: any; ended: any } | null = null;
+    if (workerEnded) {
+      picked = { container: worker, ended: workerEnded };
+    } else if (!worker) {
+      for (const container of [...inits, ...regular]) {
+        const ended = abnormalEnd(container);
+        if (ended) {
+          picked = { container, ended };
+          break;
+        }
+      }
+    }
     if (picked) {
       const { container, ended } = picked;
       const restarts = typeof container.restartCount === 'number' ? container.restartCount : 0;

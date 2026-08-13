@@ -113,3 +113,25 @@ it('still lets a label win among clicks that happened together', () => {
   expect(events[0].outcome.download).toBe(true);
   expect(events[1].outcome.download).toBe(false);
 });
+
+it('credits the most recent click even when a labelled one sits >LABEL_TIE_MS earlier', () => {
+  // KNOWN LIMIT, pinned deliberately. A labelled "Download Statement" then an
+  // unrelated "Refresh" 5s later, file 7s after that: recency credits Refresh,
+  // and the labelled control gets nothing.
+  //
+  // This is the exact structural dual of the ICICI case above
+  // ("download previous statement" link, then the unlabelled button that really
+  // produced the file): labelled-early + unlabelled-late, resolved by recency.
+  // There the late click is the real download; here it is noise — and the two
+  // are INDISTINGUISHABLE from the only signals attribution has (timestamps and
+  // text_content, which for the real ICICI button is empty). Preferring the
+  // labelled control here would re-credit the link there and reopen the bug the
+  // recency rule closed. Recency wins the observed production case; disentangling
+  // this hypothetical one needs a per-click "this action started the download"
+  // signal the recorder does not yet capture.
+  const events = [click(0, 'Download Statement'), click(5_000, 'Refresh')];
+  run(events, [12_000]);
+
+  expect(events[0].outcome.download).toBe(false);
+  expect(events[1].outcome.download).toBe(true);
+});
