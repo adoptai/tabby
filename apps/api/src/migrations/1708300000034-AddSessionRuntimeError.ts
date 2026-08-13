@@ -15,12 +15,19 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  */
 export class AddSessionRuntimeError1708300000034 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // IF NOT EXISTS on purpose: this column was added by hand on at least one
+    // environment before the migration existed, so that DB has the column but no
+    // migrations-table row for 034. A bare ADD COLUMN would then throw "column
+    // already exists" on the next deploy, fail the migration transaction, and
+    // crash-loop the API on startup. Mirrors 035.
     await queryRunner.query(
-      `ALTER TABLE "sessions" ADD COLUMN "last_runtime_error" varchar(256)`,
+      `ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "last_runtime_error" varchar(256)`,
     );
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "sessions" DROP COLUMN "last_runtime_error"`);
+    await queryRunner.query(
+      `ALTER TABLE "sessions" DROP COLUMN IF EXISTS "last_runtime_error"`,
+    );
   }
 }
