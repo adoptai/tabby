@@ -138,7 +138,22 @@ export class HealthPredicateRunner {
     if (authPattern) {
       try {
         const liveUrl = this.page.url();
-        if (new RegExp(authPattern, 'i').test(liveUrl)) {
+        // The DEFAULT pattern's /login /signin /logout tokens also match inside a
+        // host ("//login.okta.com/dashboard") or a query ("?returnUrl=/login"),
+        // flipping a perfectly authenticated page to AUTH_FAIL — and this is the
+        // default for every profile that sets none. Match the default against the
+        // PATH only, where /login-page and /session-expire still hit and a host or
+        // redirect param cannot. A profile's OWN pattern is intentional and still
+        // sees the whole URL.
+        let target = liveUrl;
+        if (!check.auth_redirect_pattern) {
+          try {
+            target = new URL(liveUrl).pathname;
+          } catch {
+            target = liveUrl;
+          }
+        }
+        if (new RegExp(authPattern, 'i').test(target)) {
           return {
             result: HealthResultType.AUTH_FAIL,
             detail: `Live page is on an auth/expiry URL: ${liveUrl}`,

@@ -72,6 +72,38 @@ describe('HealthPredicateRunner — url_check live-page detection', () => {
   });
 });
 
+describe('HealthPredicateRunner — default auth pattern is anchored to the path', () => {
+  // No auth_redirect_pattern, so the DEFAULT applies to the live SPA route. The
+  // default's /login /signin /logout tokens must not match inside a host or a
+  // query string. check.url == the live URL so the HTTP probe does NOT redirect —
+  // isolating the page.url() live-page check (the redirect detector is separate).
+  const run = async (liveUrl: string) => {
+    const { page, context } = makeUrlCheckPage(liveUrl);
+    const res = await new HealthPredicateRunner(page, context, {
+      health_checks: [{ type: 'url_check', url: liveUrl, expect_status: 200 }],
+      policy: 'all',
+    }).evaluate();
+    return res.checks[0].result;
+  };
+
+  it('PASS on an authenticated page served from an SSO host (//login.okta.com)', async () => {
+    expect(await run('https://login.okta.com/dashboard')).toBe(HealthResultType.PASS);
+    expect(await run('https://signin.company.com/home')).toBe(HealthResultType.PASS);
+  });
+
+  it('PASS when a redirect param merely contains /login in the query', async () => {
+    expect(await run('https://app.test/dashboard?returnUrl=/login')).toBe(HealthResultType.PASS);
+  });
+
+  it('AUTH_FAIL when the PATH itself is an auth/expiry route', async () => {
+    expect(await run('https://app.test/session-expire')).toBe(HealthResultType.AUTH_FAIL);
+    // ICICI's login lands on /login-page — a hyphen ends the word, still caught.
+    expect(await run('https://retailnetbanking.icici.bank.in/login-page')).toBe(
+      HealthResultType.AUTH_FAIL,
+    );
+  });
+});
+
 describe('HealthPredicateRunner — dom_check', () => {
   it('passes when an expected selector is present', async () => {
     const res = await runner(makePage(true), {

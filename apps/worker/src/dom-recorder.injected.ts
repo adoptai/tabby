@@ -1489,7 +1489,7 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
   // ends by navigation or by the pod going away, and neither is a moment this
   // script reliably gets. A sweep every few seconds means a gap is visible in
   // the bundle even if the page never unloads cleanly.
-  setInterval(sweepAbandoned, ABANDONED_MS);
+  const abandonedTimer = setInterval(sweepAbandoned, ABANDONED_MS);
   const selectTimer = setInterval(sweepSelects, SELECT_POLL_MS);
 
   document.addEventListener('click', handleClick, true);
@@ -1506,6 +1506,12 @@ export function domRecorderScript(opts?: { rich?: boolean }): void {
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('input', handleInput, true);
     document.removeEventListener('change', handleChange, true);
+    // The warm-pool login->workflow path calls cleanup() then re-installs. Without
+    // these two, every upgrade left the old closure's mouseover handler running on
+    // every pointer move and its sweepAbandoned interval firing forever, on the
+    // long-lived bank SPAs where it matters most.
+    document.removeEventListener('mouseover', handleMouseOver, true);
+    clearInterval(abandonedTimer);
     clearInterval(selectTimer);
     document.removeEventListener('submit', handleSubmit, true);
     delete w.__tabbyDomRecorder;
