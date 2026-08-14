@@ -106,27 +106,47 @@ export function registerBrowserHandler(
  * Matching is by name first (stable), then URL: exact, then ignoring the query
  * string, which is where session tokens churn between the recording and now.
  */
-function resolveScope(page: Page, params: Record<string, any>): Page | Frame {
+async function resolveScope(
+  page: Page,
+  params: Record<string, any>,
+  timeoutMs = 10_000,
+): Promise<Page | Frame> {
   const name = typeof params.frame_name === 'string' ? params.frame_name.trim() : '';
   const url = typeof params.frame_url === 'string' ? params.frame_url.trim() : '';
   if (!name && !url) return page;
 
+  const bare = (u: string) => u.split('?')[0].split('#')[0];
+  const find = (): Frame | undefined => {
+    const frames = page.frames().filter((f) => f !== page.mainFrame());
+    if (name) {
+      const byName = frames.find((f) => f.name() === name);
+      if (byName) return byName;
+    }
+    if (url) {
+      return frames.find((f) => f.url() === url) ?? frames.find((f) => bare(f.url()) === bare(url));
+    }
+    return undefined;
+  };
+
+  // A frame-scoped command routinely arrives a beat before the embedded app has
+  // attached and navigated to its own URL — the click that loads it only just
+  // fired, and on a slow/contended machine the frame is still blank. Poll for it
+  // up to the command's own timeout instead of throwing on the first miss, which
+  // is exactly what the old error told the caller to do by hand. The common case
+  // (frame already present) returns on the first check.
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    const found = find();
+    if (found) return found;
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+
   const frames = page.frames().filter((f) => f !== page.mainFrame());
-  if (name) {
-    const byName = frames.find((f) => f.name() === name);
-    if (byName) return byName;
-  }
-  if (url) {
-    const exact = frames.find((f) => f.url() === url);
-    if (exact) return exact;
-    const bare = (u: string) => u.split('?')[0].split('#')[0];
-    const byPath = frames.find((f) => bare(f.url()) === bare(url));
-    if (byPath) return byPath;
-  }
   throw new Error(
     `No frame matched ${name ? `name "${name}"` : `url "${url}"`}. ` +
       `Frames present: ${frames.map((f) => f.url() || '(blank)').join(', ') || 'none'}. ` +
-      `The embedded app may not have loaded yet — wait for it, then retry.`,
+      `The embedded app did not load within ${timeoutMs}ms.`,
   );
 }
 
@@ -200,7 +220,7 @@ export async function dispatchCommand(
       // it is clicking -- nothing opens the parent first, and the run dead-ends
       // on a control that is absent or hidden.
       const selector = requireParam(params, 'selector', 'string');
-      const scope = resolveScope(page, params);
+      const scope = await resolveScope(page, params, timeoutMs);
       const el = await firstMatching(scope, selector, params);
       if (!el.matched) {
         throw new Error(await noMatchMessage(page, scope, selector, params));
@@ -215,7 +235,7 @@ export async function dispatchCommand(
       // Same visible-first + overlay handling as click_by_text: a selector can
       // match hidden analytics/off-screen copies (strict-mode violation), and the
       // sticky-banner interception is not text-specific.
-      const scope = resolveScope(page, params);
+      const scope = await resolveScope(page, params, timeoutMs);
 
       // hover_first: do the whole gesture in ONE command.
       //
@@ -260,7 +280,7 @@ export async function dispatchCommand(
 
     case 'click_by_text': {
       const text = requireParam(params, 'text', 'string');
-      const textScope = resolveScope(page, params);
+      const textScope = await resolveScope(page, params, timeoutMs);
 
       // hover_first, for the same reason click_element honours it: the whole
       // gesture has to be ONE command.
@@ -304,14 +324,18 @@ export async function dispatchCommand(
     case 'type_text': {
       const selector = requireParam(params, 'selector', 'string');
       const text = requireParam(params, 'text', 'string');
-      await resolveScope(page, params).locator(selector).fill(text, { timeout: timeoutMs });
+      await (await resolveScope(page, params, timeoutMs))
+        .locator(selector)
+        .fill(text, { timeout: timeoutMs });
       return {};
     }
 
     case 'type_into_label': {
       const label = requireParam(params, 'label', 'string');
       const text = requireParam(params, 'text', 'string');
-      await resolveScope(page, params).getByLabel(label).fill(text, { timeout: timeoutMs });
+      await (await resolveScope(page, params, timeoutMs))
+        .getByLabel(label)
+        .fill(text, { timeout: timeoutMs });
       return {};
     }
 
@@ -322,7 +346,7 @@ export async function dispatchCommand(
       // still says Monthly. This sets the control and REPORTS what it actually
       // holds afterwards.
       const want = params.checked !== false;
-      const target = await resolveOne(resolveScope(page, params), params);
+      const target = await resolveOne(await resolveScope(page, params, timeoutMs), params);
       const timeout = timeoutMs;
 
       const attempts: Array<() => Promise<void>> = [
@@ -369,7 +393,7 @@ export async function dispatchCommand(
     case 'select_option': {
       // Native <select> cannot be driven by any click command, so a recorded
       // dropdown choice had no way to be replayed at all.
-      const target = await resolveOne(resolveScope(page, params), params);
+      const target = await resolveOne(await resolveScope(page, params, timeoutMs), params);
       const value = params.value ?? params.label ?? params.option;
       if (typeof value !== 'string' || !value) {
         throw new Error('select_option requires "value" (the option value or its visible label)');
@@ -418,7 +442,7 @@ export async function dispatchCommand(
       // output had no way to tell "this control does not exist" from "this
       // control is one frame down". Naming the frames turns a dead end into a
       // next step: pass frame_url (or frame_name) to summarise inside one.
-      const scope = resolveScope(page, params);
+      const scope = await resolveScope(page, params, timeoutMs);
       const summary: any = await scope.evaluate(pageSummaryScript);
       const others = page.frames().filter((f) => f !== page.mainFrame());
       if (others.length > 0) {
@@ -469,7 +493,9 @@ export async function dispatchCommand(
 
     case 'wait_for_selector': {
       const selector = requireParam(params, 'selector', 'string');
-      await resolveScope(page, params).locator(selector).waitFor({ timeout: timeoutMs });
+      await (await resolveScope(page, params, timeoutMs))
+        .locator(selector)
+        .waitFor({ timeout: timeoutMs });
       return {};
     }
 
