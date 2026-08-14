@@ -139,7 +139,8 @@ async function resolveScope(
     const found = find();
     if (found) return found;
     if (Date.now() >= deadline) break;
-    await page.waitForTimeout(Math.min(100, Math.max(1, deadline - Date.now())));
+    const gap = Math.min(100, Math.max(1, deadline - Date.now()));
+    await new Promise((resolve) => setTimeout(resolve, gap));
   }
 
   const frames = page.frames().filter((f) => f !== page.mainFrame());
