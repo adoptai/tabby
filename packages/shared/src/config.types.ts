@@ -137,6 +137,39 @@ export interface BrowserPolicy {
    * Undefined for normal (non-recording) sessions.
    */
   recording_mode?: 'login' | 'workflow';
+  /**
+   * This recording is being made to build a BROWSER-DRIVEN skill, so the HAR is
+   * reduced to metadata at drain: no request/response bodies, no headers, no
+   * query strings.
+   *
+   * Deliberately NOT inferred from `recording_mode`. That field is the authoring
+   * PHASE (sign-in flow vs post-login traversal); this is the skill KIND, and the
+   * two are independent. A workflow recording of an ordinary REST app compiles
+   * into a HAR-replay skill, and the replay compiler reads exactly the fields the
+   * reduction empties (postData, headers, queryString) — gating the reduction on
+   * `workflow` silently produced broken replay skills.
+   *
+   * Defaults to false: full HAR, i.e. no change for anything that exists today.
+   * Set it only when the skill kind is already known — the operator asked for a
+   * browser skill, or the app is one replay is known to fail on.
+   */
+  browser_driven?: boolean;
+  /**
+   * Refuse `navigate` on this app's /execute/browser sessions.
+   *
+   * A full-page navigation is a RELOAD, and refresh-sensitive portals destroy
+   * the session on one: the next call lands on their signed-out screen and the
+   * human is asked to log in again mid-task. ICICI and HSBCnet both behave this
+   * way. The skill is told never to navigate, but prose is not a guardrail —
+   * an agent that gets stuck reaches for it anyway, and that is exactly how the
+   * observed ICICI run ended.
+   *
+   * In-app clicks are client-side route changes and preserve the session, so
+   * the refusal says so rather than just failing.
+   *
+   * Defaults to false: navigation stays available, which most apps need.
+   */
+  block_navigate?: boolean;
 }
 
 export const DEFAULT_BROWSER_POLICY: BrowserPolicy = {

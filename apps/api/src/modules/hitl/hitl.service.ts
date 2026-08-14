@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
   UnauthorizedException,
   Logger,
   OnModuleDestroy,
@@ -86,12 +87,39 @@ export class HitlService implements OnModuleDestroy {
     return stream;
   }
 
+  /**
+   * The bare user UUID that may own a baton, from whatever the token calls the
+   * caller.
+   *
+   * `session_batons.owner_user_id` is a uuid column with an FK to users, but a
+   * JWT subject is namespaced: a federated user arrives as
+   * "federated:<uuid>" and a service client as "svc:<client-id>". Writing
+   * either one straight into the column made Postgres raise
+   * `invalid input syntax for type uuid`, which surfaced as a 500 — a service
+   * token could never take a baton, and it crashed instead of saying so.
+   *
+   * A service principal has no user row, so it cannot hold a baton: that is a
+   * 403, not a crash. The baton exists to say WHICH HUMAN has the browser, and
+   * answering "a robot" would defeat it.
+   */
+  private batonOwnerId(actorId: string): string | null {
+    const bare = String(actorId || '').replace(/^federated:/, '');
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bare);
+    return isUuid ? bare : null;
+  }
+
   async takeover(
     sessionId: string,
     tenantId: string,
     actorId: string,
     idempotencyKey?: string,
   ): Promise<{ baton_state: string; expires_at: string }> {
+    const ownerId = this.batonOwnerId(actorId);
+    if (!ownerId) {
+      throw new ForbiddenException(
+        'Only a signed-in user can hold the session baton; this token identifies a service principal',
+      );
+    }
     const cached = await this.readActionIdempotency<{ baton_state: string; expires_at: string }>(
       'takeover',
       sessionId,
@@ -122,11 +150,11 @@ export class HitlService implements OnModuleDestroy {
       }
       await this.applyBatonTimeoutState(manager, baton);
 
-      if (baton.baton_state === 'HUMAN_CONTROL' && baton.owner_user_id !== actorId) {
+      if (baton.baton_state === 'HUMAN_CONTROL' && baton.owner_user_id !== ownerId) {
         throw new ConflictException('Baton is held by another user');
       }
       const takeoverReady = baton.baton_state === 'HUMAN_REQUESTED' || baton.baton_state === 'HUMAN_RELEASED';
-      if (!takeoverReady && baton.owner_user_id !== actorId) {
+      if (!takeoverReady && baton.owner_user_id !== ownerId) {
         throw new ConflictException(
           `Baton must be HUMAN_REQUESTED or HUMAN_RELEASED for takeover. Current state: ${baton.baton_state}`,
         );
@@ -135,7 +163,7 @@ export class HitlService implements OnModuleDestroy {
       const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minute lock
 
       baton.baton_state = 'HUMAN_CONTROL';
-      baton.owner_user_id = actorId;
+      baton.owner_user_id = ownerId;
       baton.acquired_at = new Date();
       baton.expires_at = expiresAt;
       baton.version = Number(baton.version) + 1;
@@ -164,6 +192,10 @@ export class HitlService implements OnModuleDestroy {
     actorRole: string,
     idempotencyKey?: string,
   ): Promise<{ baton_state: string }> {
+    // Resolved up front, and NOT allowed to throw: an Admin may release a baton
+    // it does not hold, so a service identity must still reach the actorRole
+    // check below rather than being rejected on the way to it.
+    const ownerId = this.batonOwnerId(actorId);
     const cached = await this.readActionIdempotency<{ baton_state: string }>(
       'release',
       sessionId,
@@ -192,7 +224,7 @@ export class HitlService implements OnModuleDestroy {
         throw new ConflictException('Baton is not in HUMAN_CONTROL state');
       }
 
-      if (baton.owner_user_id !== actorId && actorRole !== 'Admin') {
+      if (baton.owner_user_id !== ownerId && actorRole !== 'Admin') {
         throw new ConflictException('Only the baton holder can release it');
       }
 

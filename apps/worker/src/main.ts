@@ -177,7 +177,19 @@ async function main() {
     // context-creation time for Playwright to save downloads at all.
     const browserPolicy = appConfig.browser_policy || { downloads: false, clipboard: false, file_chooser: false };
     const recordingMode = (browserPolicy as { recording_mode?: RecordingMode }).recording_mode;
-    const downloadsEnabled = browserPolicy.downloads === true;
+    const browserDriven = Boolean((browserPolicy as { browser_driven?: boolean }).browser_driven);
+    // Downloads are ALWAYS on while recording, whatever the policy says.
+    //
+    // Playwright silently cancels a download unless acceptDownloads is set at
+    // context creation, so an opt-in default meant a human recording a bank
+    // statement clicked Download and nothing happened -- no file, no download
+    // event, no outcome, and so no download operation could ever be compiled.
+    // A recording exists to capture what the human did; refusing the one action
+    // the whole session was booked for throws the session away.
+    //
+    // Runtime sessions keep the policy: whether an installed skill may pull
+    // files down is a real decision, and this is not the place to make it.
+    const downloadsEnabled = browserPolicy.downloads === true || Boolean(recordingMode);
 
     context = await browser.newContext({
       // VNC: null viewport => the page fills the actual browser window (which we
@@ -242,7 +254,9 @@ async function main() {
     healthServer.setRecordingMode(Boolean(recordingMode));
 
     // Register execute endpoint on the health server
-    healthServer.setPage(page);
+    healthServer.setPage(page, {
+      blockNavigate: Boolean((browserPolicy as { block_navigate?: boolean }).block_navigate),
+    });
 
     // The browser window is now up and rendering in Xvfb (VNC mode) / headless
     // (CDP). Mark the pod Ready so its noVNC Service gets endpoints immediately,
@@ -294,7 +308,7 @@ async function main() {
       // passively captures HAR + DOM interaction + URL events. No login DSL,
       // no artifact extraction, no keepalive navigation.
       console.log(`Starting VNC recording session (mode=${recordingMode})`);
-      recordingRunner = new RecordingRunner(page, context, sessionId, recordingMode);
+      recordingRunner = new RecordingRunner(page, context, sessionId, recordingMode, browserDriven);
       await recordingRunner.start();
       healthServer.setRecordingRunner(recordingRunner);
 
@@ -303,7 +317,21 @@ async function main() {
       // target. Seed cookies first (so the human starts authenticated), then
       // navigate. The already-running RecordingRunner captures from here on.
       const boundContext = context;
-      healthServer.setBindHandler(async ({ start_url, seed_cookies }) => {
+      healthServer.setBindHandler(async ({ start_url, seed_cookies, recording_mode, browser_driven }) => {
+        // FIRST: adopt the mode this recording was actually requested as. A
+        // pooled spare boots from the pool app (hardcoded 'login'), so without
+        // this every warm-pool workflow recording captured as a login one — no
+        // locator candidates, no element evidence, no outcomes, no downloads, no
+        // popups. Must run before the navigation below so the real target is
+        // captured under the right mode.
+        // Adopt whenever EITHER is specified. Gating on the mode alone lost
+        // `browser_driven` for every bind that did not change mode -- which is
+        // every combined ICICI capture: mode stayed 'login', so this never ran,
+        // so richCapture stayed false and the recording captured none of the
+        // evidence a browser skill is compiled from.
+        if (recording_mode || typeof browser_driven === 'boolean') {
+          recordingRunner?.adoptMode(recording_mode, browser_driven);
+        }
         // Seed cookies synchronously — the human must start authenticated before
         // they interact — but do NOT await the navigation. Loading the target
         // through the residential proxy can take tens of seconds, and the API
@@ -392,6 +420,23 @@ async function main() {
       console.log('Entering keepalive loop');
       await keepaliveRunner.start();
     }
+
+    // Diagnostic heartbeat, independent of the keepalive timer.
+    //
+    // One pod logged a keepalive tick every 60s; another logged "Keepalive loop
+    // started" and then never entered the callback at all, and the session it
+    // was holding idled out. stop() is wired only to SIGTERM, so the interval is
+    // not being cleared -- which leaves the timer never being scheduled, or the
+    // event loop being blocked so it can never fire.
+    //
+    // This separates those two: if the heartbeat ticks while the keepalive does
+    // not, the keepalive timer specifically is dead. If both go silent, nothing
+    // on this event loop can run and the cause is upstream of both.
+    let beat = 0;
+    setInterval(() => {
+      beat += 1;
+      console.log(`Event-loop heartbeat #${beat}`);
+    }, 15000);
 
     // Start recycling monitor (FR-34)
     const maxAgeHours = parseInt(process.env.MAX_SESSION_AGE_HOURS || '24', 10);

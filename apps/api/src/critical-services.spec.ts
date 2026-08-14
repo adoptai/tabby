@@ -131,7 +131,7 @@ describe('Phase 7.1: Critical Service Tests (H8)', () => {
     });
 
     it('should prevent non-owner release (unless Admin)', () => {
-      expect(hitlSrc).toContain("baton.owner_user_id !== actorId && actorRole !== 'Admin'");
+      expect(hitlSrc).toContain("baton.owner_user_id !== ownerId && actorRole !== 'Admin'");
     });
 
     it('should validate acknowledge only for FAILED sessions', () => {

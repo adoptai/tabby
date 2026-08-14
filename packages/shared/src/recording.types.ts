@@ -13,6 +13,111 @@
 
 export type RecordingMode = 'login' | 'workflow';
 
+/**
+ * One way of addressing the element that was interacted with, and how many
+ * nodes it actually matched at that instant.
+ *
+ * The recorder used to emit a single `selector` chosen in-page by a fixed
+ * priority ladder, with no idea whether it matched one node or forty. That
+ * verdict was final — the page is gone once the recording ends, so no later
+ * compiler improvement could revisit it, and ambiguity only surfaced in
+ * production. (`a.mb-0` on ICICI's dashboard is the canonical example.)
+ *
+ * Emitting candidates plus `match_count` moves the choice into the compiler,
+ * where it is revisable, and makes ambiguity detectable at compile time: a
+ * candidate with `match_count > 1` cannot be trusted to identify this element,
+ * and one with `match_count === 0` did not even find it.
+ *
+ * `match_count` is -1 when counting failed (an engine that could not evaluate
+ * the selector) — distinct from 0, which is a real "matched nothing".
+ */
+export interface RecordedLocatorCandidate {
+  /** How this candidate addresses the element; also its durability ranking. */
+  kind:
+    | 'testid'
+    | 'id'
+    | 'name'
+    | 'aria_label'
+    | 'role_name'
+    | 'label'
+    | 'text'
+    // Emitted by the recorder for elements the CSS-expressible kinds cannot
+    // pin: `container_label` names an element by its own leading text or its
+    // container's (a nav box named "Cards"), `row_scoped` names the row a
+    // repeated control sits in by what that row says. Both resolve via
+    // Playwright's `:has-text()` engine, so both carry match_count -1
+    // (unevaluable by querySelectorAll). Listed here because the injected
+    // recorder is untyped `any` and would otherwise emit kinds no consumer can
+    // exhaustively match — silently dropping the two the ICICI evidence shows
+    // are emitted most.
+    | 'container_label'
+    | 'row_scoped'
+    | 'css_path';
+  /**
+   * The addressing value. A CSS selector for css-expressible kinds; for
+   * `role_name` / `text` / `label` / `container_label` it is the accessible name
+   * or text to match, and `row_scoped` is a row-scoped compound the runtime
+   * resolves semantically (getByRole / getByText / getByLabel / `:has-text()`)
+   * rather than as CSS.
+   */
+  value: string;
+  /** Nodes this matched when it was recorded. 1 is the only trustworthy count. */
+  match_count: number;
+}
+
+/**
+ * What was true about the element at the moment it was interacted with.
+ *
+ * All of this is free to capture at record time and impossible to recover
+ * afterwards. `occluded` in particular is the overlay-intercepted-click problem
+ * answered at the only moment it is knowable — the runtime otherwise has to
+ * discover it by having a click fail.
+ */
+export interface RecordedElementEvidence {
+  tag: string;
+  /** Explicit `role` attribute, else the implicit role for the tag. */
+  role: string | null;
+  accessible_name: string | null;
+  /** CSS-visible: not display:none / visibility:hidden / opacity:0 / aria-hidden. */
+  visible: boolean;
+  /** Something else was painted over its centre point. */
+  occluded: boolean;
+  rect: { x: number; y: number; w: number; h: number } | null;
+  /**
+   * The element lives inside a shadow root, so a document-level listener sees
+   * the shadow HOST rather than this element — which is why the legacy
+   * `selector` field describes the wrong node for these.
+   */
+  in_shadow_dom: boolean;
+  /** The interaction happened inside an iframe; `url` on the event is that frame's. */
+  in_iframe: boolean;
+}
+
+/**
+ * What happened in the moments after an interaction.
+ *
+ * The compiler otherwise has to INFER causality — which click caused which
+ * navigation — from bare timestamps. It is also precisely what a compiled step
+ * needs as its POSTCONDITION: "after this click the URL becomes X, and traffic
+ * settles in ~400ms" is what lets a runtime agent know within one step that it
+ * is off-route, rather than discovering it five clicks later on the wrong page,
+ * and what lets it wait on a real condition instead of a guessed sleep.
+ *
+ * Absent when the interaction's time could not be parsed — "not known", which is
+ * honest, rather than a zeroed outcome that would read as "nothing happened".
+ */
+export interface RecordedInteractionOutcome {
+  /** The page navigated (or client-side routed) within the window. */
+  navigated: boolean;
+  to_url: string | null;
+  /** Requests that STARTED in the window. 0 means the click did nothing. */
+  request_count: number;
+  /** ms from the interaction until the last of those requests finished. */
+  settled_ms: number | null;
+  /** A file download began — for most browser skills, the success condition. */
+  download: boolean;
+}
+
 /** A single captured DOM interaction. Field names mirror NoUI's ClickEvent. */
 export interface RecordedInteractionEvent {
   event_type: 'click' | 'input' | 'change' | 'submit';
@@ -36,6 +141,25 @@ export interface RecordedInteractionEvent {
   aria_label?: string | null;
   role_attr?: string | null;
   data_attrs_json?: string | null;
+  /**
+   * Ranked ways to address the element, with match counts. `workflow`
+   * recordings only — see RecordedLocatorCandidate for why this exists.
+   *
+   * These describe the ACTIONABLE element (the `a`/`button`/input the human
+   * meant), which is frequently not the node `selector` describes: the legacy
+   * resolution walks up to the nearest ancestor with an id *or any class*, and
+   * on a modern page that is usually the innermost wrapper — a `span` inside the
+   * button. `selector` is left exactly as it was so the login compiler is
+   * unaffected; new consumers should prefer `candidates`.
+   */
+  candidates?: RecordedLocatorCandidate[];
+  /** State of the actionable element at interaction time. `workflow` only. */
+  element?: RecordedElementEvidence;
+  /**
+   * What happened next. `workflow` only, derived at drain — see
+   * RecordedInteractionOutcome.
+   */
+  outcome?: RecordedInteractionOutcome;
   /**
    * Total-order key across ALL events in the bundle (interactions and URL
    * transitions share one counter). Strictly increasing in interaction order;
@@ -93,6 +217,34 @@ export interface RecordedUrlEvent {
   seq?: number;
   /** Emitted inline at navigation, so this is also the interaction time. */
   timestamp: string;
+  /**
+   * Which page the transition happened in: 0 is the page the human started on,
+   * >0 are popups/new tabs opened during the session. Only emitted for
+   * `workflow` recordings; absent on `login` bundles, which are single-page and
+   * whose shape must not move.
+   */
+  page_id?: number;
+}
+
+/**
+ * A file download started during the recording (`workflow` mode only).
+ *
+ * The terminal step of most browser skills is "a file arrived", and it is the
+ * one event the rest of the capture cannot see: a `blob:` download never
+ * touches the network so HAR misses it, and the click that triggered it looks
+ * like any other click. Without this the compiler has no success condition to
+ * compile.
+ *
+ * Metadata only, and captured without awaiting the transfer — the recorder must
+ * never make the human wait.
+ */
+export interface RecordedDownloadEvent {
+  url: string;
+  suggested_filename: string;
+  /** URL of the page the download was triggered from. */
+  page_url: string;
+  page_id: number;
+  timestamp: string;
 }
 
 /** HAR 1.2 log (subset Tabby assembles). */
@@ -125,8 +277,15 @@ export interface RecordedCookie {
  * Bundle schema revision. Bumped only when the event contract changes.
  *   1 — implicit (absent). Events carry no `seq`/`event_time`.
  *   2 — every event carries `seq`; interaction events also carry `event_time`.
+ *   3 — workflow recordings additionally capture downloads (`download_events`)
+ *       and attach to popups/new tabs (`page_id` on url events).
+ *   4 — workflow interactions additionally carry `candidates` (ranked locators
+ *       with match counts) and `element` (state at interaction time).
+ *   5 — workflow interactions additionally carry `outcome` (what happened
+ *       next), and the workflow HAR is reduced to metadata: no bodies, no
+ *       headers, no query strings. The HAR 1.2 shape is preserved.
  */
-export const RECORDING_SCHEMA_VERSION = 2;
+export const RECORDING_SCHEMA_VERSION = 5;
 
 /** The bundle drained on "Finish & export" and pulled by NoUI. */
 export interface RecordingBundle {
@@ -149,4 +308,11 @@ export interface RecordingBundle {
   url_events: RecordedUrlEvent[];
   /** Session cookies captured at drain (login recordings) for session reuse. */
   cookies?: RecordedCookie[];
+
+  /**
+   * Downloads observed during the recording. `workflow` mode only — a `login`
+   * bundle never carries this key at all, so the login compiler sees no new
+   * collection to reason about.
+   */
+  download_events?: RecordedDownloadEvent[];
 }

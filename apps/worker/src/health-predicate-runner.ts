@@ -15,6 +15,20 @@ import {
  *
  * Returns PASS/TRANSIENT_FAIL/AUTH_FAIL per check.
  */
+/**
+ * Pages that mean "this session is over", when a profile names none itself.
+ *
+ * Narrow on purpose. "auth" is absent because ICICI serves its statement portal
+ * from AuthenticationController, and matching that would fail a healthy session
+ * in the middle of the workflow it is meant to protect.
+ */
+export const DEFAULT_AUTH_REDIRECT_PATTERN =
+  '(session[-_]?expire|session[-_]?timeout|logged[-_]?out|/logout|/login|/signin|/sign-in)' +
+  // Not followed by more word characters: /accounts/logins-history is an
+  // ordinary page and matched "/login" without this. /login-page still does,
+  // because a hyphen ends the word.
+  '(?![a-z0-9])';
+
 export class HealthPredicateRunner {
   constructor(
     private readonly page: Page,
@@ -32,11 +46,16 @@ export class HealthPredicateRunner {
     const quorumN = this.keepaliveConfig?.quorum_n;
 
     const results: HealthCheckResult[] = [];
+    // A check that could not be ASKED is not a check that failed. Tracked apart
+    // so the caller can decline to record a verdict rather than inventing one.
+    const unevaluableOnly: HealthCheck[] = [];
+    const realVerdicts: HealthCheck[] = [];
 
     for (const check of checks) {
       const start = Date.now();
       let result: HealthResultType;
       let detail: string | undefined;
+      let unevaluable = false;
 
       try {
         switch (check.type) {
@@ -44,7 +63,7 @@ export class HealthPredicateRunner {
             ({ result, detail } = await this.runUrlCheck(check));
             break;
           case 'dom_check':
-            ({ result, detail } = await this.runDomCheck(check));
+            ({ result, detail, unevaluable = false } = await this.runDomCheck(check) as any);
             break;
           case 'network_check':
             ({ result, detail } = await this.runNetworkCheck(check));
@@ -72,6 +91,8 @@ export class HealthPredicateRunner {
       if (result !== HealthResultType.PASS) {
         console.log(`[Health] ${check.type} -> ${result}${detail ? `: ${detail}` : ''}`);
       }
+      if (result !== HealthResultType.PASS && unevaluable) unevaluableOnly.push(check);
+      else if (result !== HealthResultType.PASS) realVerdicts.push(check);
     }
 
     const overall = evaluateHealthPolicy(results, policy, quorumN);
@@ -81,7 +102,13 @@ export class HealthPredicateRunner {
       checks: results,
       policy,
       evaluated_at: new Date().toISOString(),
-    };
+      // Nothing here is a measurement: every non-PASS was a check that could
+      // not be asked (the page was mid-navigation), and no check produced a
+      // real verdict. Recording TRANSIENT_FAIL for that drives the session to
+      // UNHEALTHY, execute/browser then refuses, and a replay dies on a session
+      // that was never unwell.
+      unevaluable: unevaluableOnly.length > 0 && realVerdicts.length === 0,
+    } as HealthEvaluationResult & { unevaluable: boolean };
   }
 
   /**
@@ -99,10 +126,34 @@ export class HealthPredicateRunner {
     // expired" (observed on ICICI: HEALTHY/PASS on /session-expire). If the
     // browser page itself is already sitting on an auth/expiry URL, that is
     // ground truth the HTTP probe cannot override.
-    if (check.auth_redirect_pattern) {
+    // A DEFAULT when the profile configures none. This detection existed and
+    // never ran on ICICI, whose profile sets no auth_redirect_pattern -- so the
+    // session reported HEALTHY/PASS while the browser sat on /session-expire,
+    // and every downstream failure looked like a mystery instead of an expiry.
+    //
+    // Deliberately narrow: no bare "auth", because this bank serves its
+    // statement portal from a controller named AuthenticationController and
+    // flagging that would kill healthy sessions mid-workflow.
+    const authPattern = check.auth_redirect_pattern || DEFAULT_AUTH_REDIRECT_PATTERN;
+    if (authPattern) {
       try {
         const liveUrl = this.page.url();
-        if (new RegExp(check.auth_redirect_pattern, 'i').test(liveUrl)) {
+        // The DEFAULT pattern's /login /signin /logout tokens also match inside a
+        // host ("//login.okta.com/dashboard") or a query ("?returnUrl=/login"),
+        // flipping a perfectly authenticated page to AUTH_FAIL — and this is the
+        // default for every profile that sets none. Match the default against the
+        // PATH only, where /login-page and /session-expire still hit and a host or
+        // redirect param cannot. A profile's OWN pattern is intentional and still
+        // sees the whole URL.
+        let target = liveUrl;
+        if (!check.auth_redirect_pattern) {
+          try {
+            target = new URL(liveUrl).pathname;
+          } catch {
+            target = liveUrl;
+          }
+        }
+        if (new RegExp(authPattern, 'i').test(target)) {
           return {
             result: HealthResultType.AUTH_FAIL,
             detail: `Live page is on an auth/expiry URL: ${liveUrl}`,
@@ -217,6 +268,16 @@ export class HealthPredicateRunner {
       } catch (error) {
         const unevaluable = classifyDomCheckError(error);
         if (unevaluable) return unevaluable;
+        if (isUniversalSelector(check.selector)) {
+          // See UNIVERSAL_SELECTORS: an absent `body` means the document is not
+          // there, which is a transient state on any portal that navigates.
+          // Calling it AUTH_FAIL drives the session to LOGIN_NEEDED and, on a
+          // recording session, interrupts a human mid-sign-in for nothing.
+          return {
+            result: HealthResultType.TRANSIENT_FAIL,
+            detail: `Selector ${check.selector} matches any loaded page, so its absence means the document was not ready, not that the session ended: ${error}`,
+          };
+        }
         return {
           result: HealthResultType.AUTH_FAIL,
           detail: strictVisibility
@@ -309,16 +370,49 @@ export class HealthPredicateRunner {
  * and must stay AUTH_FAIL; this only carves out the classes we can positively
  * identify as uninformative.
  */
+/**
+ * Selectors that exist in every rendered HTML document.
+ *
+ * A timeout on one of these is never evidence about authentication. Every page
+ * has a body; if it cannot be found the document is loading, navigating or
+ * blank — not signed out. Apps configure `dom_check` on `body` as a cheap
+ * liveness probe (the recording-shell app does exactly this), and on a portal
+ * that replaces the document during login the check lands mid-navigation and
+ * times out. Reported as AUTH_FAIL that flipped a perfectly healthy recording
+ * session to UNHEALTHY while the human was signing in; it passed again on the
+ * next cycle 55 seconds later.
+ */
+const UNIVERSAL_SELECTORS = new Set(['body', 'html', ':root', 'body *', 'html body']);
+
+/** Would this selector match on any loaded page, regardless of auth state? */
+export function isUniversalSelector(selector: unknown): boolean {
+  return UNIVERSAL_SELECTORS.has(String(selector ?? '').trim().toLowerCase());
+}
+
 export function classifyDomCheckError(
   error: unknown,
-): { result: HealthResultType; detail: string } | null {
+): { result: HealthResultType; detail: string; unevaluable: true } | null {
   const message = error instanceof Error ? error.message : String(error);
 
   // Page moved (navigation / SPA re-render) while the locator was resolving.
-  if (/execution context was destroyed|because of a navigation|frame (was |got )?detached/i.test(message)) {
+  //
+  // "navigation to finish" is the case that bit: a cross-origin hop completes
+  // asynchronously AFTER the command that caused it returns, so a health cycle
+  // landing in that window waits on a navigation nobody is failing. Observed on
+  // ICICI: dom_check on `body` timed out after 5s waiting for the statement
+  // portal, reported a fault on a healthy session, and stopped a replay one
+  // operation from the end -- the next cycle passed. With a non-universal
+  // selector the same race returns AUTH_FAIL, which shows a member a sign-in
+  // card in the middle of a working task.
+  if (
+    /execution context was destroyed|because of a navigation|frame (was |got )?detached|navigation to finish/i.test(
+      message,
+    )
+  ) {
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check raced a navigation, no auth signal: ${message}`,
+      unevaluable: true as const,
     };
   }
 
@@ -327,6 +421,7 @@ export function classifyDomCheckError(
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check ran against a closed page, no auth signal: ${message}`,
+      unevaluable: true as const,
     };
   }
 
@@ -335,6 +430,7 @@ export function classifyDomCheckError(
     return {
       result: HealthResultType.TRANSIENT_FAIL,
       detail: `dom_check selector is invalid — fix the app's health_checks config: ${message}`,
+      unevaluable: true as const,
     };
   }
 

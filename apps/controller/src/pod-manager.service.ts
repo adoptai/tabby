@@ -342,6 +342,103 @@ export class PodManagerService {
     }
   }
 
+  /**
+   * Whether the pod is there, and why its containers last died if they did.
+   *
+   * One read answers both, because the caller needs both on every session every
+   * tick and a second GET per session would double the API traffic for nothing.
+   *
+   * `terminated` is the reason Kubernetes recorded — "OOMKilled", "Error",
+   * "Evicted" — from the CURRENT state when a container has exited for good, or
+   * from `lastState` when it was restarted. A worker that is OOM-killed writes
+   * nothing to its own log: it is SIGKILLed mid-instruction, so the pod status
+   * is the only place the cause exists at all.
+   *
+   * Never throws for a missing pod; a genuine API error propagates, as with
+   * podExists.
+   */
+  async getPodRuntime(
+    podName: string,
+  ): Promise<{ exists: boolean; terminated: string | null }> {
+    const api: any = this.coreApi as any;
+    let result: any;
+    try {
+      try {
+        result = await api.readNamespacedPod(podName, this.namespace);
+      } catch (inner: any) {
+        if (this.isNotFoundError(inner)) {
+          throw inner;
+        }
+        result = await api.readNamespacedPod({ name: podName, namespace: this.namespace });
+      }
+    } catch (error: any) {
+      if (this.isNotFoundError(error)) {
+        return { exists: false, terminated: null };
+      }
+      throw error;
+    }
+
+    const status = result?.body?.status ?? result?.status ?? {};
+    const regular: any[] = status.containerStatuses ?? [];
+    const inits: any[] = status.initContainerStatuses ?? [];
+
+    // Only an ABNORMAL termination is a death cause. An init container that ran to
+    // completion (Istio's istio-init: Completed, exit 0) and a clean worker exit
+    // both terminate normally, and returning that turns healthy startup into a
+    // phantom "runtime error" — which then gets surfaced by execute() as the cause
+    // of a much later, unrelated failure. Skip reason=Completed / exitCode=0.
+    const abnormalEnd = (container: any) => {
+      const ended = container?.state?.terminated ?? container?.lastState?.terminated;
+      return ended?.reason && ended.reason !== 'Completed' && ended.exitCode !== 0 ? ended : null;
+    };
+
+    // The WORKER's death is the signal this column exists for, so decide on the
+    // worker FIRST. If the worker container is present and did not terminate
+    // abnormally, the pod is up as far as this column cares — and a noVNC sidecar
+    // that crashed or restarted is NOT a worker runtime error. Reporting it would
+    // write "novnc: ..." into last_runtime_error, then resurface as the phantom
+    // cause of a much later, unrelated execute() failure. A non-worker container
+    // becomes the cause only when it explains a MISSING worker: an init container
+    // that failed (the worker never started), or — if there is no worker container
+    // at all — any abnormal one, so a pod that died before the worker still says
+    // something. (The prior code merged all containers and only sorted worker
+    // first, so a sidecar crash while the worker was healthy still won.)
+    const worker = regular.find((c) => c?.name === 'worker');
+    const workerEnded = worker ? abnormalEnd(worker) : null;
+
+    let picked: { container: any; ended: any } | null = null;
+    if (workerEnded) {
+      picked = { container: worker, ended: workerEnded };
+    } else if (!worker) {
+      for (const container of [...inits, ...regular]) {
+        const ended = abnormalEnd(container);
+        if (ended) {
+          picked = { container, ended };
+          break;
+        }
+      }
+    }
+    if (picked) {
+      const { container, ended } = picked;
+      const restarts = typeof container.restartCount === 'number' ? container.restartCount : 0;
+      const exitCode = typeof ended.exitCode === 'number' ? ended.exitCode : null;
+      const detail = [
+        exitCode === null ? null : `exit ${exitCode}`,
+        restarts ? `restarts: ${restarts}` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      const name = container.name ? `${container.name}: ` : '';
+      // Bounded to the column width; a reason is a short enum, but `message`
+      // is free text from the kubelet and is deliberately left out of it.
+      return {
+        exists: true,
+        terminated: `${name}${ended.reason}${detail ? ` (${detail})` : ''}`.slice(0, 256),
+      };
+    }
+    return { exists: true, terminated: null };
+  }
+
   async podExists(podName: string): Promise<boolean> {
     const api: any = this.coreApi as any;
     try {

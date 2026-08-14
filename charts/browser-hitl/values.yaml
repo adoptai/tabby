@@ -121,7 +121,13 @@ worker:
       memory: "1Gi"
     limits:
       cpu: "1500m"
-      memory: "1536Mi"
+      # Headroom for a long recording. What actually BOUNDS memory is the HAR
+      # body budget (EXECUTE_LIMITS.MAX_HAR_BODY_TOTAL_BYTES); this is margin for
+      # the browser itself plus the transient doubling when the bundle is
+      # stringified at drain. A 1536Mi worker was OOM-killed mid-export on an
+      # ICICI login recording — after the bundle was assembled and before it was
+      # persisted, so the whole capture was lost.
+      memory: "2560Mi"
   novnc:
     port: 6080
     resources:

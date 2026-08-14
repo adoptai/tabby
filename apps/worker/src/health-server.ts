@@ -12,6 +12,26 @@ import type { RecordingRunner } from './recording-runner';
 export interface BindParams {
   start_url: string;
   seed_cookies?: unknown[];
+  /**
+   * The mode this recording was actually REQUESTED as.
+   *
+   * A pooled spare boots from the shared pool app, whose browser_policy is
+   * hardcoded `recording_mode: 'login'` — so every warm-pool session was
+   * constructed as a login recording no matter what the caller asked for. The
+   * bundle came back stamped `login` (noui has regression cover for exactly
+   * that), and, worse, every workflow-only capture stayed switched off: locator
+   * candidates, element evidence, outcomes, downloads and popups. The cold path
+   * was always correct; only the fast path lied.
+   *
+   * Bind is the first moment the pod learns what it is really for, and it
+   * happens before any of the real target is captured.
+   */
+  recording_mode?: 'login' | 'workflow';
+  /**
+   * Build a browser-driven skill from this recording, so the HAR is reduced to
+   * metadata at drain. Independent of recording_mode — see BrowserPolicy.
+   */
+  browser_driven?: boolean;
 }
 
 /**
@@ -73,7 +93,7 @@ export class HealthServer {
    * Call after the browser page is created. The execute route is added
    * to the already-running Express app.
    */
-  setPage(page: Page): void {
+  setPage(page: Page, opts: { blockNavigate?: boolean } = {}): void {
     this.page = page;
     if (!this.app) return;
     if (this.recording) {
@@ -87,7 +107,7 @@ export class HealthServer {
     if (process.env.EXECUTE_ENABLED === 'true') {
       this.app.use('/execute', executeAuthMiddleware);
       registerExecuteHandler(this.app, page);
-      registerBrowserHandler(this.app, page);
+      registerBrowserHandler(this.app, page, { blockNavigate: opts.blockNavigate });
       console.log('Execute handlers registered on /execute/fetch and /execute/browser');
     }
   }
@@ -174,7 +194,20 @@ export class HealthServer {
         res.status(400).json({ success: false, error: 'start_url is required' });
         return;
       }
-      this.bindHandler({ start_url: startUrl, seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [] })
+      this.bindHandler({
+        start_url: startUrl,
+        seed_cookies: Array.isArray(body.seed_cookies) ? body.seed_cookies : [],
+        // Pass the mode through, whichever it is. Collapsing anything but
+        // 'workflow' to undefined meant a 'login' bind carried no mode at all,
+        // and main.ts only adopts when one is present -- so `browser_driven`
+        // never reached the runner either, and a combined capture recorded with
+        // rich capture OFF: no locator candidates, no hovers, no downloads.
+        recording_mode:
+          body.recording_mode === 'workflow' || body.recording_mode === 'login'
+            ? body.recording_mode
+            : undefined,
+        browser_driven: body.browser_driven === true,
+      })
         .then(() => res.json({ success: true }))
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);

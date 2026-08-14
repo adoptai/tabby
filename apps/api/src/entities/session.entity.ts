@@ -113,4 +113,14 @@ export class SessionEntity {
    */
   @Column({ type: 'varchar', length: 16, nullable: true })
   pool_state: 'WARM' | 'CLAIMED' | null;
+
+  /**
+   * Why this session's worker last died, when Kubernetes said so — e.g.
+   * "OOMKilled (exit 137, restarts: 1)". Written by the controller, which is
+   * the only service holding a Kubernetes client; read by the API so a caller
+   * whose command could not reach the worker is told what actually happened
+   * instead of "Worker unreachable: fetch failed".
+   */
+  @Column({ type: 'varchar', length: 256, nullable: true })
+  last_runtime_error: string | null;
 }

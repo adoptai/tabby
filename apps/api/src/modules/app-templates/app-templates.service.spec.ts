@@ -11,6 +11,7 @@ function makeTemplate(overrides: Partial<AppTemplateEntity> = {}): AppTemplateEn
   return {
     id: 'tpl-uuid-1',
     tenant_id: 'tenant-1',
+    created_by_user_id: null,
     name: 'Salesforce Template',
     profile_name_pattern: 'salesforce-*',
     login_config: { login_url: 'https://login.salesforce.com' },
@@ -121,6 +122,48 @@ describe('AppTemplatesService — propagation', () => {
     jest.clearAllMocks();
   });
 
+  describe('update() — authorization', () => {
+    const withTemplate = (template: AppTemplateEntity) =>
+      buildService({
+        templateRepo: {
+          findOne: jest.fn().mockResolvedValue(template),
+          findOneOrFail: jest.fn().mockResolvedValue(template),
+          save: jest.fn().mockResolvedValue(template),
+        },
+        appRepo: { find: jest.fn().mockResolvedValue([]), update: jest.fn() },
+      });
+
+    it('refuses a token with no role that is not the creator (fails CLOSED)', async () => {
+      const { service } = withTemplate(makeTemplate({ created_by_user_id: 'someone-else' }));
+      await expect(
+        service.update('tenant-1', 'tpl-uuid-1', { name: 'x' }, 'actor-1', undefined),
+      ).rejects.toThrow(/Admin or Editor role, or being its creator/);
+    });
+
+    it('refuses an Operator/Viewer that is not the creator', async () => {
+      const { service } = withTemplate(makeTemplate({ created_by_user_id: 'someone-else' }));
+      await expect(
+        service.update('tenant-1', 'tpl-uuid-1', { name: 'x' }, 'actor-1', 'Operator'),
+      ).rejects.toThrow();
+    });
+
+    it('allows the creator even with no role', async () => {
+      const { service } = withTemplate(makeTemplate({ created_by_user_id: 'actor-1' }));
+      await expect(
+        service.update('tenant-1', 'tpl-uuid-1', { name: 'x' }, 'actor-1', undefined),
+      ).resolves.toBeDefined();
+    });
+
+    it('allows Admin and Editor', async () => {
+      for (const role of ['Admin', 'Editor']) {
+        const { service } = withTemplate(makeTemplate());
+        await expect(
+          service.update('tenant-1', 'tpl-uuid-1', { name: 'x' }, 'actor-1', role),
+        ).resolves.toBeDefined();
+      }
+    });
+  });
+
   describe('update() — propagation to linked apps', () => {
     it('propagates PROPAGATED_FIELDS to all linked apps when template is updated', async () => {
       const template = makeTemplate();
@@ -137,7 +180,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { name: 'Updated' }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { name: 'Updated' }, 'actor-1', 'Admin');
 
       expect(appRepo.update).toHaveBeenCalledTimes(2);
 
@@ -170,7 +213,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { execute_enabled: true }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { execute_enabled: true }, 'actor-1', 'Admin');
 
       expect(appRepo.update).toHaveBeenCalledWith(
         'app-1',
@@ -195,7 +238,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1', 'Admin');
 
       expect(appRepo.update).not.toHaveBeenCalled();
     });
@@ -215,7 +258,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await expect(service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1')).resolves.not.toThrow();
+      await expect(service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1', 'Admin')).resolves.not.toThrow();
     });
 
     it('paginates correctly when there are more than 50 linked apps', async () => {
@@ -244,7 +287,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1', 'Admin');
 
       expect(updateMock).toHaveBeenCalledTimes(60);
 
@@ -268,7 +311,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1', 'Admin');
 
       expect((service as any).logger.log).toHaveBeenCalledWith(
         expect.stringContaining('1 linked app'),
@@ -290,7 +333,7 @@ describe('AppTemplatesService — propagation', () => {
         },
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', {}, 'actor-1', 'Admin');
 
       expect((service as any).logger.log).not.toHaveBeenCalled();
     });
@@ -334,7 +377,7 @@ describe('AppTemplatesService — propagation', () => {
         dataSource,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1', 'Admin');
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
 
@@ -396,7 +439,7 @@ describe('AppTemplatesService — propagation', () => {
         dataSource,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { export_policy: newExportPolicy }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { export_policy: newExportPolicy }, 'actor-1', 'Admin');
 
       // The new profile row must carry the template's real login_config, never undefined.
       expect(managerSave!).toHaveBeenCalledWith(
@@ -442,7 +485,7 @@ describe('AppTemplatesService — propagation', () => {
         dataSource,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { browser_policy: { downloads: true, clipboard: false, file_chooser: false } }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { browser_policy: { downloads: true, clipboard: false, file_chooser: false } }, 'actor-1', 'Admin');
 
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
@@ -471,7 +514,7 @@ describe('AppTemplatesService — propagation', () => {
       });
 
       await expect(
-        service.update('tenant-1', 'tpl-uuid-1', { login_config: { login_url: 'https://new.example.com' } }, 'actor-1'),
+        service.update('tenant-1', 'tpl-uuid-1', { login_config: { login_url: 'https://new.example.com' } }, 'actor-1', 'Admin'),
       ).resolves.not.toThrow();
 
       expect(dataSource.transaction).not.toHaveBeenCalled();
@@ -512,7 +555,7 @@ describe('AppTemplatesService — propagation', () => {
         dataSource,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1', 'Admin');
 
       expect(capturedSave!).toHaveBeenCalledWith(
         expect.any(Function),
@@ -553,7 +596,7 @@ describe('AppTemplatesService — propagation', () => {
         dataSource,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1', 'Admin');
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(3);
     });
@@ -582,7 +625,7 @@ describe('AppTemplatesService — propagation', () => {
         auditService,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1', 'Admin');
 
       expect(auditService.log).toHaveBeenCalledWith(
         expect.objectContaining({ event_type: 'profile.propagated' }),
@@ -614,7 +657,7 @@ describe('AppTemplatesService — propagation', () => {
         dataSource,
       });
 
-      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1');
+      await service.update('tenant-1', 'tpl-uuid-1', { login_config: newLoginConfig }, 'actor-1', 'Admin');
 
       // Both ACTIVE profiles should be updated
       expect(dataSource.transaction).toHaveBeenCalledTimes(2);

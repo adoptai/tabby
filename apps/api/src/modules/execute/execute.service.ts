@@ -14,6 +14,9 @@ import type {
   ExecuteBrowserRequest, ExecuteBrowserResponse,
   CredentialSet,
 } from '@browser-hitl/shared';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SessionEntity } from '../../entities/session.entity';
 import { CredentialsService } from '../credentials/credentials.service';
 import { JwtService } from '@nestjs/jwt';
 import Redis from 'ioredis';
@@ -32,6 +35,8 @@ export class ExecuteService {
   constructor(
     private readonly credentialsService: CredentialsService,
     private readonly jwtService: JwtService,
+    @InjectRepository(SessionEntity)
+    private readonly sessionRepo: Repository<SessionEntity>,
   ) {
     this.workerNamespace = process.env.WORKER_NAMESPACE || 'browser-hitl';
     this.localWorkerUrl = process.env.LOCAL_WORKER_URL;
@@ -193,10 +198,38 @@ export class ExecuteService {
       if (message.includes('abort')) {
         throw new GatewayTimeoutException('Worker request timed out');
       }
-      throw new BadGatewayException(`Worker unreachable: ${message}`);
+      throw new BadGatewayException(await this.unreachable(session.id, message));
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * "Worker unreachable" plus the reason, when Kubernetes recorded one.
+   *
+   * A worker that is OOM-killed is SIGKILLed mid-instruction and logs nothing,
+   * so this message was the whole of what anyone saw: a bare "fetch failed" that
+   * reads as a flaky skill. It cost four wrong theories on one session before
+   * somebody read the pod status. The controller stores what it sees while the
+   * pod is still readable; this is where that reaches the caller.
+   *
+   * Best-effort by design — a failed lookup must not replace the real error
+   * with a database one.
+   */
+  private async unreachable(sessionId: string, message: string): Promise<string> {
+    let cause: string | null = null;
+    try {
+      const row = await this.sessionRepo.findOne({
+        where: { id: sessionId },
+        select: ['id', 'last_runtime_error'],
+      });
+      cause = row?.last_runtime_error ?? null;
+    } catch {
+      cause = null;
+    }
+    return cause
+      ? `Worker unreachable: ${message} (the worker container terminated: ${cause})`
+      : `Worker unreachable: ${message}`;
   }
 
   async executeBrowser(params: {
@@ -290,7 +323,7 @@ export class ExecuteService {
       if (message.includes('abort')) {
         throw new GatewayTimeoutException('Worker browser command timed out');
       }
-      throw new BadGatewayException(`Worker unreachable: ${message}`);
+      throw new BadGatewayException(await this.unreachable(session.id, message));
     } finally {
       clearTimeout(timer);
       await this.releaseSessionLock(lockKey);
