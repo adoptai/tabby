@@ -54,7 +54,7 @@ function makeService(
 }
 
 describe('RecordingPoolService.ensurePoolApp — warm spares boot browser-driven', () => {
-  it('creates the pool app browser_driven=true + downloads=true so a browser claim needs no bind-mode switch', async () => {
+  it('creates the pool app browser_driven=true so a browser claim needs no bind-mode switch', async () => {
     const { svc, appsService } = makeService(
       { size: '3' },
       { appRepoFindOne: jest.fn().mockResolvedValue(null) }, // no existing pool app -> create path
@@ -67,9 +67,50 @@ describe('RecordingPoolService.ensurePoolApp — warm spares boot browser-driven
     // The spare boots already browser-driven so adoptMode() is a no-op on a
     // browser-driven claim (the login->browser switch was dropping interactions).
     expect(input.browser_policy.browser_driven).toBe(true);
-    expect(input.browser_policy.downloads).toBe(true);
     // Still a login-mode spare: combined captures record as 'login' for whole-HAR.
     expect(input.browser_policy.recording_mode).toBe('login');
+  });
+
+  it('rewrites browser_policy on a PRE-EXISTING lean pool app (the fix must reach a live pool)', async () => {
+    // A pool app row created before this fix: browser_driven not set (lean).
+    const stale = {
+      id: 'pool-existing',
+      desired_session_count: 3,
+      browser_policy: { recording_mode: 'login', downloads: false },
+    };
+    const update = jest.fn();
+    const { svc, appRepo } = makeService(
+      { size: '3' },
+      { appRepoFindOne: jest.fn().mockResolvedValue(stale) },
+    );
+    appRepo.update = update;
+
+    await svc.ensurePoolApp(false);
+
+    // Existing-row branch must sync browser_policy (not just desired_session_count),
+    // else spares under a pre-deploy pool keep booting lean and the fix is invisible.
+    expect(update).toHaveBeenCalledWith(
+      'pool-existing',
+      expect.objectContaining({ browser_policy: expect.objectContaining({ browser_driven: true }) }),
+    );
+  });
+
+  it('does not rewrite an already browser-driven pool app (no needless write per request)', async () => {
+    const current = {
+      id: 'pool-existing',
+      desired_session_count: 3,
+      browser_policy: { recording_mode: 'login', browser_driven: true, downloads: false },
+    };
+    const update = jest.fn();
+    const { svc, appRepo } = makeService(
+      { size: '3' },
+      { appRepoFindOne: jest.fn().mockResolvedValue(current) },
+    );
+    appRepo.update = update;
+
+    await svc.ensurePoolApp(false);
+
+    expect(update).not.toHaveBeenCalled();
   });
 });
 

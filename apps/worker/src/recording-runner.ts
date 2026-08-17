@@ -604,7 +604,6 @@ export class RecordingRunner {
     return bundle;
   }
 
-  /** Detach all listeners. Safe to call on SIGTERM and after drain(). */
   /**
    * Tear down ONLY the rich-capture listeners — the `context.on('page')` popup
    * handler and every download handler (main page + any popups) tracked in
@@ -632,6 +631,7 @@ export class RecordingRunner {
     }
   }
 
+  /** Detach all listeners. Safe to call on SIGTERM and after drain(). */
   detach(): void {
     this.detachRichCapture();
     if (this.onFrameNavigated) {
