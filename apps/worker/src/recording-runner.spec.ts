@@ -27,7 +27,13 @@ function makeFakes(initialUrl: string) {
       // 'domcontentloaded' (recorder re-injection) is accepted and ignored.
     },
     evaluate: jest.fn(async () => undefined),
-    removeListener: jest.fn(),
+    // Null the tracked listener too, so hasDownloadListener() reflects teardown
+    // (existing tests only assert the call happened, which still holds).
+    removeListener: jest.fn((event: string) => {
+      if (event === 'download') downloadListener = null;
+      if (event === 'framenavigated') navListener = null;
+      if (event === 'request') requestListener = null;
+    }),
   } as unknown as import('playwright').Page;
 
   let pageListener: ((p: unknown) => void) | null = null;
@@ -37,7 +43,9 @@ function makeFakes(initialUrl: string) {
     on: jest.fn((event: string, fn: (arg: unknown) => void) => {
       if (event === 'page') pageListener = fn as typeof pageListener;
     }),
-    removeListener: jest.fn(),
+    removeListener: jest.fn((event: string) => {
+      if (event === 'page') pageListener = null;
+    }),
   } as unknown as import('playwright').BrowserContext;
 
   // Simulate the sentinel fetch() beacon the injected recorder would issue.
@@ -438,6 +446,68 @@ describe('RecordingRunner — workflow capture', () => {
     const bundle = await runner.drain();
 
     expect(bundle.download_events).toEqual([]);
+  });
+});
+
+/**
+ * Warm-pool bind. Pool spares now boot browser_driven=true (login mode) so a
+ * browser-driven claim needs NO login->browser switch at bind — that switch is
+ * what dropped ~half the interactions on pooled recordings. A login/api claim
+ * flips browser_driven off at bind and must downgrade to byte-identical lean.
+ */
+describe('RecordingRunner — warm-pool bind (adoptMode)', () => {
+  // A rich-warmed pool spare: login mode, browser_driven=true from boot.
+  const richSpare = (f: ReturnType<typeof makeFakes>) =>
+    new RecordingRunner(f.page, f.context, 'sess-p', 'login', true);
+
+  it('browser-driven claim is a no-op: rich listeners stay, download still captured', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = richSpare(f);
+    await runner.start();
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+
+    // Bind for a browser-driven recording: same flag, same mode -> no churn.
+    runner.adoptMode('login', true);
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+
+    f.download('statement.pdf', 'blob:https://bank.test/abc');
+    const bundle = await runner.drain();
+    expect(bundle.download_events).toEqual([
+      expect.objectContaining({ suggested_filename: 'statement.pdf' }),
+    ]);
+  });
+
+  it('login/api claim downgrades cleanly: rich listeners torn down, bundle login-shaped', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = richSpare(f);
+    await runner.start();
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+
+    // Bind for a login/api recording: browser_driven flips off at bind.
+    runner.adoptMode('login', false);
+    expect(f.hasDownloadListener()).toBe(false);
+    expect(f.hasPageListener()).toBe(false);
+
+    // A download after the downgrade is not captured, and the bundle carries no
+    // workflow-only keys -- byte-identical to a lean-booted login recording.
+    f.download('late.pdf', 'blob:https://bank.test/late');
+    const bundle = await runner.drain();
+    expect('download_events' in bundle).toBe(false);
+  });
+
+  it('lean spare still upgrades to rich on a browser-driven claim', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-l', 'login'); // lean boot
+    await runner.start();
+    expect(f.hasDownloadListener()).toBe(false);
+    expect(f.hasPageListener()).toBe(false);
+
+    runner.adoptMode('login', true);
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
   });
 });
 

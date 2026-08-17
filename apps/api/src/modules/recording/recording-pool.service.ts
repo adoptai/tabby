@@ -118,21 +118,32 @@ export class RecordingPoolService implements OnModuleInit {
     const appName = this.appNameFor(residential);
     const size = this.sizeFor(residential);
     const tenantId = RECORDING_POOL.SYSTEM_TENANT_ID;
+    const desired = this.buildPoolAppInput(residential);
     const existing = await this.appRepo.findOne({
       where: { tenant_id: tenantId, name: appName },
     });
     if (existing) {
-      if (existing.desired_session_count !== size) {
-        await this.appRepo.update(existing.id, { desired_session_count: size });
+      const needsSize = existing.desired_session_count !== size;
+      // Sync browser_policy on the EXISTING row too. A pool app created before the
+      // browser_driven-spare fix (e.g. a live staging pool) is found here and would
+      // otherwise return early, so its spares keep booting with the old lean policy
+      // and the fix never reaches that environment. Detect the stale row by the one
+      // field that matters and rewrite the policy; only new spares the controller
+      // warms after this pick it up, so drain the pool (or let it rotate) to apply
+      // it immediately.
+      const currentDriven = (existing.browser_policy as { browser_driven?: boolean } | undefined)
+        ?.browser_driven;
+      const needsPolicy = currentDriven !== desired.browser_policy.browser_driven;
+      if (needsSize || needsPolicy) {
+        await this.appRepo.update(existing.id, {
+          ...(needsSize ? { desired_session_count: size } : {}),
+          ...(needsPolicy ? { browser_policy: desired.browser_policy } : {}),
+        });
       }
       return existing.id;
     }
     try {
-      const { app_id } = await this.appsService.create(
-        this.buildPoolAppInput(residential),
-        tenantId,
-        'system:recording-pool',
-      );
+      const { app_id } = await this.appsService.create(desired, tenantId, 'system:recording-pool');
       this.logger.log(
         `Created global ${residential ? 'residential ' : ''}recording pool app ${app_id} (size ${size})`,
       );
@@ -290,10 +301,24 @@ export class RecordingPoolService implements OnModuleInit {
         ttl_seconds: 300,
       },
       browser_policy: {
+        // Warm spares boot ALREADY browser-driven so a browser-driven claim needs
+        // NO login->browser mode switch at bind: adoptMode() sees browser_driven
+        // already true and is a no-op, so the DOM recorder + download/popup capture
+        // are armed from boot exactly like a fresh pod. The login->browser switch
+        // is what dropped ~half the interactions on pooled recordings (a claimed
+        // spare captured ~12 clicks vs ~24-28 fresh). A login/api claim downgrades
+        // cleanly at bind -- adoptMode() flips browser_driven off and tears the rich
+        // listeners back down (see RecordingRunner.adoptMode) -- so its bundle is
+        // byte-identical to a lean-booted spare. Warm-up capture is discarded on
+        // bind either way, so booting rich costs nothing during warm-up.
+        // (downloads stays false: main.ts forces acceptDownloads on for any
+        // recording via recording_mode, so this flag is inert here -- browser_driven
+        // is the only field that changes what gets captured.)
         downloads: false,
         clipboard: false,
         file_chooser: false,
         recording_mode: 'login' as RecordingMode,
+        browser_driven: true,
       },
       notification_config: {},
       desired_session_count: this.sizeFor(residential),

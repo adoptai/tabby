@@ -455,10 +455,19 @@ export class RecordingRunner {
     // changing. `browser_driven` alone turns it on -- a combined capture stays
     // in 'login' mode throughout -- and returning early on an unchanged mode
     // meant those recordings never attached download or popup capture.
-    if (this.richCapture && this.started && !this.onPopup) {
-      this.attachDownloadCapture(this.page, 0);
-      this.onPopup = (popup: Page) => this.attachPopupCapture(popup);
-      this.context.on('page', this.onPopup);
+    if (this.started) {
+      if (this.richCapture && !this.onPopup) {
+        this.attachDownloadCapture(this.page, 0);
+        this.onPopup = (popup: Page) => this.attachPopupCapture(popup);
+        this.context.on('page', this.onPopup);
+      } else if (!this.richCapture && this.onPopup) {
+        // Downgrade: a rich-warmed pool spare (browser_driven=true from boot) was
+        // claimed for a login/api recording, so bind flips browser_driven off.
+        // Tear the rich listeners back down so the recording is byte-identical to
+        // one that booted lean -- otherwise the download/popup handlers keep
+        // firing into a bundle that discards them.
+        this.detachRichCapture();
+      }
     }
     // The recorder in the CURRENT document was installed with the old flag. The
     // imminent navigation to the real target gets a fresh one via addInitScript /
@@ -595,8 +604,19 @@ export class RecordingRunner {
     return bundle;
   }
 
-  /** Detach all listeners. Safe to call on SIGTERM and after drain(). */
-  detach(): void {
+  /**
+   * Tear down ONLY the rich-capture listeners — the `context.on('page')` popup
+   * handler and every download handler (main page + any popups) tracked in
+   * `popupTeardowns` — leaving the base recorder (DOM events, URL transitions,
+   * HAR) intact.
+   *
+   * Shared by detach() (full teardown at stop) and by adoptMode() when a
+   * rich-warmed pool spare is claimed for a login/api recording and downgrades:
+   * without this the download/popup handlers would linger, firing into a bundle
+   * that (correctly) discards them, so a downgraded spare would not be
+   * byte-identical to one that booted lean.
+   */
+  private detachRichCapture(): void {
     if (this.onPopup) {
       this.context.removeListener('page', this.onPopup);
       this.onPopup = null;
@@ -609,6 +629,11 @@ export class RecordingRunner {
         /* page already closed — its listeners died with it */
       }
     }
+  }
+
+  /** Detach all listeners. Safe to call on SIGTERM and after drain(). */
+  detach(): void {
+    this.detachRichCapture();
     if (this.onFrameNavigated) {
       this.page.removeListener('framenavigated', this.onFrameNavigated);
       this.onFrameNavigated = null;
