@@ -50,8 +50,28 @@ function makeService(
   if (prevTenants === undefined) delete process.env.RECORDING_POOL_TENANTS;
   else process.env.RECORDING_POOL_TENANTS = prevTenants;
 
-  return { svc, appRepo, dataSource, managerQuery, findOne, sessionCount };
+  return { svc, appRepo, dataSource, managerQuery, findOne, sessionCount, appsService };
 }
+
+describe('RecordingPoolService.ensurePoolApp — warm spares boot browser-driven', () => {
+  it('creates the pool app browser_driven=true + downloads=true so a browser claim needs no bind-mode switch', async () => {
+    const { svc, appsService } = makeService(
+      { size: '3' },
+      { appRepoFindOne: jest.fn().mockResolvedValue(null) }, // no existing pool app -> create path
+    );
+    appsService.create.mockResolvedValue({ app_id: 'pool-1' });
+
+    await svc.ensurePoolApp(false);
+
+    const input = appsService.create.mock.calls[0][0];
+    // The spare boots already browser-driven so adoptMode() is a no-op on a
+    // browser-driven claim (the login->browser switch was dropping interactions).
+    expect(input.browser_policy.browser_driven).toBe(true);
+    expect(input.browser_policy.downloads).toBe(true);
+    // Still a login-mode spare: combined captures record as 'login' for whole-HAR.
+    expect(input.browser_policy.recording_mode).toBe('login');
+  });
+});
 
 describe('RecordingPoolService.isEnabledForTenant', () => {
   it('is disabled when size is 0 / unset regardless of tenants', () => {

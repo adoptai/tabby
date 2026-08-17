@@ -290,10 +290,22 @@ export class RecordingPoolService implements OnModuleInit {
         ttl_seconds: 300,
       },
       browser_policy: {
-        downloads: false,
+        // Warm spares boot ALREADY browser-driven so a browser-driven claim needs
+        // NO login->browser mode switch at bind: adoptMode() sees browser_driven
+        // already true and is a no-op, so the DOM recorder + download/popup capture
+        // are armed from boot exactly like a fresh pod. The login->browser switch
+        // is what dropped ~half the interactions on pooled recordings (a claimed
+        // spare captured ~12 clicks vs ~24-28 fresh). `downloads: true` likewise
+        // arms download acceptance from boot. A login/api claim downgrades cleanly
+        // at bind -- adoptMode() flips browser_driven off and tears the rich
+        // listeners back down (see RecordingRunner.adoptMode) -- so its bundle is
+        // byte-identical to a lean-booted spare. Warm-up capture is discarded on
+        // bind either way, so booting rich costs nothing during warm-up.
+        downloads: true,
         clipboard: false,
         file_chooser: false,
         recording_mode: 'login' as RecordingMode,
+        browser_driven: true,
       },
       notification_config: {},
       desired_session_count: this.sizeFor(residential),
