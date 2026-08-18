@@ -1,5 +1,5 @@
 import { RecordingRunner } from './recording-runner';
-import type { RecordedInteractionEvent } from '@browser-hitl/shared';
+import { RECORDING_SCHEMA_VERSION, type RecordedInteractionEvent } from '@browser-hitl/shared';
 
 /**
  * Fakes for Playwright Page/Context. We capture the console + framenavigated
@@ -10,6 +10,7 @@ import type { RecordedInteractionEvent } from '@browser-hitl/shared';
 function makeFakes(initialUrl: string) {
   let requestListener: ((req: unknown) => void) | null = null;
   let navListener: ((frame: unknown) => void) | null = null;
+  let downloadListener: ((d: unknown) => void) | null = null;
   let currentUrl = initialUrl;
 
   const mainFrame = {
@@ -22,19 +23,65 @@ function makeFakes(initialUrl: string) {
     on: (event: string, fn: (arg: unknown) => void) => {
       if (event === 'framenavigated') navListener = fn as typeof navListener;
       if (event === 'request') requestListener = fn as typeof requestListener;
+      if (event === 'download') downloadListener = fn as typeof downloadListener;
       // 'domcontentloaded' (recorder re-injection) is accepted and ignored.
     },
     evaluate: jest.fn(async () => undefined),
-    removeListener: jest.fn(),
+    // Null the tracked listener too, so hasDownloadListener() reflects teardown
+    // (existing tests only assert the call happened, which still holds).
+    removeListener: jest.fn((event: string) => {
+      if (event === 'download') downloadListener = null;
+      if (event === 'framenavigated') navListener = null;
+      if (event === 'request') requestListener = null;
+    }),
   } as unknown as import('playwright').Page;
 
+  let pageListener: ((p: unknown) => void) | null = null;
   const context = {
     addInitScript: jest.fn(async () => undefined),
     cookies: jest.fn(async () => []),
+    on: jest.fn((event: string, fn: (arg: unknown) => void) => {
+      if (event === 'page') pageListener = fn as typeof pageListener;
+    }),
+    removeListener: jest.fn((event: string) => {
+      if (event === 'page') pageListener = null;
+    }),
   } as unknown as import('playwright').BrowserContext;
 
   // Simulate the sentinel fetch() beacon the injected recorder would issue.
   const beaconReq = (url: string, body: string | null) => ({ url: () => url, postData: () => body });
+
+  /** A popup/new tab, driven the same way as the main page. */
+  function makePopup(popupUrl: string) {
+    let popRequest: ((req: unknown) => void) | null = null;
+    let popNav: ((frame: unknown) => void) | null = null;
+    let popDownload: ((d: unknown) => void) | null = null;
+    let url = popupUrl;
+    const frame = { url: () => url };
+    const p = {
+      url: () => url,
+      mainFrame: () => frame,
+      on: (event: string, fn: (arg: unknown) => void) => {
+        if (event === 'request') popRequest = fn as typeof popRequest;
+        if (event === 'framenavigated') popNav = fn as typeof popNav;
+        if (event === 'download') popDownload = fn as typeof popDownload;
+      },
+      evaluate: jest.fn(async () => undefined),
+      removeListener: jest.fn(),
+    } as unknown as import('playwright').Page;
+    return {
+      page: p,
+      emit: (ev: RecordedInteractionEvent) =>
+        popRequest?.(beaconReq('https://tabby-rec.local/e', JSON.stringify(ev))),
+      navigate: (to: string) => {
+        url = to;
+        popNav?.(frame);
+      },
+      download: (name: string, dlUrl: string) =>
+        popDownload?.({ url: () => dlUrl, suggestedFilename: () => name }),
+      removeListener: p.removeListener as unknown as jest.Mock,
+    };
+  }
 
   return {
     page,
@@ -46,6 +93,16 @@ function makeFakes(initialUrl: string) {
       currentUrl = to;
       navListener?.(mainFrame);
     },
+    download: (name: string, dlUrl: string) =>
+      downloadListener?.({ url: () => dlUrl, suggestedFilename: () => name }),
+    hasDownloadListener: () => downloadListener !== null,
+    /** Simulate the browser opening a popup, as context.on('page') would. */
+    openPopup: (popupUrl: string) => {
+      const popup = makePopup(popupUrl);
+      pageListener?.(popup.page);
+      return popup;
+    },
+    hasPageListener: () => pageListener !== null,
   };
 }
 
@@ -85,6 +142,34 @@ describe('RecordingRunner', () => {
     expect(f.context.addInitScript).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Rich capture (locator candidates, element evidence) follows browser_driven,
+   * NOT the recording mode.
+   *
+   * A COMBINED capture — login and workflow recorded in one session, the default
+   * the harness uses — is provisioned as a `login` session on purpose, so its
+   * HAR stays whole for App Template registration. Gating rich capture on the
+   * mode therefore turned the evidence pipeline off for exactly the captures
+   * that feed browser skills, and the compiler had nothing but generated CSS
+   * paths to work with.
+   */
+  it('captures rich evidence for a browser-driven login-mode recording', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login', true);
+    await runner.start();
+
+    expect(f.context.addInitScript).toHaveBeenCalledWith(expect.any(Function), { rich: true });
+  });
+
+  it('leaves a plain login recording exactly as it was', async () => {
+    // The hard constraint: the non-browser recorder must not change at all.
+    const f = makeFakes('https://bank.test/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    expect(f.context.addInitScript).toHaveBeenCalledWith(expect.any(Function), { rich: false });
+  });
+
   it('captures interaction events emitted over the request beacon channel', async () => {
     const f = makeFakes('https://example.com/login');
     const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
@@ -120,8 +205,10 @@ describe('RecordingRunner', () => {
     expect(bundle.har.log.version).toBe('1.2');
     expect(bundle.started_at).toBeTruthy();
     expect(bundle.stopped_at).toBeTruthy();
-    // Marks the event contract as the one that carries seq/event_time.
-    expect(bundle.schema_version).toBe(2);
+    // Stamped with the current contract revision. Asserted against the constant
+    // rather than a literal: the point is that drain() stamps what the worker
+    // actually produced, and pinning a number here just breaks on every bump.
+    expect(bundle.schema_version).toBe(RECORDING_SCHEMA_VERSION);
   });
 
   it('reset() drops pre-bind capture so the bundle starts at the real target', async () => {
@@ -217,5 +304,367 @@ describe('RecordingRunner', () => {
     await runner.drain();
 
     expect(f.page.removeListener).toHaveBeenCalledWith('framenavigated', expect.any(Function));
+  });
+});
+
+/**
+ * The login / HAR-replay recording path is frozen. Everything the workflow
+ * capture adds is gated on recording_mode, and a login bundle must come out with
+ * exactly the keys it always had — so the existing login compiler needs no
+ * branch and cannot regress.
+ */
+describe('RecordingRunner — login mode is untouched', () => {
+  it('attaches no popup or download listeners', async () => {
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    expect(f.hasPageListener()).toBe(false);
+    expect(f.hasDownloadListener()).toBe(false);
+    expect(f.context.on).not.toHaveBeenCalled();
+  });
+
+  it('drains a bundle with no workflow-only keys', async () => {
+    // schema_version IS present on login bundles — it describes what the worker
+    // produced, not which mode ran, and `seq`/`event_time` were added to both
+    // paths additively (with `timestamp` frozen in value and meaning). What must
+    // never appear on a login bundle is a workflow-only collection.
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+    f.emit(clickEvent);
+    f.navigate('https://example.com/dashboard');
+
+    const bundle = await runner.drain();
+
+    expect('download_events' in bundle).toBe(false);
+    expect(Object.keys(bundle).sort()).toEqual(
+      ['click_events', 'cookies', 'har', 'recording_mode', 'schema_version', 'session_id', 'started_at', 'stopped_at', 'url_events'].sort(),
+    );
+  });
+
+  it('does not stamp page_id on url events', async () => {
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+    f.navigate('https://example.com/dashboard');
+
+    const bundle = await runner.drain();
+    expect(bundle.url_events[0].page_id).toBeUndefined();
+  });
+});
+
+describe('RecordingRunner — workflow capture', () => {
+  const workflowRunner = (f: ReturnType<typeof makeFakes>) =>
+    new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+
+  it('records downloads, the terminal step most browser skills need', async () => {
+    // A blob: download never touches the network, so HAR cannot see it and the
+    // click that triggered it looks like any other click.
+    const f = makeFakes('https://bank.test/statements');
+    const runner = workflowRunner(f);
+    await runner.start();
+    f.download('statement-jan.pdf', 'blob:https://bank.test/9f2c');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.download_events).toEqual([
+      expect.objectContaining({
+        suggested_filename: 'statement-jan.pdf',
+        url: 'blob:https://bank.test/9f2c',
+        page_url: 'https://bank.test/statements',
+        page_id: 0,
+      }),
+    ]);
+  });
+
+  it('captures interactions and navigations inside a popup', async () => {
+    // Bank portals routinely open statements in a new window. Without this the
+    // compiled skill stops at the click that opened it.
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+
+    const popup = f.openPopup('https://bank.test/statement-viewer');
+    popup.emit({ ...clickEvent, selector: '#export', url: 'https://bank.test/statement-viewer' });
+    popup.navigate('https://bank.test/statement-viewer?fmt=pdf');
+    popup.download('jan.pdf', 'https://bank.test/dl/jan.pdf');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events.map(e => e.selector)).toContain('#export');
+    expect(bundle.url_events).toContainEqual(
+      expect.objectContaining({ to_url: 'https://bank.test/statement-viewer?fmt=pdf', page_id: 1 }),
+    );
+    expect(bundle.download_events).toEqual([expect.objectContaining({ page_id: 1 })]);
+  });
+
+  it('numbers popups in open order so the compiler can tell them apart', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+
+    const first = f.openPopup('https://bank.test/a');
+    const second = f.openPopup('https://bank.test/b');
+    first.navigate('https://bank.test/a2');
+    second.navigate('https://bank.test/b2');
+
+    const bundle = await runner.drain();
+    expect(bundle.url_events.find(e => e.to_url === 'https://bank.test/a2')?.page_id).toBe(1);
+    expect(bundle.url_events.find(e => e.to_url === 'https://bank.test/b2')?.page_id).toBe(2);
+  });
+
+  it('stamps a schema version so old and new recordings stay distinguishable', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+
+    const bundle = await runner.drain();
+    expect(bundle.schema_version).toBe(RECORDING_SCHEMA_VERSION);
+  });
+
+  it('detaches popup listeners on drain', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+    const popup = f.openPopup('https://bank.test/a');
+
+    await runner.drain();
+
+    expect(f.context.removeListener).toHaveBeenCalledWith('page', expect.any(Function));
+    expect(popup.removeListener).toHaveBeenCalledWith('request', expect.any(Function));
+    expect(popup.removeListener).toHaveBeenCalledWith('download', expect.any(Function));
+  });
+
+  it('drops popup capture on reset so a warm spare cannot pollute the bundle', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = workflowRunner(f);
+    await runner.start();
+    f.download('warmup.pdf', 'https://bank.test/warmup.pdf');
+
+    runner.reset();
+    const bundle = await runner.drain();
+
+    expect(bundle.download_events).toEqual([]);
+  });
+});
+
+/**
+ * Warm-pool bind. Pool spares now boot browser_driven=true (login mode) so a
+ * browser-driven claim needs NO login->browser switch at bind — that switch is
+ * what dropped ~half the interactions on pooled recordings. A login/api claim
+ * flips browser_driven off at bind and must downgrade to byte-identical lean.
+ */
+describe('RecordingRunner — warm-pool bind (adoptMode)', () => {
+  // A rich-warmed pool spare: login mode, browser_driven=true from boot.
+  const richSpare = (f: ReturnType<typeof makeFakes>) =>
+    new RecordingRunner(f.page, f.context, 'sess-p', 'login', true);
+
+  it('browser-driven claim is a no-op: rich listeners stay, download still captured', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = richSpare(f);
+    await runner.start();
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+
+    // Bind for a browser-driven recording: same flag, same mode -> no churn.
+    runner.adoptMode('login', true);
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+
+    f.download('statement.pdf', 'blob:https://bank.test/abc');
+    const bundle = await runner.drain();
+    expect(bundle.download_events).toEqual([
+      expect.objectContaining({ suggested_filename: 'statement.pdf' }),
+    ]);
+  });
+
+  it('login/api claim downgrades cleanly: rich listeners torn down, bundle login-shaped', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = richSpare(f);
+    await runner.start();
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+
+    // Bind for a login/api recording: browser_driven flips off at bind.
+    runner.adoptMode('login', false);
+    expect(f.hasDownloadListener()).toBe(false);
+    expect(f.hasPageListener()).toBe(false);
+
+    // A download after the downgrade is not captured, and the bundle carries no
+    // workflow-only keys -- byte-identical to a lean-booted login recording.
+    f.download('late.pdf', 'blob:https://bank.test/late');
+    const bundle = await runner.drain();
+    expect('download_events' in bundle).toBe(false);
+  });
+
+  it('lean spare still upgrades to rich on a browser-driven claim', async () => {
+    const f = makeFakes('https://bank.test/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-l', 'login'); // lean boot
+    await runner.start();
+    expect(f.hasDownloadListener()).toBe(false);
+    expect(f.hasPageListener()).toBe(false);
+
+    runner.adoptMode('login', true);
+    expect(f.hasDownloadListener()).toBe(true);
+    expect(f.hasPageListener()).toBe(true);
+  });
+});
+
+describe('RecordingRunner — interaction outcomes', () => {
+  it('attaches what happened next to a workflow interaction', async () => {
+    const f = makeFakes('https://bank.test/accounts');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+    await runner.start();
+
+    // Stamped now, not with the shared fixture's fixed date: outcomes are
+    // attributed within a window of the interaction, and f.navigate() stamps the
+    // url event with the current clock.
+    const now = new Date().toISOString();
+    f.emit({ ...clickEvent, url: 'https://bank.test/accounts', event_time: now, timestamp: now });
+    f.navigate('https://bank.test/statements');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events[0].outcome).toEqual(
+      expect.objectContaining({ navigated: true, to_url: 'https://bank.test/statements' }),
+    );
+  });
+
+  it('leaves login interactions without an outcome', async () => {
+    // Derivation is workflow-only; the login compiler sees the event shape it
+    // always has.
+    const f = makeFakes('https://example.com/login');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-1', 'login');
+    await runner.start();
+
+    f.emit(clickEvent);
+    f.navigate('https://example.com/dashboard');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.click_events[0].outcome).toBeUndefined();
+  });
+});
+
+/**
+ * Warm-pool spares boot from a shared pool app hardcoded to
+ * `recording_mode: 'login'`, so a session provisioned as `workflow` arrived at
+ * the worker as a login one. The bundle came back mislabelled — noui carries
+ * regression cover for exactly that — and, worse, every workflow-only capture
+ * stayed switched off. The label was recoverable downstream; the missing capture
+ * was not.
+ */
+describe('RecordingRunner — adopting the requested mode at bind', () => {
+  it('turns on workflow capture for a spare that booted as login', async () => {
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+
+    expect(f.hasPageListener()).toBe(false); // booted as login: nothing armed
+    expect(f.hasDownloadListener()).toBe(false);
+
+    runner.adoptMode('workflow');
+
+    expect(f.hasPageListener()).toBe(true);
+    expect(f.hasDownloadListener()).toBe(true);
+  });
+
+  it('stamps the bundle with the adopted mode, not the booted one', async () => {
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+    runner.adoptMode('workflow');
+
+    const bundle = await runner.drain();
+
+    expect(bundle.recording_mode).toBe('workflow');
+    expect(bundle.download_events).toEqual([]); // present, i.e. workflow-shaped
+  });
+
+  it('captures downloads that arrive after the mode is adopted', async () => {
+    // The point of the fix: a statement download on a warm-pool session was
+    // invisible, because the listener was never attached.
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+    runner.adoptMode('workflow');
+
+    f.download('statement.pdf', 'blob:https://bank.test/9');
+    const bundle = await runner.drain();
+
+    expect(bundle.download_events).toEqual([
+      expect.objectContaining({ suggested_filename: 'statement.pdf' }),
+    ]);
+  });
+
+  it('re-injects the recorder so the page upgrades to rich capture', async () => {
+    const f = makeFakes('https://bank.test/warm');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'login');
+    await runner.start();
+    (f.page.evaluate as jest.Mock).mockClear();
+
+    runner.adoptMode('workflow');
+
+    expect(f.page.evaluate).toHaveBeenCalledWith(expect.any(Function), { rich: true });
+  });
+
+  it('is a no-op when the mode already matches', async () => {
+    // A cold-path session is constructed correctly; bind must not disturb it.
+    const f = makeFakes('https://bank.test/cold');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+    await runner.start();
+    (f.page.evaluate as jest.Mock).mockClear();
+
+    runner.adoptMode('workflow');
+
+    expect(f.page.evaluate).not.toHaveBeenCalled();
+    expect((f.context.on as jest.Mock).mock.calls.filter((c) => c[0] === 'page')).toHaveLength(1);
+  });
+
+  it('never downgrades a workflow recording to login', async () => {
+    const f = makeFakes('https://bank.test/cold');
+    const runner = new RecordingRunner(f.page, f.context, 'sess-w', 'workflow');
+    await runner.start();
+
+    runner.adoptMode('login');
+    const bundle = await runner.drain();
+
+    // Downgrading would silently discard capture already taken under workflow.
+    expect(bundle.recording_mode).toBe('login');
+    expect(bundle.download_events).toBeUndefined();
+  });
+});
+
+describe('RecordingRunner — browser_driven arriving without a mode change', () => {
+  it('turns rich capture on even when the mode stays the same', () => {
+    // A combined ICICI capture stays in 'login' mode from start to finish, so
+    // the mode never changes at bind. Gating adoption on a mode change meant
+    // `browser_driven` never landed, richCapture stayed false, and the
+    // recording came back with no locator candidates, no hovers and no
+    // downloads — none of the evidence a browser skill is compiled from.
+    // `on` because turning rich capture on attaches download capture.
+    const page: any = { evaluate: jest.fn().mockResolvedValue(undefined), on: jest.fn() };
+    const context: any = { on: jest.fn(), addInitScript: jest.fn() };
+    const runner: any = new RecordingRunner(page, context, 'sess-driven', 'login');
+    runner.started = true;
+
+    expect(runner.richCapture).toBe(false);
+    runner.adoptMode(undefined, true);
+
+    expect(runner.richCapture).toBe(true);
+    // The live document is upgraded, not left recording under the old flag.
+    expect(page.evaluate).toHaveBeenCalled();
+  });
+
+  it('is still a no-op when neither the mode nor browser_driven changes', () => {
+    const page: any = { evaluate: jest.fn().mockResolvedValue(undefined) };
+    const context: any = { on: jest.fn(), addInitScript: jest.fn() };
+    const runner: any = new RecordingRunner(page, context, 'sess-same', 'login');
+    runner.started = true;
+
+    runner.adoptMode('login', false);
+
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });

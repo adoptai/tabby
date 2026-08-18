@@ -37,6 +37,14 @@ interface CreateRecordingSessionBody {
    * of the recording-shell app default. Omit to inherit the app default.
    */
   residential_proxy?: boolean;
+  /**
+   * Build a browser-driven skill from this recording, so the HAR is reduced to
+   * metadata (no bodies, headers or query strings). Independent of
+   * recording_mode, which is the authoring phase rather than the skill kind:
+   * a workflow recording of an ordinary REST app still compiles by HAR replay,
+   * and that compiler needs the full HAR. Defaults false.
+   */
+  browser_driven?: boolean;
 }
 
 /**
@@ -70,6 +78,7 @@ export class RecordingProvisionController {
   @Roles('Admin', 'Editor', 'Operator', 'Agent')
   async createRecordingSession(@Body() body: CreateRecordingSessionBody, @Req() req: any) {
     const mode: RecordingMode = body?.recording_mode === 'workflow' ? 'workflow' : 'login';
+    const browserDriven = body?.browser_driven === true;
     const startUrl = (body?.start_url || '').trim() || 'about:blank';
     const tenantId: string = req.user.tenant_id;
     const ownerUserId: string | null = req.user.owner_user_id ?? null;
@@ -156,6 +165,7 @@ export class RecordingProvisionController {
           clipboard: false,
           file_chooser: false,
           recording_mode: mode,
+          browser_driven: browserDriven,
         },
         // The shell app carries the residential intent so that on a warm-pool
         // MISS the reconcile-created cold session (session-level flag null →
@@ -196,7 +206,10 @@ export class RecordingProvisionController {
         wantResidential,
       );
       if (claimed?.pod_name) {
-        await this.bindClaimedSession(claimed.pod_name, startUrl, seedCookies);
+        // The spare booted from the pool app, which is hardcoded to 'login'.
+        // Bind is where it learns what it is really for — without this every
+        // warm-pool workflow recording captured as a login one.
+        await this.bindClaimedSession(claimed.pod_name, startUrl, seedCookies, mode, browserDriven);
         const stream = await this.vncStreamProvider.getStreamUrl(claimed.id, ownerUserId || actorId);
         const vncUrl = stream.url.replace('#', '?mode=recording#');
         this.logger.log(
@@ -252,12 +265,16 @@ export class RecordingProvisionController {
     podName: string,
     startUrl: string,
     seedCookies: unknown[],
+    mode: RecordingMode,
+    browserDriven: boolean,
   ): Promise<void> {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         await this.recordingStore.bindWorker(podName, {
           start_url: startUrl,
           seed_cookies: seedCookies,
+          recording_mode: mode,
+          browser_driven: browserDriven,
         });
         return;
       } catch (err) {

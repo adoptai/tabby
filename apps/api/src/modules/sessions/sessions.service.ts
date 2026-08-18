@@ -125,7 +125,13 @@ export class SessionsService {
       for (let i = 0; i < toCreate; i++) {
         const created = await this.sessionRepo.save(this.sessionRepo.create({
           app_id: appId,
-          tenant_id: tenantId,
+          // The APP's tenant, not the caller's scope. An Admin may scale any app
+          // across tenants, which is what `tenantId === undefined` means here --
+          // and that undefined went straight into the insert, so every Admin
+          // scale-up died on "null value in column tenant_id violates not-null
+          // constraint". A session belongs to the app it runs for, whoever asked
+          // for it; for a tenant-scoped caller the two are the same value.
+          tenant_id: effectiveTenantId,
           state: 'STARTING' as any,
           state_version: 0,
           retry_count: 0,

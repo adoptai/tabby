@@ -1,4 +1,4 @@
-import { HealthPredicateRunner } from './health-predicate-runner';
+import { HealthPredicateRunner, DEFAULT_AUTH_REDIRECT_PATTERN, classifyDomCheckError } from './health-predicate-runner';
 import { HealthResultType } from '@browser-hitl/shared';
 
 /**
@@ -69,6 +69,38 @@ describe('HealthPredicateRunner — url_check live-page detection', () => {
     const r = new HealthPredicateRunner(page, context, { health_checks: [CHECK], policy: 'all' });
     const res = await r.evaluate();
     expect(res.checks[0].result).toBe(HealthResultType.PASS);
+  });
+});
+
+describe('HealthPredicateRunner — default auth pattern is anchored to the path', () => {
+  // No auth_redirect_pattern, so the DEFAULT applies to the live SPA route. The
+  // default's /login /signin /logout tokens must not match inside a host or a
+  // query string. check.url == the live URL so the HTTP probe does NOT redirect —
+  // isolating the page.url() live-page check (the redirect detector is separate).
+  const run = async (liveUrl: string) => {
+    const { page, context } = makeUrlCheckPage(liveUrl);
+    const res = await new HealthPredicateRunner(page, context, {
+      health_checks: [{ type: 'url_check', url: liveUrl, expect_status: 200 }],
+      policy: 'all',
+    }).evaluate();
+    return res.checks[0].result;
+  };
+
+  it('PASS on an authenticated page served from an SSO host (//login.okta.com)', async () => {
+    expect(await run('https://login.okta.com/dashboard')).toBe(HealthResultType.PASS);
+    expect(await run('https://signin.company.com/home')).toBe(HealthResultType.PASS);
+  });
+
+  it('PASS when a redirect param merely contains /login in the query', async () => {
+    expect(await run('https://app.test/dashboard?returnUrl=/login')).toBe(HealthResultType.PASS);
+  });
+
+  it('AUTH_FAIL when the PATH itself is an auth/expiry route', async () => {
+    expect(await run('https://app.test/session-expire')).toBe(HealthResultType.AUTH_FAIL);
+    // ICICI's login lands on /login-page — a hyphen ends the word, still caught.
+    expect(await run('https://retailnetbanking.icici.bank.in/login-page')).toBe(
+      HealthResultType.AUTH_FAIL,
+    );
   });
 });
 
@@ -232,5 +264,145 @@ describe('HealthPredicateRunner — dom_check cannot claim AUTH_FAIL on its own 
       { type: 'dom_check', selector: 'text=Sign in', exists: false },
     ).evaluate();
     expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+  });
+});
+
+/**
+ * A `dom_check` on `body` cannot report on authentication.
+ *
+ * Every rendered document has a body. If it cannot be found the document is
+ * loading, navigating or blank — never "the session ended". Apps configure this
+ * as a cheap liveness probe (the recording-shell app does exactly this), and on
+ * a portal that replaces the document during sign-in it lands mid-navigation and
+ * times out.
+ *
+ * Observed: a human signing in to ICICI inside a RECORDING session. Five health
+ * cycles passed, one timed out on `body`, the controller flipped the session
+ * HEALTHY -> UNHEALTHY, and the very next cycle 55 seconds later passed again.
+ * One blip interrupted a human mid-sign-in for nothing.
+ */
+describe('HealthPredicateRunner — a universal selector cannot prove a session ended', () => {
+  function pageThatTimesOut() {
+    return {
+      locator: jest.fn().mockReturnValue({
+        first: jest.fn().mockReturnValue({
+          waitFor: jest.fn(async () => {
+            throw new Error('locator.waitFor: Timeout 5000ms exceeded.');
+          }),
+        }),
+      }),
+      url: jest.fn().mockReturnValue('https://retailnetbanking.icici.bank.in/login-page'),
+    } as any;
+  }
+
+  it('reports TRANSIENT_FAIL when body times out, not AUTH_FAIL', async () => {
+    const res = await runner(pageThatTimesOut(), {
+      type: 'dom_check', selector: 'body', exists: true,
+    }).evaluate();
+
+    expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+    expect(res.checks[0].detail).toMatch(/matches any loaded page/);
+  });
+
+  it('treats html and :root the same way', async () => {
+    for (const selector of ['html', ':root', 'BODY', ' body ']) {
+      const res = await runner(pageThatTimesOut(), {
+        type: 'dom_check', selector, exists: true,
+      }).evaluate();
+      expect(res.checks[0].result).toBe(HealthResultType.TRANSIENT_FAIL);
+    }
+  });
+
+  it('still reports AUTH_FAIL when a REAL marker times out', async () => {
+    // The carve-out must not swallow the genuine signed-out verdict: a missing
+    // dashboard element is exactly what "signed out" looks like.
+    const res = await runner(pageThatTimesOut(), {
+      type: 'dom_check', selector: '#dashboard', exists: true,
+    }).evaluate();
+
+    expect(res.checks[0].result).toBe(HealthResultType.AUTH_FAIL);
+  });
+});
+
+describe('DEFAULT_AUTH_REDIRECT_PATTERN', () => {
+  // The detection existed and never ran on ICICI: its profile sets no
+  // auth_redirect_pattern, so the session reported HEALTHY/PASS while the
+  // browser sat on /session-expire.
+  const re = () => new RegExp(DEFAULT_AUTH_REDIRECT_PATTERN, 'i');
+
+  it('catches the pages that mean the session is over', () => {
+    for (const u of [
+      'https://retailnetbanking.icici.bank.in/session-expire',
+      'https://retailnetbanking.icici.bank.in/login-page',
+      'https://x.test/session_timeout',
+      'https://x.test/logout',
+      'https://x.test/signin?next=/a',
+    ]) {
+      expect(re().test(u)).toBe(true);
+    }
+  });
+
+  it('does NOT flag a bank page that merely says Authentication', () => {
+    // ICICI serves its STATEMENT portal from AuthenticationController. Matching
+    // a bare "auth" would fail a healthy session mid-workflow — the exact thing
+    // this check exists to protect.
+    expect(re().test('https://infinity.icici.bank.in/corp/AuthenticationController;jsessionid=x'))
+      .toBe(false);
+  });
+
+  it('does not flag ordinary app pages', () => {
+    for (const u of [
+      'https://retailnetbanking.icici.bank.in/overview',
+      'https://retailnetbanking.icici.bank.in/credit-card',
+      'https://x.test/accounts/logins-history',
+    ]) {
+      expect(re().test(u)).toBe(false);
+    }
+  });
+});
+
+describe('a health check that raced a pending navigation', () => {
+  // A cross-origin hop completes asynchronously AFTER the command that caused
+  // it returns. A health cycle landing in that window waits on a navigation
+  // nobody is failing.
+  const playwrightTimeout = new Error(
+    'locator.waitFor: Timeout 5000ms exceeded.\n' +
+      'Call log:\n' +
+      '  - waiting for "https://infinity.icici.bank.in/corp/AuthenticationController?FORMSGROUP_ID__=…" navigation to finish...\n' +
+      '  - navigated to "https://infinity.icici.bank.in/corp/AuthenticationController?FORMSGROUP_ID__=…"',
+  );
+
+  it('is transient, not an auth failure', () => {
+    const got = classifyDomCheckError(playwrightTimeout);
+    expect(got).not.toBeNull();
+    expect(got!.result).toBe(HealthResultType.TRANSIENT_FAIL);
+    expect(got!.detail).toMatch(/raced a navigation/i);
+  });
+
+  it('does not swallow an ordinary timeout with no navigation in it', () => {
+    // A selector that is genuinely absent on a settled page must still be
+    // judged normally — that is the auth signal this check exists for.
+    const plain = new Error('locator.waitFor: Timeout 5000ms exceeded.');
+    expect(classifyDomCheckError(plain)).toBeNull();
+  });
+});
+
+describe('an unevaluable cycle is not a verdict', () => {
+  // TRANSIENT_FAIL is still a verdict: the state machine turns it into
+  // UNHEALTHY, execute/browser then refuses, and a replay dies on a session
+  // that was never unwell.
+  it('marks the classifier verdicts as unevaluable', () => {
+    const raced = classifyDomCheckError(
+      new Error('locator.waitFor: Timeout 5000ms exceeded.\n  - waiting for "https://x/" navigation to finish...'),
+    );
+    expect(raced!.unevaluable).toBe(true);
+
+    const closed = classifyDomCheckError(new Error('target page, context or browser has been closed'));
+    expect(closed!.unevaluable).toBe(true);
+  });
+
+  it('leaves a genuine timeout unclassified, so it is judged normally', () => {
+    // The auth signal this check exists for must still get through.
+    expect(classifyDomCheckError(new Error('locator.waitFor: Timeout 5000ms exceeded.'))).toBeNull();
   });
 });

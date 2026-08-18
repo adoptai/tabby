@@ -245,9 +245,41 @@ KIND_CLUSTER ?= tabby-dev
 tilt: ## Start Tilt for live rebuild and deploy (replaces kind-reload-all)
 	tilt up
 
+# Dedicated Docker network for this cluster, created at MTU 1500.
+#
+# THE ROOT CAUSE of the MTU problem lives here. Docker Desktop's default bridge
+# is 65535, kind's own `kind` network inherits that, kindnetd reads the node's
+# eth0 and writes whatever it finds into the CNI conflist. So the pod MTU is not
+# a kind setting to override — it is derived, and every attempt to patch it
+# downstream is fighting the source.
+#
+# Giving the cluster its own 1500 network makes node eth0, the bridge and the
+# derived pod MTU agree, so `kind-fix-mtu` has nothing left to fix. A dedicated
+# name (not `kind`) so we never mutate a network another project's cluster is on.
+KIND_NETWORK ?= tabby-kind
+
 .PHONY: kind-create
 kind-create: ## Create a Kind cluster for local development
-	kind create cluster --name $(KIND_CLUSTER) --config infra/kind/cluster-config.yaml
+	@# Recreate the network only when nothing is attached — an in-use network
+	@# means another cluster is on it, and MTU is fixed at creation time.
+	@if docker network inspect $(KIND_NETWORK) >/dev/null 2>&1; then \
+		mtu=$$(docker network inspect $(KIND_NETWORK) --format '{{index .Options "com.docker.network.driver.mtu"}}'); \
+		if [ "$$mtu" != "1500" ]; then \
+			attached=$$(docker network inspect $(KIND_NETWORK) --format '{{len .Containers}}'); \
+			if [ "$$attached" != "0" ]; then \
+				echo "warning: network '$(KIND_NETWORK)' has MTU $$mtu and $$attached container(s) attached."; \
+				echo "         Cannot recreate it in place; the cluster will need 'make kind-fix-mtu'."; \
+			else \
+				echo "Recreating '$(KIND_NETWORK)' at MTU 1500 (was $$mtu)..."; \
+				docker network rm $(KIND_NETWORK) >/dev/null; \
+				docker network create --opt com.docker.network.driver.mtu=1500 $(KIND_NETWORK) >/dev/null; \
+			fi; \
+		fi; \
+	else \
+		docker network create --opt com.docker.network.driver.mtu=1500 $(KIND_NETWORK) >/dev/null; \
+	fi
+	KIND_EXPERIMENTAL_DOCKER_NETWORK=$(KIND_NETWORK) \
+		kind create cluster --name $(KIND_CLUSTER) --config infra/kind/cluster-config.yaml
 	$(MAKE) kind-fix-mtu
 	$(MAKE) kind-fix-dns
 	@echo "Kind cluster '$(KIND_CLUSTER)' created. Context: kind-$(KIND_CLUSTER)"
@@ -267,43 +299,40 @@ kind-guard:
 
 .PHONY: kind-fix-mtu
 kind-fix-mtu: kind-guard ## Fix Kind pod MTU from 65535 to 1500 (prevents TLS failures to external sites)
-	@echo "Patching kindnet pod MTU to 1500 on all nodes of '$(KIND_CLUSTER)'..."
-	@# Patch ONLY the CNI conflist (pod veth MTU). Do NOT touch the node's own eth0:
-	@# it must keep matching the Docker bridge (`docker network inspect kind` ->
-	@# com.docker.network.driver.mtu, 65535 on Docker Desktop). Lowering the node
-	@# interface while the bridge stays 65535 makes the bridge emit frames the node
-	@# drops, which wedges kubectl port-forward with
-	@#   'error creating error stream ...: Timeout occurred'
-	@# and takes the API/VNC tunnels down with it.
+	@echo "Installing 1500-MTU CNI config on all nodes of '$(KIND_CLUSTER)'..."
+	@# Change the pod veth MTU ONLY. Do NOT touch the node's own eth0: it must keep
+	@# matching the Docker bridge. Lowering the node interface while the bridge stays
+	@# 65535 makes the bridge emit frames the node drops, which wedges kubectl
+	@# port-forward with 'error creating error stream ...: Timeout occurred' and takes
+	@# the API/VNC tunnels down with it. (A cluster created by `make kind-create` has
+	@# a 1500 bridge, so it never reaches this target with a mismatch.)
 	@#
-	@# kindnet rewrites the conflist on startup, and does so a moment AFTER the
-	@# daemonset reports Ready — so a patch applied immediately gets clobbered.
-	@# Restart first, then patch, then RE-verify once kindnet has settled, retrying
-	@# before giving up. The previous version verified instantly and printed success
-	@# against a file that was about to be overwritten.
-	kubectl --context $(KIND_CONTEXT) rollout restart daemonset/kindnet -n kube-system
-	kubectl --context $(KIND_CONTEXT) rollout status daemonset/kindnet -n kube-system --timeout=60s
-	@ok=0; \
-	for attempt in 1 2 3 4 5; do \
-		for node in $$(kind get nodes --name $(KIND_CLUSTER)); do \
-			docker exec $$node sh -c '\
-				CNI=/etc/cni/net.d/10-kindnet.conflist; \
-				[ -s "$$CNI" ] && sed -i "s/\"mtu\": *[0-9]*/\"mtu\": 1500/g" "$$CNI"; \
-				grep -q "\"mtu\": 1500" "$$CNI"' \
-				|| { echo "MTU patch did not land on $$node (no \"mtu\" key? kindnet variant changed)"; exit 1; }; \
-		done; \
-		sleep 20; \
-		stable=1; \
-		for node in $$(kind get nodes --name $(KIND_CLUSTER)); do \
-			docker exec $$node sh -c 'grep -q "\"mtu\": 1500" /etc/cni/net.d/10-kindnet.conflist' || stable=0; \
-		done; \
-		if [ "$$stable" = "1" ]; then \
-			echo "Pod MTU 1500 verified stable on all nodes (attempt $$attempt)."; ok=1; break; \
-		fi; \
-		echo "kindnet reverted the patch (attempt $$attempt) — retrying..."; \
-	done; \
-	if [ "$$ok" != "1" ]; then echo "MTU patch keeps being reverted by kindnet; aborting."; exit 1; fi
-	@echo "NOTE: kindnet rewrites this on every restart — re-run after one."
+	@# We do NOT patch 10-kindnet.conflist. kindnetd DERIVES the MTU from the node's
+	@# eth0 and rewrites that file on every start, so a patch there is reverted by
+	@# design — the old restart/patch/retry loop was racing a process that always
+	@# wins eventually, and left "re-run after every kindnet restart" as homework.
+	@#
+	@# Instead, drop a copy that sorts BEFORE kindnet's. containerd loads the
+	@# lexicographically first config in /etc/cni/net.d, so 05- wins, and kindnetd
+	@# never touches a file that isn't its own. Verified: after a kindnet restart,
+	@# 10-kindnet.conflist is back to 65535, ours is still 1500, and a fresh pod
+	@# comes up at 1500.
+	@#
+	@# The copy is a snapshot, so re-run this after a kindnet IMAGE upgrade (pod
+	@# subnet or plugin changes would otherwise be masked by our stale copy). That
+	@# is the only remaining trigger — restarts no longer need it.
+	@for node in $$(kind get nodes --name $(KIND_CLUSTER)); do \
+		docker exec $$node sh -c '\
+			SRC=/etc/cni/net.d/10-kindnet.conflist; \
+			DST=/etc/cni/net.d/05-tabby-mtu.conflist; \
+			[ -s "$$SRC" ] || { echo "no kindnet conflist to copy"; exit 1; }; \
+			grep -q "\"mtu\"" "$$SRC" || { echo "no \"mtu\" key (kindnet variant changed)"; exit 1; }; \
+			sed "s/\"mtu\": *[0-9]*/\"mtu\": 1500/g" "$$SRC" > "$$DST"; \
+			grep -q "\"mtu\": 1500" "$$DST"' \
+			|| { echo "MTU config did not land on $$node"; exit 1; }; \
+		echo "  $$node: 05-tabby-mtu.conflist installed at MTU 1500"; \
+	done
+	@echo "Pod MTU 1500 is now durable — kindnet restarts no longer revert it."
 	@echo "Existing pods keep their old MTU — recreate them to pick this up:"
 	@echo "  kubectl --context $(KIND_CONTEXT) rollout restart deploy -n $(HELM_NAMESPACE)"
 

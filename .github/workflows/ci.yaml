@@ -2,6 +2,13 @@ name: CI
 
 on:
   pull_request:
+    # `edited` is required so the PR Title (Conventional Commit) check re-runs when
+    # a title is corrected. Without it the trigger defaults to
+    # [opened, synchronize, reopened], the check reads the frozen event-payload
+    # title, and fixing a bad title never clears the failing check (only a new
+    # commit would). See the dev->main promotion PRs, which routinely need a
+    # title fix.
+    types: [opened, edited, synchronize, reopened]
     branches: [dev, main]
 
 concurrency:

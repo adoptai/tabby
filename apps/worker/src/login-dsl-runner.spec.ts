@@ -236,7 +236,7 @@ describe('LoginDslRunner', () => {
         { username: '', password: '' },
       );
 
-      expect(page.goto).toHaveBeenCalledWith('https://example.com/login', { timeout: 30000 });
+      expect(page.goto).toHaveBeenCalledWith('https://example.com/login', { timeout: 30000, waitUntil: 'domcontentloaded' });
     });
 
     it('executes click step', async () => {
@@ -589,4 +589,25 @@ describe('activity keepalive action', () => {
       runner.execute([{ action: 'activity' } as any], { username: '', password: '' }),
     ).resolves.not.toThrow();
   });
+
+  it('waits for the DOM, not for every last beacon', async () => {
+    // `load` waits for every subresource -- tag managers, analytics, fraud
+    // fingerprinting. ICICI's login page pulls 27 of them and needs 21s just to
+    // reach DOMContentLoaded, so `load` could never finish inside the 30s step
+    // timeout: the DSL aborted at step 0 and the session never started its
+    // health loop, leaving a human signed in over VNC with nothing watching.
+    const page = createMockPage();
+    const { runner } = buildRunner({ page });
+
+    await runner.execute(
+      [{ action: 'goto', url: 'https://slow-portal.test/login-page' }],
+      { username: '', password: '' },
+    );
+
+    expect(page.goto).toHaveBeenCalledWith(
+      'https://slow-portal.test/login-page',
+      expect.objectContaining({ waitUntil: 'domcontentloaded' }),
+    );
+  });
 });
+

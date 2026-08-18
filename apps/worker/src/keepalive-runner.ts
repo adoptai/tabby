@@ -73,8 +73,17 @@ export class KeepaliveRunner {
 
     // Schedule subsequent cycles
     this.timer = setInterval(async () => {
+      // Instrumentation for a loop that goes silent after a busy-skip: two pods
+      // logged "skipping cycle (1/3)" and then nothing at all, while a pod that
+      // never skipped cycled every 60s. Four explanations have been ruled out --
+      // the skip does not exit the loop, the busy flag is decremented, `running`
+      // is cleared in a finally, and the nudge itself is correct. This says
+      // whether the callback is still entered and, if so, what the guard sees.
+      console.log(`Keepalive tick: running=${this.running}`);
       if (!this.running) {
         await this.runCycle();
+      } else {
+        console.log('Keepalive tick: SKIPPED — a cycle is still marked in progress');
       }
     }, intervalSeconds * 1000);
 
@@ -193,6 +202,25 @@ export class KeepaliveRunner {
       const healthResult = await this.healthRunner.evaluate();
       // Remember the verdict so the NEXT cycle can gate the 'activity' nudge
       // (see Step 1) — a not-PASS session is likely sitting on a login page.
+      // An unevaluable cycle records NOTHING.
+      //
+      // Every non-PASS check was one that could not be asked -- the page was
+      // mid-navigation -- and none produced a real verdict. TRANSIENT_FAIL is
+      // still a verdict: the state machine turns it into UNHEALTHY,
+      // execute/browser then refuses, and a replay dies on a session that was
+      // never unwell. Observed exactly that: a dom_check waited on ICICI's
+      // cross-origin hop, and the run stopped one operation from the end while
+      // the next cycle passed.
+      //
+      // Leaving the previous result standing is the honest record. The session
+      // has not been re-measured, so nothing about it has changed.
+      if ((healthResult as { unevaluable?: boolean }).unevaluable) {
+        console.log(
+          `Health check: not evaluated (page was mid-navigation) — keeping ${this.lastHealthOverall ?? 'the previous result'}`,
+        );
+        return;
+      }
+
       this.lastHealthOverall = healthResult.overall;
       await this.db.updateHealthResult(this.sessionId, healthResult.overall);
 

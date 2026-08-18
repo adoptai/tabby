@@ -49,10 +49,34 @@ export function cleanupHarListeners(page: Page): void {
 }
 
 /** Begin capturing. Idempotent: detaches any prior listeners first. */
+/**
+ * Content types whose bodies no consumer of a bundle can use.
+ *
+ * On a bank portal these are most of the bytes and none of the meaning: an
+ * image or a font tells a compiler nothing about how to drive the app, and a
+ * stylesheet is the largest single response on many pages.
+ */
+function isUncompilableBody(mimeType: string): boolean {
+  const m = (mimeType || '').toLowerCase();
+  return (
+    m.startsWith('image/') ||
+    m.startsWith('font/') ||
+    m.startsWith('video/') ||
+    m.startsWith('audio/') ||
+    m.startsWith('text/css') ||
+    m.includes('font-woff') ||
+    m.includes('octet-stream')
+  );
+}
+
 export function startHarCapture(page: Page): { status: string; entry_count: number } {
   cleanupHarListeners(page);
 
   const entries: HarEntry[] = [];
+  // Body bytes still allowed for THIS capture. Per-capture rather than global:
+  // two concurrent captures should not starve each other, and the memory that
+  // matters is what one drain has to stringify.
+  let bodyBudgetRemaining = EXECUTE_LIMITS.MAX_HAR_BODY_TOTAL_BYTES;
   const requestIdMap = new WeakMap<any, string>();
   const pendingRequests = new Map<string, { startTime: number; entry: Partial<HarEntry> }>();
   let nextId = 0;
@@ -102,11 +126,39 @@ export function startHarCapture(page: Page): { status: string; entry_count: numb
       respHeaders.push({ name, value: String(value) });
     }
 
+    // Body capture is BUDGETED. Holding every response of a session in memory and
+    // then stringifying the lot at drain is what OOM-killed a worker mid-export,
+    // losing a complete ICICI recording at the one moment nothing had been
+    // written yet. What a compiler needs is the shape of a request and its
+    // response; a rendered page or a webpack bundle contributes nothing and
+    // costs the most.
     let bodyText = '';
-    try {
-      const buf = await response.body();
-      bodyText = buf.toString('utf8').slice(0, EXECUTE_LIMITS.MAX_RESPONSE_BODY_BYTES);
-    } catch { /* streaming or consumed — store empty */ }
+    let omitted: string | undefined;
+    const mimeType = rawHeaders['content-type'] || '';
+
+    if (isUncompilableBody(mimeType)) {
+      // Images, fonts, media, stylesheets: the bulk of a bank portal's traffic
+      // by size and of no use to any consumer of this bundle.
+      omitted = 'binary or asset body not captured';
+    } else if (bodyBudgetRemaining <= 0) {
+      omitted = 'body budget for this capture is spent';
+    } else {
+      // Consult content-length BEFORE reading. response.body() materialises the
+      // whole thing, so slicing afterwards caps what we KEEP while doing nothing
+      // about the peak — a 50MB asset still passed through memory in full.
+      const declared = Number(rawHeaders['content-length'] || '');
+      if (Number.isFinite(declared) && declared > EXECUTE_LIMITS.MAX_HAR_BODY_BYTES) {
+        omitted = `body of ${declared} bytes exceeds the per-entry cap`;
+      } else {
+        try {
+          const buf = await response.body();
+          const keep = Math.min(EXECUTE_LIMITS.MAX_HAR_BODY_BYTES, bodyBudgetRemaining);
+          bodyText = buf.toString('utf8').slice(0, keep);
+          if (buf.length > keep) omitted = `truncated from ${buf.length} bytes`;
+          bodyBudgetRemaining -= Buffer.byteLength(bodyText, 'utf8');
+        } catch { /* streaming or consumed — store empty */ }
+      }
+    }
 
     const entry: HarEntry = {
       ...(match.entry as HarEntry),
@@ -115,8 +167,12 @@ export function startHarCapture(page: Page): { status: string; entry_count: numb
         statusText: response.statusText(),
         headers: respHeaders,
         content: {
-          mimeType: rawHeaders['content-type'] || '',
+          mimeType,
           text: bodyText,
+          // Say WHY a body is absent. Without this an omitted body and an
+          // genuinely empty one look identical, and a compiler cannot tell
+          // whether it is looking at the truth or at a budget decision.
+          ...(omitted ? { comment: omitted } : {}),
         },
       },
       time: Date.now() - match.startTime,

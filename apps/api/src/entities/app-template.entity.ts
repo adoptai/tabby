@@ -84,6 +84,14 @@ export class AppTemplateEntity {
   @Column({ type: 'integer', nullable: true })
   idle_shutdown_seconds: number | null;
 
+  /**
+   * Who created this template. NULL for rows predating the column, and for
+   * those the creator-may-update rule does not apply — see
+   * AddAppTemplateCreatedBy1708300000035.
+   */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  created_by_user_id: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

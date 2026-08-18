@@ -6,6 +6,7 @@ import { IsString, IsOptional, IsInt, Min, Max, IsObject, IsBoolean } from 'clas
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { ExecuteService } from './execute.service';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
+import { AuditService } from '../audit/audit.service';
 
 class ExecuteFetchDto {
   @ApiProperty({ example: 'hubspot-standard' })
@@ -81,7 +82,10 @@ class ExecuteBrowserDto {
 @Controller('execute')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ExecuteController {
-  constructor(private readonly executeService: ExecuteService) {}
+  constructor(
+    private readonly executeService: ExecuteService,
+    private readonly auditService: AuditService,
+  ) {}
 
   @Post('fetch')
   @Roles('Admin', 'Editor', 'Operator', 'Agent')
@@ -99,6 +103,23 @@ export class ExecuteController {
   @ApiResponse({ status: 504, description: 'Worker request timed out' })
   @HttpCode(200)
   async fetch(@Body() dto: ExecuteFetchDto, @Req() req: any) {
+    // Audited for the same reason as execute/browser: this runs fetch() inside
+    // the authenticated session and inherits its cookies, so it can act on a
+    // member's account. Method and URL are recorded; headers and body are not,
+    // because they carry credentials and whatever was being sent with them.
+    await this.auditService.log({
+      tenant_id: req.user.tenant_id,
+      actor_type: req.user.owner_user_id ? 'human' : 'system',
+      actor_id: String(req.user.user_id ?? 'unknown'),
+      event_type: 'execute.fetch.requested',
+      payload: {
+        profile_id: dto.profile_id,
+        method: dto.method || 'GET',
+        url: String(dto.url || '').split('?')[0],
+        owner_user_id: req.user.owner_user_id ?? null,
+        role: req.user.role,
+      },
+    });
     return this.executeService.executeFetch({
       tenantId: req.user.tenant_id,
       profileId: dto.profile_id,
@@ -134,6 +155,29 @@ export class ExecuteController {
   @ApiResponse({ status: 504, description: 'Worker command timed out' })
   @HttpCode(200)
   async browser(@Body() dto: ExecuteBrowserDto, @Req() req: any) {
+    // Audited BEFORE the command runs, and whatever it returns.
+    //
+    // This endpoint can hover, click and type inside a signed-in banking
+    // session. When one lost its auth cookie mid-run, the worker log proved
+    // WHAT ran and when, and nothing anywhere recorded WHO asked for it --
+    // while merely opening the viewer was audited twice. A call that can act on
+    // a member's account has to leave a trace of its caller.
+    //
+    // The command and its target are recorded; params are not, because they
+    // carry typed values -- an OTP, an amount, a search term someone typed into
+    // a bank.
+    await this.auditService.log({
+      tenant_id: req.user.tenant_id,
+      actor_type: req.user.owner_user_id ? 'human' : 'system',
+      actor_id: String(req.user.user_id ?? 'unknown'),
+      event_type: 'execute.browser.requested',
+      payload: {
+        profile_id: dto.profile_id,
+        command: dto.command,
+        owner_user_id: req.user.owner_user_id ?? null,
+        role: req.user.role,
+      },
+    });
     return this.executeService.executeBrowser({
       tenantId: req.user.tenant_id,
       profileId: dto.profile_id,

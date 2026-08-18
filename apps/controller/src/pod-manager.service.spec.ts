@@ -345,6 +345,157 @@ describe('PodManagerService not-found handling', () => {
     expect(readNamespacedPod).toHaveBeenCalledTimes(2);
   });
 
+  it('reports why a worker container died, from the pod status', async () => {
+    // An OOM-killed worker is SIGKILLed mid-instruction and writes nothing to
+    // its own log. The pod status is the ONLY place the cause exists, and it is
+    // gone once the pod is swept -- so a session that simply stopped responding
+    // surfaced as "Worker unreachable: fetch failed".
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        containerStatuses: [
+          { name: 'novnc', state: { running: {} }, restartCount: 0 },
+          {
+            name: 'browser',
+            restartCount: 1,
+            lastState: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+          },
+        ],
+      },
+    });
+
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: 'browser: OOMKilled (exit 137, restarts: 1)',
+    });
+  });
+
+  it('ignores an init container that completed normally, and reports the worker', async () => {
+    // Under Istio a healthy pod carries istio-init: Completed (exit 0). Returning
+    // that as the runtime error turned normal startup into a phantom death cause.
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        initContainerStatuses: [
+          { name: 'istio-init', state: { terminated: { reason: 'Completed', exitCode: 0 } } },
+        ],
+        containerStatuses: [
+          {
+            name: 'worker',
+            restartCount: 0,
+            state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+          },
+        ],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: 'worker: OOMKilled (exit 137)',
+    });
+  });
+
+  it('does not let a noVNC sidecar restart shadow the worker death', async () => {
+    // Container order is not guaranteed worker-first; the worker's death is the
+    // signal, a sidecar restart is secondary and must not win.
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        containerStatuses: [
+          {
+            name: 'novnc',
+            restartCount: 1,
+            lastState: { terminated: { reason: 'Error', exitCode: 1 } },
+          },
+          {
+            name: 'worker',
+            restartCount: 0,
+            state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+          },
+        ],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: 'worker: OOMKilled (exit 137)',
+    });
+  });
+
+  it('reports nothing when a noVNC sidecar crashed but the worker is healthy', async () => {
+    // The dual of the shadow case: with the worker container running, a noVNC
+    // restart is NOT a worker runtime error. Reporting "novnc: ..." here would
+    // land in session.last_runtime_error and resurface as the phantom cause of a
+    // much later, unrelated execute() failure.
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        containerStatuses: [
+          {
+            name: 'novnc',
+            restartCount: 2,
+            lastState: { terminated: { reason: 'Error', exitCode: 1 } },
+          },
+          { name: 'worker', restartCount: 0, state: { running: {} } },
+        ],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: null,
+    });
+  });
+
+  it('reports nothing terminated when only an init container completed', async () => {
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: {
+        initContainerStatuses: [
+          { name: 'istio-init', state: { terminated: { reason: 'Completed', exitCode: 0 } } },
+        ],
+        containerStatuses: [{ name: 'worker', state: { running: {} }, restartCount: 0 }],
+      },
+    });
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: null,
+    });
+  });
+
+  it('reports a live pod with nothing terminated', async () => {
+    const readNamespacedPod = jest.fn().mockResolvedValue({
+      status: { containerStatuses: [{ name: 'browser', state: { running: {} }, restartCount: 0 }] },
+    });
+
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+
+    await expect(service.getPodRuntime('worker-1')).resolves.toEqual({
+      exists: true,
+      terminated: null,
+    });
+  });
+
+  it('reports a missing pod without retrying past the 404', async () => {
+    const error = new Error('HTTP-Code: 404');
+    (error as any).body = '{"kind":"Status","reason":"NotFound","code":404}';
+    const readNamespacedPod = jest.fn().mockRejectedValue(error);
+
+    const service = new PodManagerService();
+    (service as any).coreApi = { readNamespacedPod };
+
+    await expect(service.getPodRuntime('worker-gone')).resolves.toEqual({
+      exists: false,
+      terminated: null,
+    });
+    // A 404 is an answer, not a call-signature mismatch worth retrying.
+    expect(readNamespacedPod).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores Kubernetes 404 payload when deleting pod', async () => {
     const error = new Error('Unknown API Status Code');
     (error as any).body = '{"kind":"Status","reason":"NotFound","code":404}';
