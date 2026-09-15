@@ -111,6 +111,18 @@ export class AppTemplatesService {
         'Updating an app template requires the Admin or Editor role, or being its creator',
       );
     }
+    // browser_policy is MERGED, never replaced. It is a bag of independent
+    // safety flags (block_navigate, downloads, clipboard, file_chooser) that
+    // different writers set for different reasons: the compiler sets
+    // block_navigate/downloads from what a recording proved the app needs, a
+    // human sets others from the console. `Object.assign` let whichever wrote
+    // last drop the others -- observed on a browser-driven bank template that
+    // lost block_navigate, after which every `navigate` reloaded the portal and
+    // signed the member out mid-task. A caller that genuinely wants a flag off
+    // sends it as false; only absent keys are preserved.
+    if (data.browser_policy && template.browser_policy) {
+      data = { ...data, browser_policy: { ...template.browser_policy, ...data.browser_policy } };
+    }
     Object.assign(template, data);
     await this.templateRepo.save(template);
 

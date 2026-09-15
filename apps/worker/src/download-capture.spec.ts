@@ -75,4 +75,24 @@ describe('download-capture', () => {
     await fire(fakeDownload('x.pdf', Buffer.from('x')));
     await expect(getDownload(page, 'dl-nope')).rejects.toThrow(/no download with id/);
   });
+
+  // browser_policy.downloads=false means main.ts never calls
+  // enableDownloadCapture and cancels each download as it starts. The list is
+  // then permanently empty, and an empty list alone is indistinguishable from
+  // "the click did nothing" -- which is how a replay reported "no file
+  // arrived" for a step that worked, and a member was asked to waive the one
+  // operation they came for.
+  it('flags a context that is not capturing, so an empty list is not read as a failed click', () => {
+    const page: any = { on: () => {}, context: () => ({}) };
+    const list = listDownloads(page);
+    expect(list.downloads).toEqual([]);
+    expect(list.disabled_by_policy).toBe(true);
+  });
+
+  it('does not flag a capturing context, even before any download arrives', () => {
+    const { page } = setup();
+    const list = listDownloads(page);
+    expect(list.downloads).toEqual([]);
+    expect(list.disabled_by_policy).toBeUndefined();
+  });
 });

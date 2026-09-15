@@ -713,3 +713,66 @@ describe('AppTemplatesService — propagation', () => {
     });
   });
 });
+
+describe('AppTemplatesService — browser_policy merge', () => {
+  // browser_policy is a bag of independent safety flags written by different
+  // callers: the compiler sets block_navigate/downloads from what a recording
+  // proved the app needs; a human sets others from the console. Object.assign
+  // let whichever wrote last drop the others -- observed on a browser-driven
+  // bank template that lost block_navigate, after which every `navigate`
+  // reloaded the portal and signed the member out mid-task.
+  const existing = {
+    id: 'tpl-uuid-1',
+    tenant_id: 'tenant-1',
+    created_by: 'actor-1',
+    browser_policy: {
+      clipboard: false,
+      downloads: true,
+      file_chooser: false,
+      block_navigate: true,
+    },
+  };
+
+  const run = async (patch: any) => {
+    const save = jest.fn().mockImplementation((t: any) => Promise.resolve(t));
+    const { service, templateRepo } = buildService({
+      templateRepo: {
+        findOne: jest.fn().mockResolvedValue({ ...existing, browser_policy: { ...existing.browser_policy } }),
+        // update() re-reads the persisted row before auditing/propagating.
+        findOneOrFail: jest.fn().mockImplementation(() => Promise.resolve(save.mock.calls[0][0])),
+        save,
+        create: jest.fn(),
+      },
+    });
+    await service.update('tenant-1', 'tpl-uuid-1', patch, 'actor-1', 'Admin');
+    void templateRepo;
+    return save.mock.calls[0][0].browser_policy;
+  };
+
+  it('keeps flags the patch does not mention', async () => {
+    const bp = await run({ browser_policy: { downloads: false } });
+    expect(bp.block_navigate).toBe(true);
+    expect(bp.clipboard).toBe(false);
+  });
+
+  it('still applies what the patch does set, including turning a flag off', async () => {
+    const bp = await run({ browser_policy: { downloads: false } });
+    expect(bp.downloads).toBe(false);
+  });
+
+  it('leaves other fields alone', async () => {
+    const save = jest.fn().mockImplementation((t: any) => Promise.resolve(t));
+    const { service } = buildService({
+      templateRepo: {
+        findOne: jest.fn().mockResolvedValue({ ...existing, browser_policy: { ...existing.browser_policy } }),
+        // update() re-reads the persisted row before auditing/propagating.
+        findOneOrFail: jest.fn().mockImplementation(() => Promise.resolve(save.mock.calls[0][0])),
+        save,
+        create: jest.fn(),
+      },
+    });
+    await service.update('tenant-1', 'tpl-uuid-1', { name: 'renamed' } as any, 'actor-1', 'Admin');
+    expect(save.mock.calls[0][0].browser_policy).toEqual(existing.browser_policy);
+    expect(save.mock.calls[0][0].name).toBe('renamed');
+  });
+});
