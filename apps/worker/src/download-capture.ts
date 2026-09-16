@@ -81,6 +81,24 @@ function sanitize(name: string): string {
  */
 const captureEnabled = new WeakSet<BrowserContext>();
 
+/**
+ * Contexts whose app carries NO browser_policy at all, as opposed to one that
+ * says downloads are off.
+ *
+ * main.ts falls back to `{ downloads: false, ... }` when `browser_policy` is
+ * null, so the two cases produce identical behaviour and, until now, identical
+ * reporting. They call for opposite responses: a deliberate `false` is a policy
+ * decision to respect, while a missing policy means the app was never
+ * configured -- which is what an app orphaned from its template looks like, and
+ * what nobody could see while a whole run was spent on it.
+ */
+const policyAbsent = new WeakSet<BrowserContext>();
+
+/** Record that this context's app had no browser_policy to read. */
+export function markBrowserPolicyAbsent(context: BrowserContext): void {
+  policyAbsent.add(context);
+}
+
 export function enableDownloadCapture(context: BrowserContext): void {
   captureEnabled.add(context);
   if (downloadsByContext.has(context)) {
@@ -149,11 +167,20 @@ export function enableDownloadCapture(context: BrowserContext): void {
 export function listDownloads(page: Page): {
   downloads: DownloadMeta[];
   disabled_by_policy?: boolean;
+  policy_absent?: boolean;
 } {
   const context = page.context();
   const records = downloadsByContext.get(context) || [];
   const downloads = records.map(({ path: _p, ...meta }) => meta);
-  return captureEnabled.has(context) ? { downloads } : { downloads, disabled_by_policy: true };
+  if (captureEnabled.has(context)) {
+    return { downloads };
+  }
+  // `policy_absent` separates "this app has no browser_policy" from "its policy
+  // says no". Both cancel downloads; only one is a configuration fault, and the
+  // caller cannot tell them apart from the outcome.
+  return policyAbsent.has(context)
+    ? { downloads, disabled_by_policy: true, policy_absent: true }
+    : { downloads, disabled_by_policy: true };
 }
 
 /**

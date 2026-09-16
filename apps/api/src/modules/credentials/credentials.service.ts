@@ -374,8 +374,17 @@ export class CredentialsService {
       desired_session_count: 0, // Start with 0, scale up after profile is created
     }, tenantId, actorId);
 
-    // Set owner_user_id + template_id on app — controller will inherit owner_user_id to sessions
-    await this.appRepo.update(app_id, { owner_user_id: ownerUserId, template_id: template.id });
+    // Set owner_user_id + template lineage on app — controller will inherit owner_user_id to sessions
+    //
+    // `template_pattern` is recorded alongside `template_id` because the id does
+    // not survive: its FK is ON DELETE SET NULL, so deleting the template nulls
+    // it here and the app is left looking manually-created. The pattern is what
+    // a re-registered template matches on to adopt this app back.
+    await this.appRepo.update(app_id, {
+      owner_user_id: ownerUserId,
+      template_id: template.id,
+      template_pattern: template.profile_name_pattern,
+    });
 
     // 2. Create Profile via ProfilesService (full validation + audit + promote to ACTIVE)
     const savedProfile = await this.profilesService.create({
