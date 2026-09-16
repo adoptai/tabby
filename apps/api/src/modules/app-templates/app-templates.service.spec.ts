@@ -784,3 +784,95 @@ describe('AppTemplatesService — browser_policy merge', () => {
     expect(save.mock.calls[0][0].name).toBe('renamed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// A re-registered template adopts the apps its predecessor provisioned
+// ---------------------------------------------------------------------------
+//
+// Org 87451b06, 2026-09-16: a rebuild deleted the icici template and registered
+// a new one. `applications.template_id` is ON DELETE SET NULL, so every app the
+// old template made was quietly unlinked; the new template got a new id, and
+// propagateToLinkedApps (`where template_id = :id`) matched nothing. The console
+// showed a template carrying `downloads: true` with ZERO provisioned apps, while
+// the session it was meant to govern ran with downloads off and cancelled every
+// statement it fetched. Rebuilding a skill is delete-then-register, so this is
+// the normal path.
+
+describe('AppTemplatesService — adopting orphaned apps', () => {
+  const PATTERN = 'icici-credit-card-statement';
+
+  function buildForCreate(orphans: any[]) {
+    const built = buildService({
+      appRepo: {
+        find: jest.fn()
+          // adoptOrphanedApps looks for orphans, then propagateToLinkedApps
+          // pages through the now-linked apps.
+          .mockResolvedValueOnce(orphans)
+          .mockResolvedValue([]),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    });
+    return built;
+  }
+
+  it('re-links an app its predecessor provisioned, matched on the pattern', async () => {
+    const { service, appRepo } = buildForCreate([{ id: 'app-orphan' }]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenant_id: 'tenant-1',
+          template_pattern: PATTERN,
+        }),
+      }),
+    );
+    expect(appRepo.update).toHaveBeenCalledWith('app-orphan', { template_id: 'tpl-uuid-1' });
+  });
+
+  it('never adopts on a null template_id alone', async () => {
+    // After a delete the two are indistinguishable, so matching a null id would
+    // capture apps somebody built by hand and rewrite their browser_policy,
+    // login_config and keepalive underneath them.
+    const { service, appRepo } = buildForCreate([]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    const where = appRepo.find.mock.calls[0][0].where;
+    expect(where.template_pattern).toBe(PATTERN);
+    expect(where).toHaveProperty('template_id'); // IsNull() — a further narrowing, not the key
+  });
+
+  it('records the adoption in the audit log', async () => {
+    const { service, auditService } = buildForCreate([{ id: 'app-orphan' }]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'app_template.adopted_orphans',
+        payload: expect.objectContaining({ profile_name_pattern: PATTERN, apps: 1 }),
+      }),
+    );
+  });
+
+  it('stays quiet when there is nothing to adopt', async () => {
+    const { service, auditService, appRepo } = buildForCreate([]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+    const events = auditService.log.mock.calls.map((c: any[]) => c[0].event_type);
+    expect(events).toContain('app_template.created');
+    expect(events).not.toContain('app_template.adopted_orphans');
+  });
+
+  it('does not look for orphans when the template has no pattern', async () => {
+    const { service, appRepo } = buildForCreate([]);
+
+    await service.create('tenant-1', { name: 'icici' }, 'actor');
+
+    expect(appRepo.find).not.toHaveBeenCalled();
+  });
+});

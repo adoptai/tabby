@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import { createHash } from 'crypto';
 import { ProfileVersionState } from '@browser-hitl/shared';
 import { AppTemplateEntity, ApplicationEntity, ServiceProfileEntity } from '../../entities';
@@ -50,7 +50,70 @@ export class AppTemplatesService {
       payload: { template_id: saved.id, name: saved.name },
     });
 
+    // Take back the apps this template's predecessor provisioned.
+    //
+    // Deleting a template nulls `template_id` on every app it made (ON DELETE
+    // SET NULL, migration 020), and re-registering mints a NEW id -- so
+    // propagateToLinkedApps, which filters on `template_id`, matches nothing.
+    // The app keeps the policy it was cloned with, forever, while the template
+    // the console shows is correct and governs nothing. Observed on org
+    // 87451b06: a template with `downloads: true` and zero provisioned apps,
+    // and a session that cancelled every statement it tried to download.
+    //
+    // Rebuilding a skill is delete-then-register, so this is the normal path,
+    // not an edge case.
+    const adopted = await this.adoptOrphanedApps(saved);
+    if (adopted > 0) {
+      this.logger.log(
+        `Template "${saved.name}" adopted ${adopted} app(s) orphaned by an earlier template with the same profile_name_pattern`,
+      );
+      await this.auditService.log({
+        tenant_id: tenantId,
+        actor_type: 'human',
+        actor_id: actorId,
+        event_type: 'app_template.adopted_orphans',
+        payload: { template_id: saved.id, profile_name_pattern: saved.profile_name_pattern, apps: adopted },
+      });
+    }
+
     return this.withHash(saved);
+  }
+
+  /**
+   * Re-link apps a previous template with this `profile_name_pattern` provisioned,
+   * and bring their template-derived fields back in step.
+   *
+   * Scoped by `template_pattern`, NOT by a null `template_id`: the two are
+   * indistinguishable after a delete, and adopting on a null id would capture
+   * apps somebody created by hand and silently rewrite their browser_policy,
+   * login_config and keepalive. `template_pattern` is only ever written when an
+   * app is provisioned FROM a template, so an app that never came from one is
+   * never touched.
+   *
+   * Only apps with no current template are adopted. One already linked to a
+   * live template belongs to that template, whatever its pattern says.
+   */
+  private async adoptOrphanedApps(template: AppTemplateEntity): Promise<number> {
+    if (!template.profile_name_pattern) return 0;
+
+    const orphans = await this.appRepo.find({
+      where: {
+        tenant_id: template.tenant_id,
+        template_id: IsNull(),
+        template_pattern: template.profile_name_pattern,
+      },
+      select: ['id'],
+    });
+    if (orphans.length === 0) return 0;
+
+    for (const app of orphans) {
+      await this.appRepo.update(app.id, { template_id: template.id });
+    }
+    // Re-link first, then reuse the ONE propagation path so an adopted app gets
+    // exactly the field set an updated template would push -- rather than a
+    // second, drifting copy of that list living here.
+    await this.propagateToLinkedApps(template);
+    return orphans.length;
   }
 
   async findAll(tenantId?: string) {
