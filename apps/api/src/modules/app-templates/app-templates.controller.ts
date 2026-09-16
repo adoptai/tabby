@@ -134,7 +134,10 @@ export class AppTemplatesController {
   @Patch(':id')
   @ApiOperation({ summary: 'Partially update app template', description: 'Requires the Admin or Editor role, or being the template\'s creator.' })
   async patch(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateAppTemplateDto, @Req() req: any) {
-    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id, req.user.role);
+    // merge=true: a PATCH is a partial update, so a nested object it carries is
+    // merged into what is stored rather than replacing it. PUT above stays a
+    // full replace.
+    return this.templateService.update(resolveTenantScope(req.user), id, dto, req.user.user_id, req.user.role, true);
   }
 
   @Delete(':id')

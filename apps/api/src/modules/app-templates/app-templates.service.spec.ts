@@ -733,7 +733,7 @@ describe('AppTemplatesService — browser_policy merge', () => {
     },
   };
 
-  const run = async (patch: any) => {
+  const run = async (patch: any, merge = true) => {
     const save = jest.fn().mockImplementation((t: any) => Promise.resolve(t));
     const { service, templateRepo } = buildService({
       templateRepo: {
@@ -744,7 +744,7 @@ describe('AppTemplatesService — browser_policy merge', () => {
         create: jest.fn(),
       },
     });
-    await service.update('tenant-1', 'tpl-uuid-1', patch, 'actor-1', 'Admin');
+    await service.update('tenant-1', 'tpl-uuid-1', patch, 'actor-1', 'Admin', merge);
     void templateRepo;
     return save.mock.calls[0][0].browser_policy;
   };
@@ -760,6 +760,14 @@ describe('AppTemplatesService — browser_policy merge', () => {
     expect(bp.downloads).toBe(false);
   });
 
+  it('PUT still REPLACES browser_policy, so deleting a key in the console removes it', async () => {
+    // The console template editor is a JSON textarea posting the whole object
+    // through PUT. Merging there would silently make key-deletion a no-op.
+    const bp = await run({ browser_policy: { downloads: false } }, /* merge */ false);
+    expect(bp).toEqual({ downloads: false });
+    expect(bp.block_navigate).toBeUndefined();
+  });
+
   it('leaves other fields alone', async () => {
     const save = jest.fn().mockImplementation((t: any) => Promise.resolve(t));
     const { service } = buildService({
@@ -771,7 +779,7 @@ describe('AppTemplatesService — browser_policy merge', () => {
         create: jest.fn(),
       },
     });
-    await service.update('tenant-1', 'tpl-uuid-1', { name: 'renamed' } as any, 'actor-1', 'Admin');
+    await service.update('tenant-1', 'tpl-uuid-1', { name: 'renamed' } as any, 'actor-1', 'Admin', true);
     expect(save.mock.calls[0][0].browser_policy).toEqual(existing.browser_policy);
     expect(save.mock.calls[0][0].name).toBe('renamed');
   });
