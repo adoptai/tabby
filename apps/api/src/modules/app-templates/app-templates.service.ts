@@ -104,16 +104,72 @@ export class AppTemplatesService {
       },
       select: ['id'],
     });
-    if (orphans.length === 0) return 0;
+    const legacy = await this.findLegacyOrphans(template, orphans.map(a => a.id));
+    const all = [...orphans, ...legacy];
+    if (all.length === 0) return 0;
 
-    for (const app of orphans) {
-      await this.appRepo.update(app.id, { template_id: template.id });
+    for (const app of all) {
+      // template_pattern is written too, so an app recovered by the legacy path
+      // is adopted directly next time and never needs the heuristic again.
+      await this.appRepo.update(app.id, {
+        template_id: template.id,
+        template_pattern: template.profile_name_pattern,
+      });
     }
     // Re-link first, then reuse the ONE propagation path so an adopted app gets
     // exactly the field set an updated template would push -- rather than a
     // second, drifting copy of that list living here.
     await this.propagateToLinkedApps(template);
-    return orphans.length;
+    return all.length;
+  }
+
+  /**
+   * Apps orphaned BEFORE `template_pattern` existed, recovered from the profile.
+   *
+   * `template_pattern` only helps an app provisioned after migration 036. Every
+   * app orphaned before it has both the id and the pattern null, so the forward
+   * fix repairs nothing that is already broken -- which on day one is all of
+   * them.
+   *
+   * The link survives somewhere else, though: auto-provision creates the profile
+   * with `profile_id` set to the very value it looked the template up by
+   * (`profile_name_pattern`), and a template delete never touches profiles. So
+   * an ACTIVE profile whose `profile_id` matches this template's pattern names
+   * the app that template used to own.
+   *
+   * That alone would also match an app somebody built by hand and pointed at the
+   * same profile id, so it is further required that the app carries the name
+   * `autoProvisionFromTemplate` gives it -- `<template name> <sep> <user>`. Only
+   * that path produces it. Both conditions together, and only for an app with no
+   * template link at all.
+   */
+  private async findLegacyOrphans(
+    template: AppTemplateEntity,
+    alreadyFound: string[],
+  ): Promise<Array<{ id: string }>> {
+    const profiles = await this.profileRepo.find({
+      where: {
+        tenant_id: template.tenant_id,
+        profile_id: template.profile_name_pattern,
+        version_state: ProfileVersionState.ACTIVE,
+      },
+      select: ['app_id'],
+    });
+    const appIds = [...new Set(profiles.map(p => p.app_id))]
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      .filter(id => !alreadyFound.includes(id));
+    if (appIds.length === 0) return [];
+
+    const candidates = await this.appRepo.find({
+      where: appIds.map(id => ({ id, tenant_id: template.tenant_id, template_id: IsNull() })),
+      select: ['id', 'name'],
+    });
+    // Mirrors the name autoProvisionFromTemplate builds. Kept as a prefix test
+    // rather than an equality one because the suffix is the owner's user id.
+    const prefix = `${template.name} ${AppTemplatesService.PROVISIONED_NAME_SEPARATOR} `;
+    return candidates
+      .filter(a => typeof a.name === 'string' && a.name.startsWith(prefix))
+      .map(a => ({ id: a.id }));
   }
 
   async findAll(tenantId?: string) {
@@ -222,6 +278,13 @@ export class AppTemplatesService {
 
     return this.withHash(saved);
   }
+
+  /**
+   * The separator `autoProvisionFromTemplate` puts between the template name and
+   * the owner's user id when naming an app. Matched, not authored -- it is the
+   * shape of data already in the database.
+   */
+  private static readonly PROVISIONED_NAME_SEPARATOR = '\u2014';
 
   private static readonly PROPAGATED_FIELDS = [
     'browser_policy', 'login_config', 'keepalive_config',

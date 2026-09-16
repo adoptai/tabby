@@ -801,18 +801,16 @@ describe('AppTemplatesService — browser_policy merge', () => {
 describe('AppTemplatesService — adopting orphaned apps', () => {
   const PATTERN = 'icici-credit-card-statement';
 
-  function buildForCreate(orphans: any[]) {
-    const built = buildService({
-      appRepo: {
-        find: jest.fn()
-          // adoptOrphanedApps looks for orphans, then propagateToLinkedApps
-          // pages through the now-linked apps.
-          .mockResolvedValueOnce(orphans)
-          .mockResolvedValue([]),
-        update: jest.fn().mockResolvedValue(undefined),
-      },
+  function buildForCreate(orphans: any[], opts: { profiles?: any[]; candidates?: any[] } = {}) {
+    const appFind = jest.fn()
+      // 1) pattern-matched orphans  2) legacy candidates  3..) propagation pages
+      .mockResolvedValueOnce(orphans)
+      .mockResolvedValueOnce(opts.candidates ?? [])
+      .mockResolvedValue([]);
+    return buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+      profileRepo: { find: jest.fn().mockResolvedValue(opts.profiles ?? []) },
     });
-    return built;
   }
 
   it('re-links an app its predecessor provisioned, matched on the pattern', async () => {
@@ -828,7 +826,10 @@ describe('AppTemplatesService — adopting orphaned apps', () => {
         }),
       }),
     );
-    expect(appRepo.update).toHaveBeenCalledWith('app-orphan', { template_id: 'tpl-uuid-1' });
+    expect(appRepo.update).toHaveBeenCalledWith('app-orphan', {
+      template_id: 'tpl-uuid-1',
+      template_pattern: PATTERN,
+    });
   });
 
   it('never adopts on a null template_id alone', async () => {
@@ -874,5 +875,74 @@ describe('AppTemplatesService — adopting orphaned apps', () => {
     await service.create('tenant-1', { name: 'icici' }, 'actor');
 
     expect(appRepo.find).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Apps orphaned BEFORE template_pattern existed
+// ---------------------------------------------------------------------------
+//
+// The forward fix repairs nothing already broken -- on day one that is every
+// orphaned app, including the one that started this. The link survives on the
+// PROFILE: auto-provision sets profile_id to the value it looked the template up
+// by, and a template delete never touches profiles.
+
+describe('AppTemplatesService — recovering pre-migration orphans', () => {
+  const PATTERN = 'icici-credit-card-statement';
+  const NAME = 'icici-credit-card-statement';
+
+  function build(opts: { profiles?: any[]; candidates?: any[] } = {}) {
+    const appFind = jest.fn()
+      .mockResolvedValueOnce([])                      // no template_pattern match
+      .mockResolvedValueOnce(opts.candidates ?? [])   // legacy candidates
+      .mockResolvedValue([]);
+    return buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+      profileRepo: { find: jest.fn().mockResolvedValue(opts.profiles ?? []) },
+    });
+  }
+
+  it('adopts an app whose active profile still names this pattern', async () => {
+    const { service, appRepo } = build({
+      profiles: [{ app_id: 'app-x' }],
+      candidates: [{ id: 'app-x', name: `${NAME} \u2014 user-1` }],
+    });
+
+    await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
+
+    // Stamped with the pattern too, so it never needs the heuristic again.
+    expect(appRepo.update).toHaveBeenCalledWith('app-x', {
+      template_id: 'tpl-uuid-1',
+      template_pattern: PATTERN,
+    });
+  });
+
+  it('leaves an app that does not carry the provisioned name alone', async () => {
+    // Someone built this by hand and pointed it at the same profile id. Its
+    // browser_policy is theirs, not this template's.
+    const { service, appRepo } = build({
+      profiles: [{ app_id: 'app-manual' }],
+      candidates: [{ id: 'app-manual', name: 'Ops sandbox' }],
+    });
+
+    await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('only considers ACTIVE profiles', async () => {
+    const { service, profileRepo } = build({ profiles: [] });
+
+    await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
+
+    expect(profileRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          profile_id: PATTERN,
+          version_state: ProfileVersionState.ACTIVE,
+        }),
+      }),
+    );
   });
 });
