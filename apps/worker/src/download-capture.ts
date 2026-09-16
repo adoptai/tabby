@@ -73,7 +73,16 @@ function sanitize(name: string): string {
  * temp file and indexes it. Call only when browser_policy.downloads is enabled;
  * the context must have been created with acceptDownloads: true.
  */
+/**
+ * Contexts this module is capturing for. Membership is the honest signal that
+ * the context was created with `acceptDownloads` -- Playwright exposes no way
+ * to read that back off a BrowserContext, so the only way to know is to record
+ * it where it is decided.
+ */
+const captureEnabled = new WeakSet<BrowserContext>();
+
 export function enableDownloadCapture(context: BrowserContext): void {
+  captureEnabled.add(context);
   if (downloadsByContext.has(context)) {
     return;
   }
@@ -127,10 +136,24 @@ export function enableDownloadCapture(context: BrowserContext): void {
   }
 }
 
-/** Metadata for every captured download on this page's context (newest last). */
-export function listDownloads(page: Page): { downloads: DownloadMeta[] } {
-  const records = downloadsByContext.get(page.context()) || [];
-  return { downloads: records.map(({ path: _p, ...meta }) => meta) };
+/**
+ * Metadata for every captured download on this page's context (newest last).
+ *
+ * `disabled_by_policy` says the context was built WITHOUT acceptDownloads, so
+ * main.ts is cancelling every download as it starts. The list is then
+ * permanently empty however many times a caller clicks, and an empty list on
+ * its own is indistinguishable from "the click did nothing" -- which is how a
+ * replay reported "no file arrived" for a step that worked, and a member was
+ * asked to waive the one operation they came for.
+ */
+export function listDownloads(page: Page): {
+  downloads: DownloadMeta[];
+  disabled_by_policy?: boolean;
+} {
+  const context = page.context();
+  const records = downloadsByContext.get(context) || [];
+  const downloads = records.map(({ path: _p, ...meta }) => meta);
+  return captureEnabled.has(context) ? { downloads } : { downloads, disabled_by_policy: true };
 }
 
 /**

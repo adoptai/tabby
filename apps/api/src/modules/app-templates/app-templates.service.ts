@@ -97,6 +97,11 @@ export class AppTemplatesService {
     data: Partial<AppTemplateEntity>,
     actorId: string,
     actorRole?: string,
+    // PATCH is a partial update, so a nested object it carries is merged into
+    // what is stored. PUT is a full replace and must stay one: the console's
+    // template editor is a JSON textarea posting the WHOLE object via PUT, and
+    // deleting a key there has to keep meaning "remove it".
+    merge = false,
   ) {
     const template = await this.findOne(tenantId, id);
     const privileged = actorRole === 'Admin' || actorRole === 'Editor';
@@ -110,6 +115,20 @@ export class AppTemplatesService {
       throw new ForbiddenException(
         'Updating an app template requires the Admin or Editor role, or being its creator',
       );
+    }
+    // On PATCH, browser_policy is merged rather than replaced. It is a bag of
+    // independent safety flags (block_navigate, downloads, clipboard,
+    // file_chooser) written by different callers for different reasons: the
+    // compiler sets block_navigate/downloads from what a recording proved the
+    // app needs, a human sets others from the console. A PATCH carrying only
+    // one of them meant to say "set this", not "and clear the rest", but
+    // Object.assign made it say both.
+    //
+    // PUT is untouched: it is a full replace by definition, and the console's
+    // template editor posts the whole object through it, so a key deleted there
+    // must still disappear.
+    if (merge && data.browser_policy && template.browser_policy) {
+      data = { ...data, browser_policy: { ...template.browser_policy, ...data.browser_policy } };
     }
     Object.assign(template, data);
     await this.templateRepo.save(template);
