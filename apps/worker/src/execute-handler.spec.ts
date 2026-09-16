@@ -1,4 +1,64 @@
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
+import { isTextualContentType } from './execute-handler';
+
+describe('isTextualContentType', () => {
+  describe('binary payloads must not be decoded as text', () => {
+    // These are ZIP archives whose media type happens to contain "xml".
+    it.each([
+      ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+      ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+      ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ])('treats %s as binary', (_label, contentType) => {
+      expect(isTextualContentType(contentType)).toBe(false);
+    });
+
+    it('treats xlsx as binary even when the server appends a charset', () => {
+      // Workday sends exactly this.
+      expect(isTextualContentType(
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8',
+      )).toBe(false);
+    });
+
+    it.each([
+      ['application/pdf'],
+      ['application/zip'],
+      ['application/octet-stream'],
+      ['image/png'],
+    ])('treats %s as binary', (contentType) => {
+      expect(isTextualContentType(contentType)).toBe(false);
+    });
+  });
+
+  describe('XML media types stay textual', () => {
+    it.each([
+      ['text/xml'],
+      ['application/xml'],
+      ['application/xml-dtd'],
+      ['application/xml-external-parsed-entity'],
+      ['text/xml;charset=utf-8'],
+      ['APPLICATION/XML'],
+      ['application/soap+xml'],
+      ['application/atom+xml'],
+      ['image/svg+xml'],
+    ])('treats %s as textual', (contentType) => {
+      expect(isTextualContentType(contentType)).toBe(true);
+    });
+  });
+
+  describe('other textual types are unchanged', () => {
+    it.each([
+      [''],
+      ['text/html'],
+      ['text/plain;charset=iso-8859-1'],
+      ['application/json'],
+      ['application/problem+json'],
+      ['application/javascript'],
+      ['application/x-www-form-urlencoded'],
+    ])('treats %s as textual', (contentType) => {
+      expect(isTextualContentType(contentType)).toBe(true);
+    });
+  });
+});
 
 describe('execute-handler validation', () => {
   describe('URL validation', () => {

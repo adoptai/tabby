@@ -7,6 +7,36 @@ import {
 } from '@browser-hitl/shared';
 import { beginAgentCommand, endAgentCommand } from './agent-activity';
 
+// An XML media type is text/xml or application/xml -- with their -dtd and
+// -external-parsed-entity variants -- or any subtype carrying the "+xml"
+// structured-syntax suffix (RFC 7303, RFC 6839). Matching the bare substring
+// "xml" instead is what made .xlsx/.docx/.pptx look textual: their media types
+// are named `application/vnd.openxmlformats-officedocument...`, yet the payload
+// is a ZIP archive.
+const XML_MEDIA_TYPE = /^(?:text|application)\/xml(?:-dtd|-external-parsed-entity)?$/;
+
+/**
+ * Whether a response body may be returned as UTF-8 text rather than base64.
+ *
+ * Getting this wrong in the textual direction is silent and unrecoverable: a
+ * UTF-8 decode maps every invalid byte sequence to U+FFFD, so the original
+ * bytes are destroyed rather than merely re-encoded, and the response still
+ * looks successful to the caller.
+ */
+export function isTextualContentType(contentType: string): boolean {
+  const mediaType = contentType.toLowerCase().split(';')[0].trim();
+  return (
+    mediaType === '' ||
+    mediaType.startsWith('text/') ||
+    mediaType.includes('json') ||
+    XML_MEDIA_TYPE.test(mediaType) ||
+    mediaType.endsWith('+xml') ||
+    mediaType.includes('javascript') ||
+    mediaType.includes('x-www-form-urlencoded') ||
+    mediaType.includes('svg')
+  );
+}
+
 export function registerExecuteHandler(app: Express, page: Page): void {
   app.post('/execute/fetch', async (req: Request, res: Response) => {
     try {
@@ -106,15 +136,7 @@ export function registerExecuteHandler(app: Express, page: Page): void {
         });
 
         const respHeaders = resp.headers();
-        const contentType = (respHeaders['content-type'] || '').toLowerCase();
-        const isTextual =
-          contentType === '' ||
-          contentType.startsWith('text/') ||
-          contentType.includes('json') ||
-          contentType.includes('xml') ||
-          contentType.includes('javascript') ||
-          contentType.includes('x-www-form-urlencoded') ||
-          contentType.includes('svg');
+        const isTextual = isTextualContentType(respHeaders['content-type'] || '');
 
         const buf = await resp.body();
         if (isTextual) {
@@ -176,19 +198,11 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           resp.headers.forEach((v, k) => { respHeaders[k] = v; });
 
           // Decide text vs binary from the response Content-Type. Textual
-          // bodies (json/text/xml/form/svg) go through resp.text() as before;
-          // anything else is read as raw bytes and base64-encoded so binary
-          // payloads (e.g. application/pdf) survive transit intact instead of
-          // being mangled by a UTF-8 text decode.
-          const contentType = (respHeaders['content-type'] || '').toLowerCase();
-          const isTextual =
-            contentType === '' ||
-            contentType.startsWith('text/') ||
-            contentType.includes('json') ||
-            contentType.includes('xml') ||
-            contentType.includes('javascript') ||
-            contentType.includes('x-www-form-urlencoded') ||
-            contentType.includes('svg');
+          // bodies go through resp.text() as before; anything else is read as
+          // raw bytes and base64-encoded so binary payloads (e.g.
+          // application/pdf, .xlsx) survive transit intact instead of being
+          // mangled by a UTF-8 text decode.
+          const isTextual = isTextualContentType(respHeaders['content-type'] || '');
 
           if (isTextual) {
             const text = await resp.text();
