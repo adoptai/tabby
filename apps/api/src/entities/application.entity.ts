@@ -65,6 +65,17 @@ export class ApplicationEntity {
   @Column({ type: 'uuid', nullable: true })
   template_id: string | null;
 
+  /**
+   * The `profile_name_pattern` of the template this app came from.
+   *
+   * `template_id` has ON DELETE SET NULL, so deleting a template erases the
+   * link and leaves the app looking manually-created. This does not move: it is
+   * what lets a re-registered template adopt the apps it used to own, and only
+   * those. Null means the app never came from a template.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  template_pattern: string | null;
+
   @Column({ type: 'boolean', default: false })
   execute_enabled: boolean;
 

@@ -22,7 +22,7 @@ import { SessionDb } from './session-db';
 import { RecyclingMonitor } from './recycling-monitor';
 import { ScreenshotFallback } from './screenshot-fallback';
 import { resolveCredentials } from './credential-resolver';
-import { enableDownloadCapture } from './download-capture';
+import { enableDownloadCapture, markBrowserPolicyAbsent } from './download-capture';
 import { RecordingRunner } from './recording-runner';
 import type { RecordingMode } from '@browser-hitl/shared';
 
@@ -175,6 +175,12 @@ async function main() {
 
     // Read policy before creating the context: acceptDownloads must be set at
     // context-creation time for Playwright to save downloads at all.
+    // A MISSING policy is not the same as a policy that says no, even though
+    // both land on the same defaults here. An app whose template link was cut
+    // (see migration 036) has no policy at all, and every download it attempts
+    // is cancelled with nothing anywhere saying why. Recorded so list_downloads
+    // can tell the two apart.
+    const policyAbsent = !appConfig.browser_policy;
     const browserPolicy = appConfig.browser_policy || { downloads: false, clipboard: false, file_chooser: false };
     const recordingMode = (browserPolicy as { recording_mode?: RecordingMode }).recording_mode;
     const browserDriven = Boolean((browserPolicy as { browser_driven?: boolean }).browser_driven);
@@ -206,6 +212,14 @@ async function main() {
       // `list_downloads`/`get_download` commands read (see download-capture.ts).
       enableDownloadCapture(context);
     } else {
+      if (policyAbsent) {
+        console.warn(
+          `App ${appId} has no browser_policy — downloads, clipboard and file chooser are all off by ` +
+          `default. If this app was provisioned from a template, its link was cut; re-registering the ` +
+          `template adopts it back.`,
+        );
+        markBrowserPolicyAbsent(context);
+      }
       // Default: Playwright has no "disable downloads" API, so intercept + cancel.
       context.on('page', (page) => {
         page.on('download', (download) => download.cancel());

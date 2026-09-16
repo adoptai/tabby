@@ -1,5 +1,5 @@
 import * as fs from 'fs/promises';
-import { enableDownloadCapture, listDownloads, getDownload } from './download-capture';
+import { enableDownloadCapture, listDownloads, getDownload, markBrowserPolicyAbsent } from './download-capture';
 
 // Drive the module with a mock Playwright context/page/download. enableDownloadCapture
 // attaches page.on('download'); we capture that handler and fire it with a fake
@@ -74,5 +74,54 @@ describe('download-capture', () => {
     const { page, fire } = setup();
     await fire(fakeDownload('x.pdf', Buffer.from('x')));
     await expect(getDownload(page, 'dl-nope')).rejects.toThrow(/no download with id/);
+  });
+
+  // browser_policy.downloads=false means main.ts never calls
+  // enableDownloadCapture and cancels each download as it starts. The list is
+  // then permanently empty, and an empty list alone is indistinguishable from
+  // "the click did nothing" -- which is how a replay reported "no file
+  // arrived" for a step that worked, and a member was asked to waive the one
+  // operation they came for.
+  it('flags a context that is not capturing, so an empty list is not read as a failed click', () => {
+    const page: any = { on: () => {}, context: () => ({}) };
+    const list = listDownloads(page);
+    expect(list.downloads).toEqual([]);
+    expect(list.disabled_by_policy).toBe(true);
+  });
+
+  it('does not flag a capturing context, even before any download arrives', () => {
+    const { page } = setup();
+    const list = listDownloads(page);
+    expect(list.downloads).toEqual([]);
+    expect(list.disabled_by_policy).toBeUndefined();
+  });
+
+  // A MISSING browser_policy and one that says downloads:false both fall back to
+  // the same defaults in main.ts and were reported identically. They call for
+  // opposite responses: a deliberate false is a decision to respect, while a
+  // missing policy means the app was never configured -- which is what an app
+  // orphaned from its template looks like, and what hid that bug for two runs.
+  it('separates an app with NO browser policy from one whose policy says no', () => {
+    const context: any = {};
+    const page: any = { on: () => {}, context: () => context };
+
+    // Policy says no: flagged, but not as a configuration fault.
+    expect(listDownloads(page).disabled_by_policy).toBe(true);
+    expect(listDownloads(page).policy_absent).toBeUndefined();
+
+    markBrowserPolicyAbsent(context);
+
+    const absent = listDownloads(page);
+    expect(absent.disabled_by_policy).toBe(true);
+    expect(absent.policy_absent).toBe(true);
+  });
+
+  it('never claims a policy is absent on a context that is capturing', () => {
+    // enableDownloadCapture wins: a capturing context had a policy that said yes.
+    const { page } = setup();
+    markBrowserPolicyAbsent(page.context());
+    const list = listDownloads(page);
+    expect(list.disabled_by_policy).toBeUndefined();
+    expect(list.policy_absent).toBeUndefined();
   });
 });

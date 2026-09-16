@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { createHash } from 'crypto';
 import { ProfileVersionState } from '@browser-hitl/shared';
 import { AppTemplateEntity, ApplicationEntity, ServiceProfileEntity } from '../../entities';
@@ -35,6 +35,25 @@ export class AppTemplatesService {
       throw new ConflictException(`Template "${data.name}" already exists`);
     }
 
+    // The pattern has to be unique too, and nothing in the schema says so --
+    // only (tenant_id, name) is. autoProvisionFromTemplate already resolves a
+    // template by `findOne({ profile_name_pattern })`, so a duplicate makes
+    // provisioning pick arbitrarily between them; adoption then cannot tell
+    // whose orphans are whose either. Refused at the door rather than left to
+    // surface as whichever row the database returned first.
+    if (data.profile_name_pattern) {
+      const patternTaken = await this.templateRepo.findOne({
+        where: { tenant_id: tenantId, profile_name_pattern: data.profile_name_pattern },
+      });
+      if (patternTaken) {
+        throw new ConflictException(
+          `Template "${patternTaken.name}" already uses profile_name_pattern ` +
+          `"${data.profile_name_pattern}" — a profile resolves to exactly one template, so it ` +
+          `cannot be shared.`,
+        );
+      }
+    }
+
     const template = this.templateRepo.create({
       ...data,
       tenant_id: tenantId,
@@ -50,7 +69,159 @@ export class AppTemplatesService {
       payload: { template_id: saved.id, name: saved.name },
     });
 
+    // Take back the apps this template's predecessor provisioned.
+    //
+    // Deleting a template nulls `template_id` on every app it made (ON DELETE
+    // SET NULL, migration 020), and re-registering mints a NEW id -- so
+    // propagateToLinkedApps, which filters on `template_id`, matches nothing.
+    // The app keeps the policy it was cloned with, forever, while the template
+    // the console shows is correct and governs nothing. Observed on org
+    // 87451b06: a template with `downloads: true` and zero provisioned apps,
+    // and a session that cancelled every statement it tried to download.
+    //
+    // Rebuilding a skill is delete-then-register, so this is the normal path,
+    // not an edge case.
+    const adopted = await this.adoptOrphanedApps(saved);
+    if (adopted > 0) {
+      this.logger.log(
+        `Template "${saved.name}" adopted ${adopted} app(s) orphaned by an earlier template with the same profile_name_pattern`,
+      );
+      await this.auditService.log({
+        tenant_id: tenantId,
+        actor_type: 'human',
+        actor_id: actorId,
+        event_type: 'app_template.adopted_orphans',
+        payload: { template_id: saved.id, profile_name_pattern: saved.profile_name_pattern, apps: adopted },
+      });
+    }
+
     return this.withHash(saved);
+  }
+
+  /**
+   * Re-link apps a previous template with this `profile_name_pattern` provisioned,
+   * and bring their template-derived fields back in step.
+   *
+   * Scoped by `template_pattern`, NOT by a null `template_id`: the two are
+   * indistinguishable after a delete, and adopting on a null id would capture
+   * apps somebody created by hand and silently rewrite their browser_policy,
+   * login_config and keepalive. `template_pattern` is only ever written when an
+   * app is provisioned FROM a template, so an app that never came from one is
+   * never touched.
+   *
+   * Only apps with no current template are adopted. One already linked to a
+   * live template belongs to that template, whatever its pattern says.
+   */
+  private async adoptOrphanedApps(template: AppTemplateEntity): Promise<number> {
+    if (!template.profile_name_pattern) return 0;
+
+    // Nothing in the schema makes profile_name_pattern unique -- only
+    // (tenant_id, name) is. create() now refuses a colliding pattern, so this
+    // cannot arise going forward, but rows predating that check can still share
+    // one. Adopting then would hand one template the apps of an unrelated
+    // other, and propagateToLinkedApps would overwrite their browser_policy and
+    // login_config. When the pattern is ambiguous, adopt nothing and say so:
+    // a skipped adoption leaves an app on a stale policy, which is recoverable;
+    // a wrong one rewrites a working app's config, which is not.
+    const sharing = await this.templateRepo.count({
+      where: {
+        tenant_id: template.tenant_id,
+        profile_name_pattern: template.profile_name_pattern,
+      },
+    });
+    if (sharing > 1) {
+      this.logger.warn(
+        `Not adopting apps for template "${template.name}": ${sharing} templates in this tenant ` +
+        `share profile_name_pattern "${template.profile_name_pattern}", so which one owns an ` +
+        `orphaned app is undecidable. Give them distinct patterns, then re-register.`,
+      );
+      return 0;
+    }
+
+    const orphans = await this.appRepo.find({
+      where: {
+        tenant_id: template.tenant_id,
+        template_id: IsNull(),
+        template_pattern: template.profile_name_pattern,
+      },
+      select: ['id'],
+    });
+    const legacy = await this.findLegacyOrphans(template, orphans.map(a => a.id));
+    const all = [...orphans, ...legacy];
+    if (all.length === 0) return 0;
+
+    for (const app of all) {
+      // template_pattern is written too, so an app recovered by the legacy path
+      // is adopted directly next time and never needs the heuristic again.
+      await this.appRepo.update(app.id, {
+        template_id: template.id,
+        template_pattern: template.profile_name_pattern,
+      });
+    }
+    // Re-link first, then reuse the ONE propagation path so an adopted app gets
+    // exactly the field set an updated template would push -- rather than a
+    // second, drifting copy of that list living here.
+    await this.propagateToLinkedApps(template);
+    return all.length;
+  }
+
+  /**
+   * Apps orphaned BEFORE `template_pattern` existed, recovered from the profile.
+   *
+   * `template_pattern` only helps an app provisioned after migration 036. Every
+   * app orphaned before it has both the id and the pattern null, so the forward
+   * fix repairs nothing that is already broken -- which on day one is all of
+   * them.
+   *
+   * The link survives somewhere else, though: auto-provision creates the profile
+   * with `profile_id` set to the very value it looked the template up by
+   * (`profile_name_pattern`), and a template delete never touches profiles. So
+   * an ACTIVE profile whose `profile_id` matches this template's pattern names
+   * the app that template used to own.
+   *
+   * That alone would also match an app somebody built by hand and pointed at the
+   * same profile id, so it is further required that the app carries the name
+   * `autoProvisionFromTemplate` gives it -- `<template name> <sep> <user>`. Only
+   * that path produces it. Both conditions together, and only for an app with no
+   * template link at all.
+   */
+  private async findLegacyOrphans(
+    template: AppTemplateEntity,
+    alreadyFound: string[],
+  ): Promise<Array<{ id: string }>> {
+    const profiles = await this.profileRepo.find({
+      where: {
+        tenant_id: template.tenant_id,
+        profile_id: template.profile_name_pattern,
+        version_state: ProfileVersionState.ACTIVE,
+      },
+      select: ['app_id'],
+    });
+    const appIds = [...new Set(profiles.map(p => p.app_id))]
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      .filter(id => !alreadyFound.includes(id));
+    if (appIds.length === 0) return [];
+
+    const candidates = await this.appRepo.find({
+      where: { id: In(appIds), tenant_id: template.tenant_id, template_id: IsNull() },
+      select: ['id', 'name', 'owner_user_id'],
+    });
+    // Evidence that autoProvisionFromTemplate made this app, read off the APP --
+    // never off the template's current name.
+    //
+    // It names an app `<template name> <sep> <owner id>` and sets owner_user_id
+    // to that same owner in the same call, so the name ends with the separator
+    // and the app's own owner id. Checking the new template's name instead would
+    // miss every rebuild that renamed the skill while keeping its pattern
+    // ("ICICI CC" -> "ICICI CC v2"), which is a normal fix-and-rebuild, and the
+    // orphan would stay orphaned. The owner suffix does not move.
+    const sep = AppTemplatesService.PROVISIONED_NAME_SEPARATOR;
+    return candidates
+      .filter(a => {
+        if (typeof a.name !== 'string' || !a.owner_user_id) return false;
+        return a.name.endsWith(`${sep} ${a.owner_user_id}`);
+      })
+      .map(a => ({ id: a.id }));
   }
 
   async findAll(tenantId?: string) {
@@ -97,6 +268,11 @@ export class AppTemplatesService {
     data: Partial<AppTemplateEntity>,
     actorId: string,
     actorRole?: string,
+    // PATCH is a partial update, so a nested object it carries is merged into
+    // what is stored. PUT is a full replace and must stay one: the console's
+    // template editor is a JSON textarea posting the WHOLE object via PUT, and
+    // deleting a key there has to keep meaning "remove it".
+    merge = false,
   ) {
     const template = await this.findOne(tenantId, id);
     const privileged = actorRole === 'Admin' || actorRole === 'Editor';
@@ -110,6 +286,20 @@ export class AppTemplatesService {
       throw new ForbiddenException(
         'Updating an app template requires the Admin or Editor role, or being its creator',
       );
+    }
+    // On PATCH, browser_policy is merged rather than replaced. It is a bag of
+    // independent safety flags (block_navigate, downloads, clipboard,
+    // file_chooser) written by different callers for different reasons: the
+    // compiler sets block_navigate/downloads from what a recording proved the
+    // app needs, a human sets others from the console. A PATCH carrying only
+    // one of them meant to say "set this", not "and clear the rest", but
+    // Object.assign made it say both.
+    //
+    // PUT is untouched: it is a full replace by definition, and the console's
+    // template editor posts the whole object through it, so a key deleted there
+    // must still disappear.
+    if (merge && data.browser_policy && template.browser_policy) {
+      data = { ...data, browser_policy: { ...template.browser_policy, ...data.browser_policy } };
     }
     Object.assign(template, data);
     await this.templateRepo.save(template);
@@ -140,6 +330,13 @@ export class AppTemplatesService {
 
     return this.withHash(saved);
   }
+
+  /**
+   * The separator `autoProvisionFromTemplate` puts between the template name and
+   * the owner's user id when naming an app. Matched, not authored -- it is the
+   * shape of data already in the database.
+   */
+  private static readonly PROVISIONED_NAME_SEPARATOR = '\u2014';
 
   private static readonly PROPAGATED_FIELDS = [
     'browser_policy', 'login_config', 'keepalive_config',

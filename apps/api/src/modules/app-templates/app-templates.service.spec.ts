@@ -83,6 +83,7 @@ function buildService(overrides: {
     create: jest.fn().mockImplementation((d: any) => d),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve({ id: 'tpl-uuid-1', ...d })),
     remove: jest.fn().mockResolvedValue(undefined),
+    count: jest.fn().mockResolvedValue(1),
   };
 
   const appRepo = overrides.appRepo ?? {
@@ -711,5 +712,306 @@ describe('AppTemplatesService — propagation', () => {
       expect(stableStringify(42)).toBe('42');
       expect(stableStringify(true)).toBe('true');
     });
+  });
+});
+
+describe('AppTemplatesService — browser_policy merge', () => {
+  // browser_policy is a bag of independent safety flags written by different
+  // callers: the compiler sets block_navigate/downloads from what a recording
+  // proved the app needs; a human sets others from the console. Object.assign
+  // let whichever wrote last drop the others -- observed on a browser-driven
+  // bank template that lost block_navigate, after which every `navigate`
+  // reloaded the portal and signed the member out mid-task.
+  const existing = {
+    id: 'tpl-uuid-1',
+    tenant_id: 'tenant-1',
+    created_by: 'actor-1',
+    browser_policy: {
+      clipboard: false,
+      downloads: true,
+      file_chooser: false,
+      block_navigate: true,
+    },
+  };
+
+  const run = async (patch: any, merge = true) => {
+    const save = jest.fn().mockImplementation((t: any) => Promise.resolve(t));
+    const { service, templateRepo } = buildService({
+      templateRepo: {
+        findOne: jest.fn().mockResolvedValue({ ...existing, browser_policy: { ...existing.browser_policy } }),
+        // update() re-reads the persisted row before auditing/propagating.
+        findOneOrFail: jest.fn().mockImplementation(() => Promise.resolve(save.mock.calls[0][0])),
+        save,
+        create: jest.fn(),
+      },
+    });
+    await service.update('tenant-1', 'tpl-uuid-1', patch, 'actor-1', 'Admin', merge);
+    void templateRepo;
+    return save.mock.calls[0][0].browser_policy;
+  };
+
+  it('keeps flags the patch does not mention', async () => {
+    const bp = await run({ browser_policy: { downloads: false } });
+    expect(bp.block_navigate).toBe(true);
+    expect(bp.clipboard).toBe(false);
+  });
+
+  it('still applies what the patch does set, including turning a flag off', async () => {
+    const bp = await run({ browser_policy: { downloads: false } });
+    expect(bp.downloads).toBe(false);
+  });
+
+  it('PUT still REPLACES browser_policy, so deleting a key in the console removes it', async () => {
+    // The console template editor is a JSON textarea posting the whole object
+    // through PUT. Merging there would silently make key-deletion a no-op.
+    const bp = await run({ browser_policy: { downloads: false } }, /* merge */ false);
+    expect(bp).toEqual({ downloads: false });
+    expect(bp.block_navigate).toBeUndefined();
+  });
+
+  it('leaves other fields alone', async () => {
+    const save = jest.fn().mockImplementation((t: any) => Promise.resolve(t));
+    const { service } = buildService({
+      templateRepo: {
+        findOne: jest.fn().mockResolvedValue({ ...existing, browser_policy: { ...existing.browser_policy } }),
+        // update() re-reads the persisted row before auditing/propagating.
+        findOneOrFail: jest.fn().mockImplementation(() => Promise.resolve(save.mock.calls[0][0])),
+        save,
+        create: jest.fn(),
+      },
+    });
+    await service.update('tenant-1', 'tpl-uuid-1', { name: 'renamed' } as any, 'actor-1', 'Admin', true);
+    expect(save.mock.calls[0][0].browser_policy).toEqual(existing.browser_policy);
+    expect(save.mock.calls[0][0].name).toBe('renamed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A re-registered template adopts the apps its predecessor provisioned
+// ---------------------------------------------------------------------------
+//
+// Org 87451b06, 2026-09-16: a rebuild deleted the icici template and registered
+// a new one. `applications.template_id` is ON DELETE SET NULL, so every app the
+// old template made was quietly unlinked; the new template got a new id, and
+// propagateToLinkedApps (`where template_id = :id`) matched nothing. The console
+// showed a template carrying `downloads: true` with ZERO provisioned apps, while
+// the session it was meant to govern ran with downloads off and cancelled every
+// statement it fetched. Rebuilding a skill is delete-then-register, so this is
+// the normal path.
+
+describe('AppTemplatesService — adopting orphaned apps', () => {
+  const PATTERN = 'icici-credit-card-statement';
+
+  function buildForCreate(orphans: any[], opts: { profiles?: any[]; candidates?: any[] } = {}) {
+    const appFind = jest.fn()
+      // 1) pattern-matched orphans  2) legacy candidates  3..) propagation pages
+      .mockResolvedValueOnce(orphans)
+      .mockResolvedValueOnce(opts.candidates ?? [])
+      .mockResolvedValue([]);
+    return buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+      profileRepo: { find: jest.fn().mockResolvedValue(opts.profiles ?? []) },
+    });
+  }
+
+  it('re-links an app its predecessor provisioned, matched on the pattern', async () => {
+    const { service, appRepo } = buildForCreate([{ id: 'app-orphan' }]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenant_id: 'tenant-1',
+          template_pattern: PATTERN,
+        }),
+      }),
+    );
+    expect(appRepo.update).toHaveBeenCalledWith('app-orphan', {
+      template_id: 'tpl-uuid-1',
+      template_pattern: PATTERN,
+    });
+  });
+
+  it('never adopts on a null template_id alone', async () => {
+    // After a delete the two are indistinguishable, so matching a null id would
+    // capture apps somebody built by hand and rewrite their browser_policy,
+    // login_config and keepalive underneath them.
+    const { service, appRepo } = buildForCreate([]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    const where = appRepo.find.mock.calls[0][0].where;
+    expect(where.template_pattern).toBe(PATTERN);
+    expect(where).toHaveProperty('template_id'); // IsNull() — a further narrowing, not the key
+  });
+
+  it('records the adoption in the audit log', async () => {
+    const { service, auditService } = buildForCreate([{ id: 'app-orphan' }]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'app_template.adopted_orphans',
+        payload: expect.objectContaining({ profile_name_pattern: PATTERN, apps: 1 }),
+      }),
+    );
+  });
+
+  it('stays quiet when there is nothing to adopt', async () => {
+    const { service, auditService, appRepo } = buildForCreate([]);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+    const events = auditService.log.mock.calls.map((c: any[]) => c[0].event_type);
+    expect(events).toContain('app_template.created');
+    expect(events).not.toContain('app_template.adopted_orphans');
+  });
+
+  it('does not look for orphans when the template has no pattern', async () => {
+    const { service, appRepo } = buildForCreate([]);
+
+    await service.create('tenant-1', { name: 'icici' }, 'actor');
+
+    expect(appRepo.find).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Apps orphaned BEFORE template_pattern existed
+// ---------------------------------------------------------------------------
+//
+// The forward fix repairs nothing already broken -- on day one that is every
+// orphaned app, including the one that started this. The link survives on the
+// PROFILE: auto-provision sets profile_id to the value it looked the template up
+// by, and a template delete never touches profiles.
+
+describe('AppTemplatesService — recovering pre-migration orphans', () => {
+  const PATTERN = 'icici-credit-card-statement';
+  const NAME = 'icici-credit-card-statement';
+
+  function build(opts: { profiles?: any[]; candidates?: any[] } = {}) {
+    const appFind = jest.fn()
+      .mockResolvedValueOnce([])                      // no template_pattern match
+      .mockResolvedValueOnce(opts.candidates ?? [])   // legacy candidates
+      .mockResolvedValue([]);
+    return buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+      profileRepo: { find: jest.fn().mockResolvedValue(opts.profiles ?? []) },
+    });
+  }
+
+  it('adopts an app whose active profile still names this pattern', async () => {
+    const { service, appRepo } = build({
+      profiles: [{ app_id: 'app-x' }],
+      candidates: [{ id: 'app-x', name: `${NAME} \u2014 user-1`, owner_user_id: 'user-1' }],
+    });
+
+    await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
+
+    // Stamped with the pattern too, so it never needs the heuristic again.
+    expect(appRepo.update).toHaveBeenCalledWith('app-x', {
+      template_id: 'tpl-uuid-1',
+      template_pattern: PATTERN,
+    });
+  });
+
+  it('leaves an app that does not carry the provisioned name alone', async () => {
+    // Someone built this by hand and pointed it at the same profile id. Its
+    // browser_policy is theirs, not this template's.
+    const { service, appRepo } = build({
+      profiles: [{ app_id: 'app-manual' }],
+      candidates: [{ id: 'app-manual', name: 'Ops sandbox', owner_user_id: null }],
+    });
+
+    await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('only considers ACTIVE profiles', async () => {
+    const { service, profileRepo } = build({ profiles: [] });
+
+    await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
+
+    expect(profileRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          profile_id: PATTERN,
+          version_state: ProfileVersionState.ACTIVE,
+        }),
+      }),
+    );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The guards on adoption
+// ---------------------------------------------------------------------------
+
+describe('AppTemplatesService — adoption guards', () => {
+  const PATTERN = 'icici-credit-card-statement';
+
+  it('recovers an orphan even when the rebuild renamed the skill', () => {
+    // The app was stamped by the OLD template's name. Keying the check on the
+    // NEW template's name would miss every fix-and-rebuild that renames while
+    // keeping the pattern -- and the orphan would stay orphaned.
+    const appFind = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'app-x', name: 'ICICI CC \u2014 user-1', owner_user_id: 'user-1' },
+      ])
+      .mockResolvedValue([]);
+    const { service, appRepo } = buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+      profileRepo: { find: jest.fn().mockResolvedValue([{ app_id: 'app-x' }]) },
+    });
+
+    return service
+      .create('tenant-1', { name: 'ICICI CC v2', profile_name_pattern: PATTERN }, 'actor')
+      .then(() => {
+        expect(appRepo.update).toHaveBeenCalledWith('app-x', {
+          template_id: 'tpl-uuid-1',
+          template_pattern: PATTERN,
+        });
+      });
+  });
+
+  it('refuses to create a template whose pattern another already uses', async () => {
+    // A profile resolves to exactly ONE template (autoProvisionFromTemplate does
+    // findOne on this column), so a duplicate makes provisioning arbitrary.
+    const templateRepo = {
+      findOne: jest.fn()
+        .mockResolvedValueOnce(null)                                   // name free
+        .mockResolvedValueOnce(makeTemplate({ name: 'Older icici' })),  // pattern taken
+      findOneOrFail: jest.fn(), find: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockImplementation((d: any) => d),
+      save: jest.fn(), remove: jest.fn(), count: jest.fn().mockResolvedValue(1),
+    };
+    const { service } = buildService({ templateRepo });
+
+    await expect(
+      service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor'),
+    ).rejects.toThrow(/already uses profile_name_pattern/);
+  });
+
+  it('adopts nothing when two templates share the pattern', async () => {
+    // Rows predating the create-time check can still collide. Skipping leaves an
+    // app on a stale policy (recoverable); adopting wrongly rewrites a working
+    // app's config (not).
+    const appFind = jest.fn().mockResolvedValue([]);
+    const { service, appRepo, templateRepo } = buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+    });
+    (templateRepo as any).count = jest.fn().mockResolvedValue(2);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.find).not.toHaveBeenCalled();
+    expect(appRepo.update).not.toHaveBeenCalled();
   });
 });

@@ -73,7 +73,34 @@ function sanitize(name: string): string {
  * temp file and indexes it. Call only when browser_policy.downloads is enabled;
  * the context must have been created with acceptDownloads: true.
  */
+/**
+ * Contexts this module is capturing for. Membership is the honest signal that
+ * the context was created with `acceptDownloads` -- Playwright exposes no way
+ * to read that back off a BrowserContext, so the only way to know is to record
+ * it where it is decided.
+ */
+const captureEnabled = new WeakSet<BrowserContext>();
+
+/**
+ * Contexts whose app carries NO browser_policy at all, as opposed to one that
+ * says downloads are off.
+ *
+ * main.ts falls back to `{ downloads: false, ... }` when `browser_policy` is
+ * null, so the two cases produce identical behaviour and, until now, identical
+ * reporting. They call for opposite responses: a deliberate `false` is a policy
+ * decision to respect, while a missing policy means the app was never
+ * configured -- which is what an app orphaned from its template looks like, and
+ * what nobody could see while a whole run was spent on it.
+ */
+const policyAbsent = new WeakSet<BrowserContext>();
+
+/** Record that this context's app had no browser_policy to read. */
+export function markBrowserPolicyAbsent(context: BrowserContext): void {
+  policyAbsent.add(context);
+}
+
 export function enableDownloadCapture(context: BrowserContext): void {
+  captureEnabled.add(context);
   if (downloadsByContext.has(context)) {
     return;
   }
@@ -127,10 +154,33 @@ export function enableDownloadCapture(context: BrowserContext): void {
   }
 }
 
-/** Metadata for every captured download on this page's context (newest last). */
-export function listDownloads(page: Page): { downloads: DownloadMeta[] } {
-  const records = downloadsByContext.get(page.context()) || [];
-  return { downloads: records.map(({ path: _p, ...meta }) => meta) };
+/**
+ * Metadata for every captured download on this page's context (newest last).
+ *
+ * `disabled_by_policy` says the context was built WITHOUT acceptDownloads, so
+ * main.ts is cancelling every download as it starts. The list is then
+ * permanently empty however many times a caller clicks, and an empty list on
+ * its own is indistinguishable from "the click did nothing" -- which is how a
+ * replay reported "no file arrived" for a step that worked, and a member was
+ * asked to waive the one operation they came for.
+ */
+export function listDownloads(page: Page): {
+  downloads: DownloadMeta[];
+  disabled_by_policy?: boolean;
+  policy_absent?: boolean;
+} {
+  const context = page.context();
+  const records = downloadsByContext.get(context) || [];
+  const downloads = records.map(({ path: _p, ...meta }) => meta);
+  if (captureEnabled.has(context)) {
+    return { downloads };
+  }
+  // `policy_absent` separates "this app has no browser_policy" from "its policy
+  // says no". Both cancel downloads; only one is a configuration fault, and the
+  // caller cannot tell them apart from the outcome.
+  return policyAbsent.has(context)
+    ? { downloads, disabled_by_policy: true, policy_absent: true }
+    : { downloads, disabled_by_policy: true };
 }
 
 /**
