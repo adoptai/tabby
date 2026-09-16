@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { createHash } from 'crypto';
 import { ProfileVersionState } from '@browser-hitl/shared';
 import { AppTemplateEntity, ApplicationEntity, ServiceProfileEntity } from '../../entities';
@@ -33,6 +33,25 @@ export class AppTemplatesService {
     });
     if (existing) {
       throw new ConflictException(`Template "${data.name}" already exists`);
+    }
+
+    // The pattern has to be unique too, and nothing in the schema says so --
+    // only (tenant_id, name) is. autoProvisionFromTemplate already resolves a
+    // template by `findOne({ profile_name_pattern })`, so a duplicate makes
+    // provisioning pick arbitrarily between them; adoption then cannot tell
+    // whose orphans are whose either. Refused at the door rather than left to
+    // surface as whichever row the database returned first.
+    if (data.profile_name_pattern) {
+      const patternTaken = await this.templateRepo.findOne({
+        where: { tenant_id: tenantId, profile_name_pattern: data.profile_name_pattern },
+      });
+      if (patternTaken) {
+        throw new ConflictException(
+          `Template "${patternTaken.name}" already uses profile_name_pattern ` +
+          `"${data.profile_name_pattern}" — a profile resolves to exactly one template, so it ` +
+          `cannot be shared.`,
+        );
+      }
     }
 
     const template = this.templateRepo.create({
@@ -95,6 +114,29 @@ export class AppTemplatesService {
    */
   private async adoptOrphanedApps(template: AppTemplateEntity): Promise<number> {
     if (!template.profile_name_pattern) return 0;
+
+    // Nothing in the schema makes profile_name_pattern unique -- only
+    // (tenant_id, name) is. create() now refuses a colliding pattern, so this
+    // cannot arise going forward, but rows predating that check can still share
+    // one. Adopting then would hand one template the apps of an unrelated
+    // other, and propagateToLinkedApps would overwrite their browser_policy and
+    // login_config. When the pattern is ambiguous, adopt nothing and say so:
+    // a skipped adoption leaves an app on a stale policy, which is recoverable;
+    // a wrong one rewrites a working app's config, which is not.
+    const sharing = await this.templateRepo.count({
+      where: {
+        tenant_id: template.tenant_id,
+        profile_name_pattern: template.profile_name_pattern,
+      },
+    });
+    if (sharing > 1) {
+      this.logger.warn(
+        `Not adopting apps for template "${template.name}": ${sharing} templates in this tenant ` +
+        `share profile_name_pattern "${template.profile_name_pattern}", so which one owns an ` +
+        `orphaned app is undecidable. Give them distinct patterns, then re-register.`,
+      );
+      return 0;
+    }
 
     const orphans = await this.appRepo.find({
       where: {
@@ -161,14 +203,24 @@ export class AppTemplatesService {
     if (appIds.length === 0) return [];
 
     const candidates = await this.appRepo.find({
-      where: appIds.map(id => ({ id, tenant_id: template.tenant_id, template_id: IsNull() })),
-      select: ['id', 'name'],
+      where: { id: In(appIds), tenant_id: template.tenant_id, template_id: IsNull() },
+      select: ['id', 'name', 'owner_user_id'],
     });
-    // Mirrors the name autoProvisionFromTemplate builds. Kept as a prefix test
-    // rather than an equality one because the suffix is the owner's user id.
-    const prefix = `${template.name} ${AppTemplatesService.PROVISIONED_NAME_SEPARATOR} `;
+    // Evidence that autoProvisionFromTemplate made this app, read off the APP --
+    // never off the template's current name.
+    //
+    // It names an app `<template name> <sep> <owner id>` and sets owner_user_id
+    // to that same owner in the same call, so the name ends with the separator
+    // and the app's own owner id. Checking the new template's name instead would
+    // miss every rebuild that renamed the skill while keeping its pattern
+    // ("ICICI CC" -> "ICICI CC v2"), which is a normal fix-and-rebuild, and the
+    // orphan would stay orphaned. The owner suffix does not move.
+    const sep = AppTemplatesService.PROVISIONED_NAME_SEPARATOR;
     return candidates
-      .filter(a => typeof a.name === 'string' && a.name.startsWith(prefix))
+      .filter(a => {
+        if (typeof a.name !== 'string' || !a.owner_user_id) return false;
+        return a.name.endsWith(`${sep} ${a.owner_user_id}`);
+      })
       .map(a => ({ id: a.id }));
   }
 

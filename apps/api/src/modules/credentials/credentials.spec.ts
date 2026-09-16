@@ -1128,6 +1128,34 @@ describe('CredentialsService (ADR-013 + Sprint 3b)', () => {
       );
     });
 
+    // The lineage the delete cannot erase.
+    //
+    // applications.template_id is ON DELETE SET NULL, so deleting a template
+    // unlinks every app it made and leaves it looking manually-created.
+    // template_pattern is what lets a re-registered template adopt those apps
+    // back -- and it is only ever true if it is written HERE, at the one place
+    // an app is provisioned from a template.
+    it('stamps the template lineage on the app, id and pattern together', async () => {
+      const { service } = buildService();
+      wireAutoProvision(service, {
+        id: 'tpl-9', name: 'ICICI', profile_name_pattern: 'icici-credit-card-statement',
+        login_config: {}, keepalive_config: {}, export_policy: {}, notification_config: {},
+        browser_policy: { downloads: true }, execute_enabled: true,
+      });
+
+      await (service as any).autoProvisionFromTemplate(
+        TEST_TENANT, 'icici-credit-card-statement', 'user-a',
+      );
+
+      expect((service as any).appRepo.update).toHaveBeenCalledWith(
+        'auto-app-1',
+        expect.objectContaining({
+          template_id: 'tpl-9',
+          template_pattern: 'icici-credit-card-statement',
+        }),
+      );
+    });
+
     it('forwards an execute-disabled template as false', async () => {
       const { service } = buildService();
       const { appsService } = wireAutoProvision(service, {

@@ -83,6 +83,7 @@ function buildService(overrides: {
     create: jest.fn().mockImplementation((d: any) => d),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve({ id: 'tpl-uuid-1', ...d })),
     remove: jest.fn().mockResolvedValue(undefined),
+    count: jest.fn().mockResolvedValue(1),
   };
 
   const appRepo = overrides.appRepo ?? {
@@ -906,7 +907,7 @@ describe('AppTemplatesService — recovering pre-migration orphans', () => {
   it('adopts an app whose active profile still names this pattern', async () => {
     const { service, appRepo } = build({
       profiles: [{ app_id: 'app-x' }],
-      candidates: [{ id: 'app-x', name: `${NAME} \u2014 user-1` }],
+      candidates: [{ id: 'app-x', name: `${NAME} \u2014 user-1`, owner_user_id: 'user-1' }],
     });
 
     await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
@@ -923,7 +924,7 @@ describe('AppTemplatesService — recovering pre-migration orphans', () => {
     // browser_policy is theirs, not this template's.
     const { service, appRepo } = build({
       profiles: [{ app_id: 'app-manual' }],
-      candidates: [{ id: 'app-manual', name: 'Ops sandbox' }],
+      candidates: [{ id: 'app-manual', name: 'Ops sandbox', owner_user_id: null }],
     });
 
     await service.create('tenant-1', { name: NAME, profile_name_pattern: PATTERN }, 'actor');
@@ -944,5 +945,73 @@ describe('AppTemplatesService — recovering pre-migration orphans', () => {
         }),
       }),
     );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The guards on adoption
+// ---------------------------------------------------------------------------
+
+describe('AppTemplatesService — adoption guards', () => {
+  const PATTERN = 'icici-credit-card-statement';
+
+  it('recovers an orphan even when the rebuild renamed the skill', () => {
+    // The app was stamped by the OLD template's name. Keying the check on the
+    // NEW template's name would miss every fix-and-rebuild that renames while
+    // keeping the pattern -- and the orphan would stay orphaned.
+    const appFind = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'app-x', name: 'ICICI CC \u2014 user-1', owner_user_id: 'user-1' },
+      ])
+      .mockResolvedValue([]);
+    const { service, appRepo } = buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+      profileRepo: { find: jest.fn().mockResolvedValue([{ app_id: 'app-x' }]) },
+    });
+
+    return service
+      .create('tenant-1', { name: 'ICICI CC v2', profile_name_pattern: PATTERN }, 'actor')
+      .then(() => {
+        expect(appRepo.update).toHaveBeenCalledWith('app-x', {
+          template_id: 'tpl-uuid-1',
+          template_pattern: PATTERN,
+        });
+      });
+  });
+
+  it('refuses to create a template whose pattern another already uses', async () => {
+    // A profile resolves to exactly ONE template (autoProvisionFromTemplate does
+    // findOne on this column), so a duplicate makes provisioning arbitrary.
+    const templateRepo = {
+      findOne: jest.fn()
+        .mockResolvedValueOnce(null)                                   // name free
+        .mockResolvedValueOnce(makeTemplate({ name: 'Older icici' })),  // pattern taken
+      findOneOrFail: jest.fn(), find: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockImplementation((d: any) => d),
+      save: jest.fn(), remove: jest.fn(), count: jest.fn().mockResolvedValue(1),
+    };
+    const { service } = buildService({ templateRepo });
+
+    await expect(
+      service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor'),
+    ).rejects.toThrow(/already uses profile_name_pattern/);
+  });
+
+  it('adopts nothing when two templates share the pattern', async () => {
+    // Rows predating the create-time check can still collide. Skipping leaves an
+    // app on a stale policy (recoverable); adopting wrongly rewrites a working
+    // app's config (not).
+    const appFind = jest.fn().mockResolvedValue([]);
+    const { service, appRepo, templateRepo } = buildService({
+      appRepo: { find: appFind, update: jest.fn().mockResolvedValue(undefined) },
+    });
+    (templateRepo as any).count = jest.fn().mockResolvedValue(2);
+
+    await service.create('tenant-1', { name: 'icici', profile_name_pattern: PATTERN }, 'actor');
+
+    expect(appRepo.find).not.toHaveBeenCalled();
+    expect(appRepo.update).not.toHaveBeenCalled();
   });
 });
