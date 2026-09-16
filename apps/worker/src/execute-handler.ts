@@ -202,7 +202,26 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           // raw bytes and base64-encoded so binary payloads (e.g.
           // application/pdf, .xlsx) survive transit intact instead of being
           // mangled by a UTF-8 text decode.
-          const isTextual = isTextualContentType(respHeaders['content-type'] || '');
+          //
+          // Deliberately duplicated from isTextualContentType(). This callback is
+          // serialized by page.evaluate() and runs in the browser realm, where a
+          // Node import does not exist — calling the shared helper here throws
+          // ReferenceError, and the catch below would silently fall back to
+          // fetchViaContext(), losing the in-page interceptors this path exists
+          // for. Same constraint as page-summary.injected.ts. The spec fails if
+          // this copy and the exported one ever disagree.
+          const isTextualInPage = (ct: string): boolean => {
+            const mediaType = ct.toLowerCase().split(';')[0].trim();
+            return mediaType === ''
+              || mediaType.startsWith('text/')
+              || mediaType.includes('json')
+              || /^(?:text|application)\/xml(?:-dtd|-external-parsed-entity)?$/.test(mediaType)
+              || mediaType.endsWith('+xml')
+              || mediaType.includes('javascript')
+              || mediaType.includes('x-www-form-urlencoded')
+              || mediaType.includes('svg');
+          };
+          const isTextual = isTextualInPage(respHeaders['content-type'] || '');
 
           if (isTextual) {
             const text = await resp.text();
