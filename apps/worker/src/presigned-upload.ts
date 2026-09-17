@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { lookup as dnsLookupCb } from 'dns';
 import { promisify } from 'util';
 import { isIP } from 'net';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'stream';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
 
 const dnsLookup = promisify(dnsLookupCb);
@@ -128,8 +128,19 @@ export async function uploadToPresignedUrl(
     hash.update(source);
     body = new Uint8Array(source);
   } else {
-    source.on('data', (chunk) => hash.update(chunk));
-    body = Readable.toWeb(source) as ReadableStream;
+    // Hash INSIDE the pipeline rather than from a 'data' listener. A listener puts
+    // the stream into flowing mode before the web-stream adapter takes it over, so
+    // what the hash sees and what the upload sends are only incidentally the same
+    // bytes. Through a Transform they are the same bytes by construction: every
+    // chunk is hashed exactly once, in order, on its way past.
+    const hashing = new Transform({
+      transform(chunk, _enc, cb) {
+        hash.update(chunk);
+        cb(null, chunk);
+      },
+    });
+    source.on('error', (err) => hashing.destroy(err));
+    body = Readable.toWeb(source.pipe(hashing)) as ReadableStream;
   }
 
   let resp: Response;

@@ -248,3 +248,46 @@ describe('put_download', () => {
     expect(newer.state).toBe('completed'); // the one just captured always survives
   });
 });
+
+describe('put_download — stream/hash integrity across sizes', () => {
+  const realFetch = global.fetch;
+  afterEach(() => { global.fetch = realFetch; });
+
+  function stubUpload() {
+    const seen: { body: Buffer; len?: string } = { body: Buffer.alloc(0) };
+    global.fetch = (async (_u: any, init: any) => {
+      seen.len = init.headers['Content-Length'];
+      const chunks: Buffer[] = [];
+      for await (const chunk of init.body as any) chunks.push(Buffer.from(chunk));
+      seen.body = Buffer.concat(chunks);
+      return { ok: true, status: 200, text: async () => '' } as any;
+    }) as any;
+    return seen;
+  }
+
+  // The hash is computed in the same pipeline the bytes travel, so what is hashed and
+  // what is uploaded cannot diverge. Sizes span the boundaries where a flowing-mode
+  // race would show up: empty, sub-chunk, and multi-chunk past the 64KiB default.
+  it.each([
+    ['zero-byte', 0],
+    ['single-byte', 1],
+    ['sub-chunk', 1024],
+    ['exactly one 64KiB chunk', 65536],
+    ['multi-chunk', 65536 * 3 + 17],
+  ])('uploads %s files with a matching sha256 and length', async (_label, size) => {
+    const { page, fire } = setup();
+    // Pseudo-random so a dropped or duplicated chunk cannot coincidentally hash equal.
+    const bytes = Buffer.alloc(size);
+    for (let i = 0; i < size; i++) bytes[i] = (i * 31 + 7) & 0xff;
+    await fire(fakeDownload(`f${size}.bin`, bytes));
+    const seen = stubUpload();
+
+    const res = await putDownload(page, { upload_url: 'https://s3.test/k' });
+
+    expect(seen.body.length).toBe(size);
+    expect(seen.body.equals(bytes)).toBe(true);
+    expect(seen.len).toBe(String(size));
+    expect(res.size_bytes).toBe(size);
+    expect(res.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+  });
+});
