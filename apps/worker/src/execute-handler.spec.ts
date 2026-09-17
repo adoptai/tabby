@@ -8,10 +8,19 @@ const HANDLER_SRC = fs.readFileSync(path.join(__dirname, 'execute-handler.ts'), 
 // Everything between `page.evaluate(` and the closing of its callback runs in the
 // browser realm after Playwright serializes it — module-scope identifiers are not
 // in scope there.
-const PAGE_CALLBACK_SRC = HANDLER_SRC.slice(
-  HANDLER_SRC.indexOf('await page.evaluate('),
-  HANDLER_SRC.indexOf('      ).catch(async (err: Error) => {'),
-);
+const CALLBACK_START = HANDLER_SRC.indexOf('await page.evaluate(');
+const CALLBACK_END = HANDLER_SRC.indexOf(').catch(async (err: Error) => {', CALLBACK_START);
+// Fail loudly rather than silently slicing garbage if either marker ever moves
+// (a reformat, a rename): a -1 index would otherwise degrade the guards below
+// into assertions about the wrong span of the file.
+if (CALLBACK_START < 0 || CALLBACK_END < 0) {
+  throw new Error(
+    `execute-handler.spec: could not locate the page.evaluate callback `
+    + `(start=${CALLBACK_START}, end=${CALLBACK_END}) — update these markers.`,
+  );
+}
+
+const PAGE_CALLBACK_SRC = HANDLER_SRC.slice(CALLBACK_START, CALLBACK_END);
 
 describe('page.evaluate callback isolation', () => {
   it('locates the page.evaluate callback', () => {
