@@ -61,6 +61,14 @@ export const BROWSER_COMMANDS = [
   'wait_for_selector', 'scroll_page',
   'har_start', 'har_stop', 'har_status',
   'list_downloads', 'get_download',
+  // Streams a captured download to a caller-supplied presigned PUT URL instead
+  // of inlining it as base64, which is the only way a file larger than
+  // MAX_RESPONSE_BODY_BYTES can leave the worker at all.
+  'put_download',
+  // Triggers a download from a known URL. Separate from `navigate` because
+  // Chromium aborts the navigation for an attachment response, so `navigate`
+  // reports a failure for a download that in fact succeeded.
+  'download_url',
 ] as const;
 
 export type BrowserCommandName = typeof BROWSER_COMMANDS[number];
