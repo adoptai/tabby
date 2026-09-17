@@ -337,3 +337,36 @@ describe('ExecuteService.executeFetch — upload_url sink', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('ExecuteService.executeBrowser — put_download timeout', () => {
+  function forwardedBody(fetchMock: jest.Mock): any {
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/execute/browser'));
+    return JSON.parse(call![1].body);
+  }
+
+  it('gives put_download the bulk-transfer ceiling', async () => {
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await service.executeBrowser({
+      ...baseParams,
+      request: {
+        command: 'put_download',
+        params: { upload_url: 'https://s3.test/k' },
+        timeout_ms: 240_000,
+      },
+    } as any);
+    expect(forwardedBody(fetchMock).timeout_ms).toBe(240_000);
+    // The sink URL rides inside params, which are forwarded wholesale.
+    expect(forwardedBody(fetchMock).params.upload_url).toBe('https://s3.test/k');
+  });
+
+  it('still clamps an ordinary browser command to 60s', async () => {
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await service.executeBrowser({
+      ...baseParams,
+      request: { command: 'click_element', params: {}, timeout_ms: 240_000 },
+    } as any);
+    expect(forwardedBody(fetchMock).timeout_ms).toBe(60_000);
+  });
+});

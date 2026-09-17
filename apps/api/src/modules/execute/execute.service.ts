@@ -291,9 +291,14 @@ export class ExecuteService {
     }
 
     const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/browser');
+    // put_download streams a whole captured file to an object store, which is a
+    // bulk transfer rather than a page interaction — the 60s that sizes every
+    // other command would abort a large export mid-upload.
     const timeoutMs = Math.min(
       request.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS,
-      EXECUTE_LIMITS.MAX_TIMEOUT_MS,
+      request.command === 'put_download'
+        ? EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS
+        : EXECUTE_LIMITS.MAX_TIMEOUT_MS,
     );
 
     const abortController = new AbortController();

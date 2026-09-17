@@ -62,7 +62,11 @@ export function registerBrowserHandler(
       const params = body.params || {};
       const timeoutMs = Math.min(
         Math.max(body.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS, 1000),
-        EXECUTE_LIMITS.MAX_TIMEOUT_MS,
+        // put_download is a bulk transfer to an object store, not a page
+        // interaction (see MAX_SINK_TIMEOUT_MS).
+        body.command === 'put_download'
+          ? EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS
+          : EXECUTE_LIMITS.MAX_TIMEOUT_MS,
       );
 
       // Tell the keepalive loop an agent is driving the page, so it does not
