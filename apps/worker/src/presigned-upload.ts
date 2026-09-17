@@ -65,6 +65,13 @@ function isBlockedAddress(ip: string): boolean {
  * avoid. That means it does NOT inherit the browser's proxy/egress allowlist, so
  * the host has to be checked here: every resolved address is tested, not just a
  * literal, so a name that resolves inward is refused too.
+ *
+ * Accepted residual: this resolves once and the PUT resolves again when it
+ * connects, so a record with a low enough TTL could answer safe here and inward
+ * there (DNS rebinding). Closing it needs the connection pinned to the address
+ * that was checked, which Node's fetch does not expose. The NetworkPolicy on the
+ * worker pod is the boundary that does not depend on resolver timing; this is
+ * defence in depth in front of it, not a replacement for it.
  */
 export async function validateUploadUrl(uploadUrl: unknown, cmd: string): Promise<string> {
   if (typeof uploadUrl !== 'string' || !uploadUrl) {
@@ -157,6 +164,13 @@ export async function uploadToPresignedUrl(
         'Content-Length': String(sizeBytes),
       },
       body,
+      // Do NOT follow redirects. validateUploadUrl checked the addresses THIS host
+      // resolves to; a 307/308 to 169.254.169.254 would re-issue the PUT at an
+      // address that was never checked, which is the whole guard bypassed by a
+      // header. Nothing legitimate is lost: a redirect cannot be followed with a
+      // stream body anyway (it is not replayable), so the alternative to refusing
+      // is failing later and less clearly.
+      redirect: 'manual',
       // Node streams a request body only when told the body may still be
       // arriving after the headers; without this, fetch rejects a stream body.
       duplex: 'half',
@@ -165,6 +179,17 @@ export async function uploadToPresignedUrl(
     if (!Buffer.isBuffer(source)) source.destroy();
     throw new Error(
       `${cmd}: upload of ${sizeBytes} bytes failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // A redirect is not a rejection the caller can retry by re-minting, and its
+  // Location is an unvalidated target — report it as the misconfiguration it is
+  // rather than letting it fall through as a generic store rejection.
+  if (resp.status >= 300 && resp.status < 400) {
+    if (!Buffer.isBuffer(source)) source.destroy();
+    throw new Error(
+      `${cmd}: upload_url redirected (${resp.status}); refusing to follow it. Mint the ` +
+        "presigned URL against the bucket's own regional endpoint.",
     );
   }
 

@@ -555,10 +555,11 @@ describe('/execute/fetch sink — review follow-ups', () => {
   const realFetch = global.fetch;
 
   function stubStore(status = 200) {
-    const seen: { url?: string; headers?: any } = {};
+    const seen: { url?: string; headers?: any; redirect?: string } = {};
     global.fetch = (async (url: any, init: any) => {
       seen.url = String(url);
       seen.headers = init.headers;
+      seen.redirect = init.redirect;
       if (init.body && typeof init.body[Symbol.asyncIterator] === 'function') {
         for await (const _c of init.body) { /* drain */ }
       }
@@ -622,6 +623,24 @@ describe('/execute/fetch sink — review follow-ups', () => {
       expect(res.body.error).toMatch(/blocked address/);
     }
     expect(contextFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not follow a redirect from the upload target', async () => {
+    // The address check validated where THIS host resolves; a 307 to the metadata
+    // service would re-issue the PUT somewhere never checked. Refuse instead.
+    contextFetch.mockResolvedValue({
+      status: () => 200,
+      headers: () => ({
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="a.pdf"',
+      }),
+      body: async () => Buffer.from('%PDF'),
+    });
+    const seen = stubStore(307);
+    const res = await call({ url: 'https://x.test/doc', upload_url: 'https://s3.test/k' });
+
+    expect(seen.redirect).toBe('manual'); // undici must not follow it for us
+    expect(res.body.error).toMatch(/redirected \(307\); refusing to follow/);
   });
 
   it('does not echo the object store response body back to the caller', async () => {
