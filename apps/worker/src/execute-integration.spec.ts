@@ -548,3 +548,143 @@ describe('/execute/fetch upload_url sink', () => {
     expect(res.body.body).toBe('{"ok":true}');
   });
 });
+
+describe('/execute/fetch sink — review follow-ups', () => {
+  let server: http.Server;
+  let contextFetch: jest.Mock;
+  const realFetch = global.fetch;
+
+  function stubStore(status = 200) {
+    const seen: { url?: string; headers?: any } = {};
+    global.fetch = (async (url: any, init: any) => {
+      seen.url = String(url);
+      seen.headers = init.headers;
+      if (init.body && typeof init.body[Symbol.asyncIterator] === 'function') {
+        for await (const _c of init.body) { /* drain */ }
+      }
+      return { ok: status >= 200 && status < 300, status, text: async () => 'SECRET-INTERNAL-BODY' } as any;
+    }) as any;
+    return seen;
+  }
+
+  beforeAll((done) => {
+    process.env.JWT_SIGNING_KEY = TEST_KEY;
+    process.env.TENANT_ID = TEST_TENANT;
+    const { executeAuthMiddleware } = require('./execute-auth');
+    const app = express();
+    app.use(express.json({ limit: '10mb' }));
+    app.use('/execute', executeAuthMiddleware);
+    contextFetch = jest.fn();
+    registerExecuteHandler(app, mockPage({ contextFetch }));
+    server = app.listen(0, done);
+  });
+  afterAll((done) => { server.close(done); });
+  beforeEach(() => { contextFetch.mockClear(); });
+  afterEach(() => { global.fetch = realFetch; });
+
+  const call = (body: any) =>
+    request(server, 'POST', '/execute/fetch', body, { Authorization: `Bearer ${signToken()}` });
+
+  it('refuses an oversized response on content-length, before reading the body', async () => {
+    // The point of the limit is to not hold the response. Checking only after
+    // resp.body() would materialise the whole thing to decide it was too big.
+    const bodyFn = jest.fn();
+    contextFetch.mockResolvedValue({
+      status: () => 200,
+      headers: () => ({
+        'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'content-disposition': 'attachment; filename="huge.xlsx"',
+        'content-length': String(EXECUTE_LIMITS.MAX_SINK_BODY_BYTES + 1),
+      }),
+      body: bodyFn,
+    });
+    const seen = stubStore();
+
+    const res = await call({ url: 'https://x.test/huge.xlsx', upload_url: 'https://s3.test/k' });
+
+    expect(res.status).toBe(413);
+    expect(res.body.error).toMatch(/content-length/);
+    expect(bodyFn).not.toHaveBeenCalled(); // never buffered
+    expect(seen.url).toBeUndefined();
+  });
+
+  it('refuses an internal upload_url before fetching anything', async () => {
+    // upload_url is caller-supplied and the PUT does not go through the browser's
+    // egress allowlist, so cloud metadata and internal services must be refused here.
+    for (const target of [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://127.0.0.1:9000/bucket/key',
+      'http://10.0.0.5/internal',
+      'http://[::1]:9000/k',
+    ]) {
+      const res = await call({ url: 'https://x.test/doc', upload_url: target });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/blocked address/);
+    }
+    expect(contextFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not echo the object store response body back to the caller', async () => {
+    contextFetch.mockResolvedValue({
+      status: () => 200,
+      headers: () => ({
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="a.pdf"',
+      }),
+      body: async () => Buffer.from('%PDF'),
+    });
+    stubStore(403);
+    const res = await call({ url: 'https://x.test/doc', upload_url: 'https://s3.test/k' });
+    // Returning an arbitrary host's body would make this a read oracle.
+    expect(res.body.error).toMatch(/403/);
+    expect(JSON.stringify(res.body)).not.toContain('SECRET-INTERNAL-BODY');
+  });
+
+  it('does not let caller upload_headers override the computed Content-Length', async () => {
+    contextFetch.mockResolvedValue({
+      status: () => 200,
+      headers: () => ({
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="a.pdf"',
+      }),
+      body: async () => Buffer.from('%PDF-1.4 twenty-ish bytes'),
+    });
+    const seen = stubStore();
+    await call({
+      url: 'https://x.test/doc',
+      upload_url: 'https://s3.test/k',
+      upload_headers: { 'Content-Length': '1', 'Content-Type': 'text/plain', 'x-amz-acl': 'private' },
+    });
+    expect(seen.headers['Content-Length']).toBe('25');       // real size wins
+    expect(seen.headers['Content-Type']).toBe('application/pdf');
+    expect(seen.headers['x-amz-acl']).toBe('private');       // unrelated ones still pass
+  });
+
+  it('base64s a skipped binary instead of mangling it with a UTF-8 decode', async () => {
+    // A skipped response is usually an HTML auth wall, but a non-2xx with a binary
+    // body must survive rather than come back as U+FFFD soup.
+    const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0xc3, 0x28, 0xff, 0xfe]);
+    contextFetch.mockResolvedValue({
+      status: () => 500,
+      headers: () => ({ 'content-type': 'application/pdf' }),
+      body: async () => pdf,
+    });
+    stubStore();
+    const res = await call({ url: 'https://x.test/doc', upload_url: 'https://s3.test/k' });
+    expect(res.body.uploaded.uploaded).toBe(false);
+    expect(res.body.encoding).toBe('base64');
+    expect(Buffer.from(res.body.body, 'base64').equals(pdf)).toBe(true);
+  });
+
+  it('still returns a skipped HTML auth wall as readable text', async () => {
+    contextFetch.mockResolvedValue({
+      status: () => 200,
+      headers: () => ({ 'content-type': 'text/html;charset=UTF-8' }),
+      body: async () => Buffer.from('<script>var redirectUrl="/login.htmld"</script>'),
+    });
+    stubStore();
+    const res = await call({ url: 'https://x.test/doc', upload_url: 'https://s3.test/k' });
+    expect(res.body.encoding).toBe('utf-8');
+    expect(res.body.body).toContain('login.htmld');
+  });
+});

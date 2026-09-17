@@ -308,7 +308,7 @@ export async function putDownload(
   sha256: string;
   upload_status: number;
 }> {
-  const uploadUrl = validateUploadUrl(opts.upload_url, 'put_download');
+  const uploadUrl = await validateUploadUrl(opts.upload_url, 'put_download');
 
   const rec = resolveDownload(page, 'put_download', opts.id);
   // A presigned PUT is signed for a specific Content-Length, so the size has to

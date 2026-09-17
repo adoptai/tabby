@@ -67,7 +67,7 @@ export function registerExecuteHandler(app: Express, page: Page): void {
       let uploadUrl: string | null = null;
       if (body.upload_url) {
         try {
-          uploadUrl = validateUploadUrl(body.upload_url, '/execute/fetch');
+          uploadUrl = await validateUploadUrl(body.upload_url, '/execute/fetch');
         } catch (err) {
           res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
           return;
@@ -185,11 +185,18 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           const buf = await resp.body();
           const wasTruncated = buf.length > maxResponseBytes;
           const shown = wasTruncated ? buf.subarray(0, maxResponseBytes) : buf;
+          // Do not UTF-8 decode unconditionally: a decode maps every invalid byte to
+          // U+FFFD, destroying the bytes rather than re-encoding them. The reason we
+          // are here is usually an HTML auth wall, which is text — but a skipped
+          // binary (a non-2xx with a PDF body, say) must survive as base64 rather
+          // than come back as mojibake. Same failure this file's sibling path had.
+          const textual = /^(?:$|text\/|.*(?:json|xml|javascript|x-www-form-urlencoded|svg))/
+            .test(contentType.toLowerCase());
           return {
             status,
             headers: respHeaders,
-            body: shown.toString('utf-8'),
-            encoding: 'utf-8',
+            body: shown.toString(textual ? 'utf-8' : 'base64'),
+            encoding: textual ? 'utf-8' : 'base64',
             truncated: wasTruncated,
             uploaded: { uploaded: false, skipped_reason: reason, content_type: contentType },
           };
@@ -211,16 +218,31 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           );
         }
 
+        const overSink = (n: number, source: string) => new ExecuteError(
+          413,
+          `Response is ${n} bytes (${source}), over the ${EXECUTE_LIMITS.MAX_SINK_BODY_BYTES}-byte ` +
+            'sink limit. Drive the download through /execute/browser (download_url then ' +
+            'put_download), which streams from disk and has no such ceiling.',
+        );
+
+        // Refuse on the DECLARED size first, before a byte is read. Checking only
+        // after resp.body() would materialise the whole response in the worker to
+        // decide it was too big to hold — the exact OOM this limit exists to stop.
+        const declared = Number(respHeaders['content-length']);
+        if (Number.isFinite(declared) && declared > EXECUTE_LIMITS.MAX_SINK_BODY_BYTES) {
+          throw overSink(declared, 'content-length');
+        }
+
+        // A chunked response declares no length, and Workday's document endpoint is
+        // one — so this read is still unbounded for that case. Playwright's
+        // APIResponse exposes no streaming accessor, so there is nothing to check
+        // against mid-read; the check below is a correctness backstop, not a memory
+        // one. put_download is the path with no such exposure: it streams to disk.
         const buf = await resp.body();
         if (buf.length > EXECUTE_LIMITS.MAX_SINK_BODY_BYTES) {
           // Fail rather than truncate: a short object in the store is a file
           // nobody discovers is broken until they try to open it.
-          throw new ExecuteError(
-            413,
-            `Response is ${buf.length} bytes, over the ${EXECUTE_LIMITS.MAX_SINK_BODY_BYTES}-byte ` +
-              'sink limit. Drive the download through /execute/browser (download_url then ' +
-              'put_download), which streams from disk and has no such ceiling.',
-          );
+          throw overSink(buf.length, 'actual');
         }
 
         const uploaded = await uploadToPresignedUrl(

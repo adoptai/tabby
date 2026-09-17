@@ -1,6 +1,11 @@
 import { createHash } from 'crypto';
+import { lookup as dnsLookupCb } from 'dns';
+import { promisify } from 'util';
+import { isIP } from 'net';
 import { Readable } from 'stream';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
+
+const dnsLookup = promisify(dnsLookupCb);
 
 /**
  * PUT bytes to a caller-minted presigned URL.
@@ -22,8 +27,46 @@ export interface PresignedUploadResult {
   upload_status: number;
 }
 
-/** Reject a URL we should not be PUTting to before any bytes are read. */
-export function validateUploadUrl(uploadUrl: unknown, cmd: string): string {
+/**
+ * Is this address one the worker must never be aimed at?
+ *
+ * Mirrors the platform's own via:tabby target guard. Cloud metadata lives on a
+ * link-local address, and internal services on private ranges — both are
+ * reachable from the pod, and `upload_url` is caller-supplied.
+ */
+function isBlockedAddress(ip: string): boolean {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (v4) {
+    const [a, b] = v4.slice(1).map(Number);
+    return (
+      a === 0 || a === 10 || a === 127 ||
+      (a === 169 && b === 254) ||            // link-local, incl. 169.254.169.254 metadata
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||  // CGNAT
+      a >= 224                               // multicast + reserved
+    );
+  }
+  const v6 = ip.toLowerCase().split('%')[0];
+  if (v6 === '::' || v6 === '::1') return true;
+  if (/^f[cd]/.test(v6)) return true;        // unique-local
+  if (/^fe[89ab]/.test(v6)) return true;     // link-local
+  // IPv4-mapped (::ffff:a.b.c.d) — unwrap and re-check rather than trusting the prefix.
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
+  return mapped ? isBlockedAddress(mapped[1]) : false;
+}
+
+/**
+ * Reject a URL we should not be PUTting to before any bytes are read.
+ *
+ * The PUT goes out through Node's fetch rather than the BrowserContext's request
+ * API, because only the former can stream a body — `put_download` would have to
+ * buffer a whole export to use the latter, which is the thing it exists to
+ * avoid. That means it does NOT inherit the browser's proxy/egress allowlist, so
+ * the host has to be checked here: every resolved address is tested, not just a
+ * literal, so a name that resolves inward is refused too.
+ */
+export async function validateUploadUrl(uploadUrl: unknown, cmd: string): Promise<string> {
   if (typeof uploadUrl !== 'string' || !uploadUrl) {
     throw new Error(`${cmd}: "upload_url" is required (a presigned PUT URL)`);
   }
@@ -35,6 +78,29 @@ export function validateUploadUrl(uploadUrl: unknown, cmd: string): string {
   }
   if (!EXECUTE_LIMITS.ALLOWED_SCHEMES.includes(parsed.protocol)) {
     throw new Error(`${cmd}: upload_url scheme "${parsed.protocol}" not allowed. Use http: or https:`);
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (!host) {
+    throw new Error(`${cmd}: upload_url has no host`);
+  }
+
+  const candidates = new Set<string>([host]);
+  try {
+    for (const { address } of await dnsLookup(host, { all: true })) {
+      candidates.add(address);
+    }
+  } catch {
+    // A name we cannot resolve is left to the upload itself to fail. Failing closed
+    // here would break a store whose DNS differs from the worker's resolver, and the
+    // literal-address check above still applies.
+  }
+  for (const candidate of candidates) {
+    if (isIP(candidate) && isBlockedAddress(candidate)) {
+      throw new Error(
+        `${cmd}: upload_url host "${host}" resolves to blocked address ${candidate} ` +
+          '(private/loopback/link-local/reserved)',
+      );
+    }
   }
   return uploadUrl;
 }
@@ -71,9 +137,13 @@ export async function uploadToPresignedUrl(
     resp = await fetch(uploadUrl, {
       method: 'PUT',
       headers: {
+        // Caller headers first so the computed ones win. A caller-supplied
+        // Content-Length that disagrees with the body is how a short object gets
+        // stored under a full-looking size, and Content-Type is what the store
+        // hands back to whoever downloads it.
+        ...(extraHeaders || {}),
         'Content-Type': contentType || 'application/octet-stream',
         'Content-Length': String(sizeBytes),
-        ...(extraHeaders || {}),
       },
       body,
       // Node streams a request body only when told the body may still be
@@ -88,11 +158,17 @@ export async function uploadToPresignedUrl(
   }
 
   if (!resp.ok) {
-    // Surface the store's own words. The usual cause is an expired or mis-signed
-    // URL, and a caller that can read that can mint a new one and retry.
+    // The status is what a caller acts on (mint a fresh URL and retry). The body is
+    // NOT returned: echoing an arbitrary host's response back to the caller turns
+    // this into a read oracle for anything the pod can reach. Logged instead, so it
+    // is still there for whoever is debugging a mis-signed URL.
     const detail = await resp.text().catch(() => '');
+    if (detail) {
+      console.error(`${cmd}: upload rejected (${resp.status}): ${detail.slice(0, 500)}`);
+    }
     throw new Error(
-      `${cmd}: object store rejected the upload with ${resp.status}${detail ? ` — ${detail.slice(0, 200)}` : ''}`,
+      `${cmd}: object store rejected the upload with ${resp.status} ` +
+        '(see worker logs for the store\'s response)',
     );
   }
 
