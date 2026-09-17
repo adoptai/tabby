@@ -153,10 +153,12 @@ export class ExecuteService {
 
     const workerUrl = this.buildWorkerUrl(session.pod_name, '/execute/fetch');
 
-    // Forward to worker
+    // Forward to worker. A sink request is a bulk transfer, not an API call, so
+    // it gets the longer ceiling — the ordinary 60s would abort a large export on
+    // a slow link and report only a timeout.
     const timeoutMs = Math.min(
       request.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS,
-      EXECUTE_LIMITS.MAX_TIMEOUT_MS,
+      request.upload_url ? EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS : EXECUTE_LIMITS.MAX_TIMEOUT_MS,
     );
 
     const abortController = new AbortController();
@@ -175,6 +177,13 @@ export class ExecuteService {
           headers: outgoingHeaders,
           body: request.body,
           timeout_ms: timeoutMs,
+          // The payload is built field by field rather than spread, so anything
+          // omitted here is dropped silently: the caller sets upload_url, the
+          // worker never sees it, and the response comes back inline and capped
+          // with nothing anywhere saying the sink was ignored.
+          ...(request.upload_url ? { upload_url: request.upload_url } : {}),
+          ...(request.upload_headers ? { upload_headers: request.upload_headers } : {}),
+          ...(request.upload_always ? { upload_always: request.upload_always } : {}),
         } satisfies ExecuteFetchRequest),
         signal: abortController.signal,
       });
@@ -470,6 +479,22 @@ export class ExecuteService {
       throw new BadRequestException(
         `Body too large (max ${EXECUTE_LIMITS.MAX_BODY_SIZE_BYTES} bytes)`,
       );
+    }
+
+    // Reject a malformed sink URL here rather than after a large download has
+    // already been pulled through the worker for nowhere to put it.
+    if (request.upload_url !== undefined) {
+      let sink: URL;
+      try {
+        sink = new URL(request.upload_url);
+      } catch {
+        throw new BadRequestException(`Invalid upload_url: ${request.upload_url}`);
+      }
+      if (!EXECUTE_LIMITS.ALLOWED_SCHEMES.includes(sink.protocol)) {
+        throw new BadRequestException(
+          `upload_url scheme "${sink.protocol}" not allowed. Use http: or https:`,
+        );
+      }
     }
   }
 

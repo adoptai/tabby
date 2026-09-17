@@ -52,7 +52,8 @@ export function registerExecuteHandler(app: Express, page: Page): void {
 
       const timeoutMs = Math.min(
         Math.max(body.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS, 1000),
-        EXECUTE_LIMITS.MAX_TIMEOUT_MS,
+        // A sink request is a bulk transfer, not an API call (see MAX_SINK_TIMEOUT_MS).
+        body.upload_url ? EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS : EXECUTE_LIMITS.MAX_TIMEOUT_MS,
       );
 
       const fetchUrl = body.url;

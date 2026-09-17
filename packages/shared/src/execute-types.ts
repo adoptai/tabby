@@ -67,6 +67,16 @@ export const EXECUTE_LIMITS = {
    */
   MAX_SINK_BODY_BYTES: 268_435_456, // 256MB
 
+  /**
+   * Timeout ceiling for a request that streams to `upload_url`.
+   *
+   * MAX_TIMEOUT_MS sizes an API call, and 60s is generous for one. A sink
+   * request is a bulk transfer instead: a 200MB export needs ~27Mbps sustained
+   * to finish inside a minute, so the ordinary ceiling would abort large
+   * downloads on slow links while reporting only a timeout.
+   */
+  MAX_SINK_TIMEOUT_MS: 300_000, // 5 minutes
+
   // --- HAR capture budgets -------------------------------------------------
   // Separate from the /execute/fetch limit above, which caps ONE response
   // returned to a caller. HAR capture holds every entry of a whole session in

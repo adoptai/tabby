@@ -261,3 +261,79 @@ describe('ExecuteService.executeFetch — attach_captured_credentials', () => {
     })).rejects.toThrow(/Worker unreachable: fetch failed$/);
   });
 });
+
+describe('ExecuteService.executeFetch — upload_url sink', () => {
+  /** The whole forwarded payload, not just its headers. */
+  function forwardedBody(fetchMock: jest.Mock): any {
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/execute/fetch'));
+    return JSON.parse(call![1].body);
+  }
+
+  it('forwards the sink fields to the worker', async () => {
+    // The payload is assembled field by field, so a field not named here is
+    // dropped in silence: the caller asks for a sink, the worker never hears
+    // about it, and the response comes back inline and capped with nothing
+    // anywhere reporting that the request was downgraded.
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await service.executeFetch({
+      ...baseParams,
+      request: {
+        url: 'https://sandbox.qbo.intuit.com/report.xlsx',
+        upload_url: 'https://s3.test/bucket/key?sig=1',
+        upload_headers: { 'x-amz-acl': 'private' },
+        upload_always: true,
+      },
+    } as any);
+    const sent = forwardedBody(fetchMock);
+    expect(sent.upload_url).toBe('https://s3.test/bucket/key?sig=1');
+    expect(sent.upload_headers).toEqual({ 'x-amz-acl': 'private' });
+    expect(sent.upload_always).toBe(true);
+  });
+
+  it('gives a sink request the bulk-transfer timeout, not the API-call one', async () => {
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await service.executeFetch({
+      ...baseParams,
+      request: {
+        url: 'https://sandbox.qbo.intuit.com/big.xlsx',
+        upload_url: 'https://s3.test/k',
+        timeout_ms: 240_000,
+      },
+    } as any);
+    // 240s survives; the ordinary path would have clamped it to 60s and aborted
+    // a large export mid-transfer, reporting only a timeout.
+    expect(forwardedBody(fetchMock).timeout_ms).toBe(240_000);
+  });
+
+  it('still clamps an ordinary request to the API-call ceiling', async () => {
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await service.executeFetch({
+      ...baseParams,
+      request: { url: 'https://sandbox.qbo.intuit.com/api', timeout_ms: 240_000 },
+    } as any);
+    expect(forwardedBody(fetchMock).timeout_ms).toBe(60_000);
+  });
+
+  it('omits the sink fields entirely when none was asked for', async () => {
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await service.executeFetch({
+      ...baseParams,
+      request: { url: 'https://sandbox.qbo.intuit.com/api' },
+    } as any);
+    expect(forwardedBody(fetchMock)).not.toHaveProperty('upload_url');
+  });
+
+  it('rejects a malformed upload_url before any download is pulled', async () => {
+    const { service } = makeService();
+    const fetchMock = mockWorkerFetch();
+    await expect(service.executeFetch({
+      ...baseParams,
+      request: { url: 'https://sandbox.qbo.intuit.com/doc', upload_url: 'file:///etc/passwd' },
+    } as any)).rejects.toThrow(/not allowed/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
