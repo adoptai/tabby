@@ -323,6 +323,7 @@ jobs:
       NATS_MEM_REQUEST: ${{ secrets.NATS_MEM_REQUEST || '256Mi' }}
       NATS_MEM_LIMIT: ${{ secrets.NATS_MEM_LIMIT || '512Mi' }}
       NATS_JS_MAX_MEMORY: ${{ secrets.NATS_JS_MAX_MEMORY || '256Mi' }}
+      MINIO_IMAGE_REPOSITORY: ${{ secrets.MINIO_IMAGE_REPOSITORY || 'minio/minio' }}
       MINIO_CPU_REQUEST: ${{ secrets.MINIO_CPU_REQUEST || '250m' }}
       MINIO_CPU_LIMIT: ${{ secrets.MINIO_CPU_LIMIT || '500m' }}
       MINIO_MEM_REQUEST: ${{ secrets.MINIO_MEM_REQUEST || '512Mi' }}

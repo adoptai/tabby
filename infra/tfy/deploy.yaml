@@ -216,6 +216,10 @@ values:
 
   minio:
     enabled: ${MINIO_ENABLED}
+    image:
+      repository: ${MINIO_IMAGE_REPOSITORY}
+      tag: "RELEASE.2025-03-12T18-04-18Z"
+      pullPolicy: IfNotPresent
     persistence:
       size: 50Gi
     resources:
