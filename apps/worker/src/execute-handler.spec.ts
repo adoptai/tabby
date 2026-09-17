@@ -1,4 +1,128 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
+import { isTextualContentType } from './execute-handler';
+
+const HANDLER_SRC = fs.readFileSync(path.join(__dirname, 'execute-handler.ts'), 'utf-8');
+
+// Everything between `page.evaluate(` and the closing of its callback runs in the
+// browser realm after Playwright serializes it — module-scope identifiers are not
+// in scope there.
+const CALLBACK_START = HANDLER_SRC.indexOf('await page.evaluate(');
+const CALLBACK_END = HANDLER_SRC.indexOf(').catch(async (err: Error) => {', CALLBACK_START);
+// Fail loudly rather than silently slicing garbage if either marker ever moves
+// (a reformat, a rename): a -1 index would otherwise degrade the guards below
+// into assertions about the wrong span of the file.
+if (CALLBACK_START < 0 || CALLBACK_END < 0) {
+  throw new Error(
+    `execute-handler.spec: could not locate the page.evaluate callback `
+    + `(start=${CALLBACK_START}, end=${CALLBACK_END}) — update these markers.`,
+  );
+}
+
+const PAGE_CALLBACK_SRC = HANDLER_SRC.slice(CALLBACK_START, CALLBACK_END);
+
+describe('page.evaluate callback isolation', () => {
+  it('locates the page.evaluate callback', () => {
+    expect(PAGE_CALLBACK_SRC.length).toBeGreaterThan(200);
+    expect(PAGE_CALLBACK_SRC).toContain('const resp = await fetch(url, init)');
+  });
+
+  // Regression guard: calling the Node-side helper from inside the callback throws
+  // ReferenceError in the browser, and the catch silently falls back to
+  // fetchViaContext() — which skips the page's JS interceptors this path exists for.
+  it('never calls the module-scope isTextualContentType from the browser realm', () => {
+    // Comments may legitimately name it; only executable code matters.
+    const code = PAGE_CALLBACK_SRC
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toMatch(/\bisTextualContentType\s*\(/);
+  });
+});
+
+describe('in-page predicate stays in lockstep with the exported one', () => {
+  const match = PAGE_CALLBACK_SRC.match(
+    /const isTextualInPage = \(ct: string\): boolean => \{([\s\S]*?)\n\s*\};/,
+  );
+
+  it('extracts the in-page copy', () => {
+    expect(match).not.toBeNull();
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const inPage = new Function('ct', match ? match[1] : 'return null;') as (c: string) => boolean;
+
+  it.each([
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/pdf', 'application/pdf; filename="a.xml"', 'application/zip', 'image/png',
+    'application/vnd.wap.wbxml', 'application/octet-stream; name="export.json"',
+    'text/xml', 'application/xml', 'application/xml-dtd', 'application/soap+xml',
+    'image/svg+xml', 'application/json', 'application/problem+json', 'text/html',
+    'application/x-www-form-urlencoded', 'APPLICATION/XML;charset=UTF-8', '',
+  ])('agrees on %s', (contentType) => {
+    expect(inPage(contentType)).toBe(isTextualContentType(contentType));
+  });
+});
+
+describe('isTextualContentType', () => {
+  describe('binary payloads must not be decoded as text', () => {
+    // These are ZIP archives whose media type happens to contain "xml".
+    it.each([
+      ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+      ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+      ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ])('treats %s as binary', (_label, contentType) => {
+      expect(isTextualContentType(contentType)).toBe(false);
+    });
+
+    it('treats xlsx as binary even when the server appends a charset', () => {
+      // Workday sends exactly this.
+      expect(isTextualContentType(
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8',
+      )).toBe(false);
+    });
+
+    it.each([
+      ['application/pdf'],
+      ['application/zip'],
+      ['application/octet-stream'],
+      ['image/png'],
+    ])('treats %s as binary', (contentType) => {
+      expect(isTextualContentType(contentType)).toBe(false);
+    });
+  });
+
+  describe('XML media types stay textual', () => {
+    it.each([
+      ['text/xml'],
+      ['application/xml'],
+      ['application/xml-dtd'],
+      ['application/xml-external-parsed-entity'],
+      ['text/xml;charset=utf-8'],
+      ['APPLICATION/XML'],
+      ['application/soap+xml'],
+      ['application/atom+xml'],
+      ['image/svg+xml'],
+    ])('treats %s as textual', (contentType) => {
+      expect(isTextualContentType(contentType)).toBe(true);
+    });
+  });
+
+  describe('other textual types are unchanged', () => {
+    it.each([
+      [''],
+      ['text/html'],
+      ['text/plain;charset=iso-8859-1'],
+      ['application/json'],
+      ['application/problem+json'],
+      ['application/javascript'],
+      ['application/x-www-form-urlencoded'],
+    ])('treats %s as textual', (contentType) => {
+      expect(isTextualContentType(contentType)).toBe(true);
+    });
+  });
+});
 
 describe('execute-handler validation', () => {
   describe('URL validation', () => {
