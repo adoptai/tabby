@@ -6,6 +6,7 @@ import {
   type ExecuteFetchResponse,
 } from '@browser-hitl/shared';
 import { beginAgentCommand, endAgentCommand } from './agent-activity';
+import { uploadToPresignedUrl, validateUploadUrl } from './presigned-upload';
 
 export function registerExecuteHandler(app: Express, page: Page): void {
   app.post('/execute/fetch', async (req: Request, res: Response) => {
@@ -57,6 +58,20 @@ export function registerExecuteHandler(app: Express, page: Page): void {
       const fetchUrl = body.url;
       const fetchBody = body.body ?? null;
       const maxResponseBytes = EXECUTE_LIMITS.MAX_RESPONSE_BODY_BYTES;
+
+      // Validate the sink URL before a single byte is fetched, so a typo costs
+      // nothing and never surfaces as a mysterious post-download failure. A bad
+      // URL is the caller's mistake, so it must come back as a 400 saying what
+      // is wrong — the generic handler below would report it as an opaque 500.
+      let uploadUrl: string | null = null;
+      if (body.upload_url) {
+        try {
+          uploadUrl = validateUploadUrl(body.upload_url, '/execute/fetch');
+        } catch (err) {
+          res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+      }
 
       // An in-page fetch() is bound by the page's origin and the target's CORS
       // policy. Multi-origin apps therefore cannot be driven from a single page:
@@ -137,6 +152,107 @@ export function registerExecuteHandler(app: Express, page: Page): void {
           truncated: wasTruncated,
         };
       };
+
+      /**
+       * Fetch, then PUT the bytes to the caller's presigned URL instead of
+       * inlining them.
+       *
+       * Always goes off-page: an in-page fetch could not PUT to an object store
+       * anyway (no CORS headers on a presigned URL), and the APIRequestContext
+       * shares the same cookie jar, so the session is identical.
+       */
+      const fetchToSink = async (sinkUrl: string): Promise<ExecuteFetchResponse> => {
+        const resp = await context.request.fetch(fetchUrl, {
+          method,
+          headers,
+          ...(fetchBody !== null && method !== 'GET' && method !== 'HEAD'
+            ? { data: fetchBody }
+            : {}),
+          timeout: timeoutMs,
+          maxRedirects: 10,
+          failOnStatusCode: false,
+        });
+        const respHeaders = resp.headers();
+        const status = resp.status();
+        const contentType = (respHeaders['content-type'] || '').split(';')[0].trim();
+        const disposition = respHeaders['content-disposition'] || '';
+        const isAttachment = /(^|;|\s)attachment/i.test(disposition);
+        const filename = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
+
+        /** Return the body inline (bounded) and say why nothing was stored. */
+        const skip = async (reason: string): Promise<ExecuteFetchResponse> => {
+          const buf = await resp.body();
+          const wasTruncated = buf.length > maxResponseBytes;
+          const shown = wasTruncated ? buf.subarray(0, maxResponseBytes) : buf;
+          return {
+            status,
+            headers: respHeaders,
+            body: shown.toString('utf-8'),
+            encoding: 'utf-8',
+            truncated: wasTruncated,
+            uploaded: { uploaded: false, skipped_reason: reason, content_type: contentType },
+          };
+        };
+
+        // Never store a failed request's body as though it were the file.
+        if (status < 200 || status >= 300) {
+          return skip(`upstream returned ${status}; nothing was uploaded`);
+        }
+        // The auth-wall case, and the reason this is not opt-out by default: an
+        // expired portal session answers a document URL with 200 and an HTML
+        // login page. Uploading that yields a download URL to a file that is not
+        // the report and does not announce itself as anything else.
+        if (!isAttachment && !body.upload_always) {
+          return skip(
+            `response is not an attachment (content-type ${contentType || 'unknown'}, no ` +
+              'content-disposition) — it is more likely an auth wall or an error page than ' +
+              'the file. Pass upload_always:true to store it anyway.',
+          );
+        }
+
+        const buf = await resp.body();
+        if (buf.length > EXECUTE_LIMITS.MAX_SINK_BODY_BYTES) {
+          // Fail rather than truncate: a short object in the store is a file
+          // nobody discovers is broken until they try to open it.
+          throw new ExecuteError(
+            413,
+            `Response is ${buf.length} bytes, over the ${EXECUTE_LIMITS.MAX_SINK_BODY_BYTES}-byte ` +
+              'sink limit. Drive the download through /execute/browser (download_url then ' +
+              'put_download), which streams from disk and has no such ceiling.',
+          );
+        }
+
+        const uploaded = await uploadToPresignedUrl(
+          sinkUrl,
+          buf,
+          buf.length,
+          contentType,
+          '/execute/fetch',
+          body.upload_headers,
+        );
+        return {
+          status,
+          headers: respHeaders,
+          // The bytes are in the object store; the body carries the receipt so a
+          // caller that only reads `body` still gets something meaningful.
+          body: JSON.stringify({ uploaded: true, ...uploaded, content_type: contentType, filename }),
+          encoding: 'utf-8',
+          truncated: false,
+          uploaded: { uploaded: true, ...uploaded, content_type: contentType, filename },
+        };
+      };
+
+      if (uploadUrl) {
+        beginAgentCommand(true);
+        const response = await fetchToSink(uploadUrl)
+          .catch((err: Error) => {
+            if (err instanceof ExecuteError) throw err;
+            throw new ExecuteError(502, `Fetch-to-sink failed: ${err.message}`);
+          })
+          .finally(() => endAgentCommand(true));
+        res.json(response);
+        return;
+      }
 
       // A fetch is a real request to the origin, so it both makes the agent
       // "busy" and resets the portal's idle timer — the keepalive nudge is

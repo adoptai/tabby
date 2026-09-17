@@ -4,8 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createReadStream } from 'fs';
-import { createHash } from 'crypto';
-import { Readable } from 'stream';
+import { uploadToPresignedUrl, validateUploadUrl } from './presigned-upload';
 
 /**
  * Server-side download capture via Playwright `download` events.
@@ -309,58 +308,24 @@ export async function putDownload(
   sha256: string;
   upload_status: number;
 }> {
-  const uploadUrl = opts.upload_url;
-  if (typeof uploadUrl !== 'string' || !uploadUrl) {
-    throw new Error('put_download: "upload_url" is required (a presigned PUT URL)');
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(uploadUrl);
-  } catch {
-    throw new Error(`put_download: invalid upload_url: ${uploadUrl}`);
-  }
-  if (!EXECUTE_LIMITS.ALLOWED_SCHEMES.includes(parsed.protocol)) {
-    throw new Error(`put_download: upload_url scheme "${parsed.protocol}" not allowed. Use http: or https:`);
-  }
+  const uploadUrl = validateUploadUrl(opts.upload_url, 'put_download');
 
   const rec = resolveDownload(page, 'put_download', opts.id);
   // A presigned PUT is signed for a specific Content-Length, so the size has to
   // be read from disk now rather than inferred from the download event.
   const stat = await fs.stat(rec.path);
 
-  const hash = createHash('sha256');
-  const stream = createReadStream(rec.path);
-  stream.on('data', (chunk) => hash.update(chunk));
-
-  let resp: Response;
-  try {
-    resp = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': rec.mime_type,
-        'Content-Length': String(stat.size),
-        ...(opts.headers || {}),
-      },
-      body: Readable.toWeb(stream) as ReadableStream,
-      // Node streams a request body only when told the body may still be
-      // arriving after the headers; without this fetch rejects outright.
-      duplex: 'half',
-    } as RequestInit & { duplex: 'half' });
-  } catch (err) {
-    stream.destroy();
-    throw new Error(
-      `put_download: upload of "${rec.suggested_filename}" (${stat.size} bytes) failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  if (!resp.ok) {
-    // Keep the file: the usual cause is an expired or mis-signed URL, and the
-    // caller can retry this same id once it mints a new one.
-    const detail = await resp.text().catch(() => '');
-    throw new Error(
-      `put_download: object store rejected the upload with ${resp.status}${detail ? ` — ${detail.slice(0, 200)}` : ''}`,
-    );
-  }
+  // On any failure below the local copy is deliberately left in place: the usual
+  // cause is an expired presigned URL, and a caller that mints a fresh one can
+  // retry the same id rather than re-driving the whole export.
+  const uploaded = await uploadToPresignedUrl(
+    uploadUrl,
+    createReadStream(rec.path),
+    stat.size,
+    rec.mime_type,
+    'put_download',
+    opts.headers,
+  );
 
   const uploadedPath = rec.path;
   const stored: DownloadRecord = rec;
@@ -372,8 +337,6 @@ export async function putDownload(
     id: rec.id,
     filename: rec.suggested_filename,
     mime_type: rec.mime_type,
-    size_bytes: stat.size,
-    sha256: hash.digest('hex'),
-    upload_status: resp.status,
+    ...uploaded,
   };
 }
