@@ -13,6 +13,18 @@ import { pageSummaryScript } from './page-summary.injected';
 
 export { cleanupHarListeners };
 
+/**
+ * How long `download_url` keeps waiting after the page has RENDERED.
+ *
+ * Chromium aborts the navigation when a response goes to the download manager, so
+ * a navigation that completed normally means the response was not an attachment
+ * and no download event is coming from it. Only a script-started download can
+ * still arrive, and that happens on page-load timescales — not on the command
+ * timeout, which is sized for the download itself and leaves the caller watching
+ * an apparent hang.
+ */
+const DOWNLOAD_AFTER_RENDER_GRACE_MS = 5_000;
+
 export interface BrowserHandlerOptions {
   /** Refuse `navigate` — see BrowserPolicy.block_navigate. */
   blockNavigate?: boolean;
@@ -545,17 +557,42 @@ export async function dispatchCommand(
         throw new Error(`Scheme "${parsed.protocol}" not allowed`);
       }
       const settled = page.waitForEvent('download', { timeout: timeoutMs }).catch(() => null);
+      let aborted = false;
       try {
         await page.goto(url, { timeout: timeoutMs });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (!message.includes('ERR_ABORTED')) throw err;
+        aborted = true;
       }
-      const download = await settled;
+      // A navigation that RENDERED is the not-an-attachment case: Chromium aborts
+      // the navigation when it hands a response to the download manager, so a page
+      // that loaded normally means no download is coming from the response itself.
+      // Waiting the full timeout for an event that cannot arrive reads as a hang.
+      // Still allow a short grace, because a page is permitted to start a download
+      // from script after it loads — that is a real pattern, just not this timeout's
+      // job to wait minutes for.
+      const grace = Math.min(timeoutMs, DOWNLOAD_AFTER_RENDER_GRACE_MS);
+      let download: Awaited<typeof settled> = null;
+      if (aborted) {
+        download = await settled;
+      } else {
+        const graceExpired = Symbol('grace');
+        const timer = new Promise<typeof graceExpired>((resolve) => {
+          setTimeout(() => resolve(graceExpired), grace).unref?.();
+        });
+        const raced = await Promise.race([settled, timer]);
+        // A download that arrives inside the grace window is a real one and is
+        // returned; only the timer losing means nothing started.
+        download = raced === graceExpired ? null : raced;
+      }
       if (!download) {
         throw new Error(
-          `download_url: no download started for ${url} within ${timeoutMs}ms. ` +
-            'The URL may have returned a page rather than an attachment, or the app ' +
+          `download_url: ${
+            aborted
+              ? `no download started for ${url} within ${timeoutMs}ms`
+              : `${url} rendered as a page instead of starting a download (waited ${grace}ms after load for a script-started one)`
+          }. The URL may have returned a page rather than an attachment, or the app ` +
             'has browser_policy.downloads disabled (check list_downloads).',
         );
       }

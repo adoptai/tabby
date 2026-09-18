@@ -180,8 +180,25 @@ export function registerExecuteHandler(app: Express, page: Page): void {
         const isAttachment = /(^|;|\s)attachment/i.test(disposition);
         const filename = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
 
+        const overSink = (n: number, source: string) => new ExecuteError(
+          413,
+          `Response is ${n} bytes (${source}), over the ${EXECUTE_LIMITS.MAX_SINK_BODY_BYTES}-byte ` +
+            'sink limit. Drive the download through /execute/browser (download_url then ' +
+            'put_download), which streams from disk and has no such ceiling.',
+        );
+
         /** Return the body inline (bounded) and say why nothing was stored. */
         const skip = async (reason: string): Promise<ExecuteFetchResponse> => {
+          // Same ordering rule as the success path: refuse on the declared length
+          // before reading. This body is a diagnostic — at most maxResponseBytes of
+          // it is ever shown — so materialising a huge error page into a pod shared
+          // with Chromium buys nothing. A chunked response still declares no length
+          // and still buffers; that residual is the APIResponse limitation noted
+          // below, not a different decision here.
+          const declared = Number(respHeaders['content-length'] || '');
+          if (Number.isFinite(declared) && declared > EXECUTE_LIMITS.MAX_SINK_BODY_BYTES) {
+            throw overSink(declared, 'declared content-length, nothing uploaded');
+          }
           const buf = await resp.body();
           const wasTruncated = buf.length > maxResponseBytes;
           const shown = wasTruncated ? buf.subarray(0, maxResponseBytes) : buf;
@@ -217,13 +234,6 @@ export function registerExecuteHandler(app: Express, page: Page): void {
               'the file. Pass upload_always:true to store it anyway.',
           );
         }
-
-        const overSink = (n: number, source: string) => new ExecuteError(
-          413,
-          `Response is ${n} bytes (${source}), over the ${EXECUTE_LIMITS.MAX_SINK_BODY_BYTES}-byte ` +
-            'sink limit. Drive the download through /execute/browser (download_url then ' +
-            'put_download), which streams from disk and has no such ceiling.',
-        );
 
         // Refuse on the DECLARED size first, before a byte is read. Checking only
         // after resp.body() would materialise the whole response in the worker to

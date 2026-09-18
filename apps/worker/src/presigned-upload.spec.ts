@@ -80,3 +80,81 @@ describe('uploadToPresignedUrl — redirects', () => {
     expect(destroy).toHaveBeenCalled();
   });
 });
+
+// Regression tests for the IPv4-mapped/transitional-encoding bypass. The guard
+// used to unwrap `::ffff:a.b.c.d` with a regex that only matched the dotted form,
+// but Node normalises `[::ffff:127.0.0.1]` to `::ffff:7f00:1` in URL.hostname, so
+// the unwrap never fired and the mapped metadata address was ALLOWED. Each of
+// these is a distinct way to write an internal IPv4 destination as IPv6.
+describe('validateUploadUrl — IPv4 addresses written as IPv6', () => {
+  beforeEach(() => lookup.mockReset());
+
+  // The exact probe vectors from review, as URL literals so the test goes through
+  // the same URL.hostname normalisation that defeated the previous check.
+  it.each([
+    ['http://[::ffff:127.0.0.1]/k', 'mapped loopback, dotted as written'],
+    ['http://[::ffff:7f00:1]/k', 'mapped loopback, hex as Node normalises it'],
+    ['http://[::ffff:a9fe:a9fe]/k', 'mapped 169.254.169.254, the metadata endpoint'],
+    ['http://[64:ff9b::a9fe:a9fe]/k', 'NAT64 well-known prefix embedding the metadata address'],
+    ['http://[2002:a9fe:a9fe::1]/k', '6to4 embedding the metadata address'],
+  ])('refuses %s (%s)', async (url) => {
+    await expect(validateUploadUrl(url, 'test')).rejects.toThrow(/is a blocked address/);
+    // Not merely refused for the wrong reason: a literal must never reach DNS.
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hostname that RESOLVES to a mapped internal address', async () => {
+    // The literal check cannot see this one; only the resolved answer reveals it.
+    resolvesTo('::ffff:a9fe:a9fe');
+    await expect(validateUploadUrl('https://store.example.com/k', 'test'))
+      .rejects.toThrow(/blocked address/);
+  });
+
+  it('still accepts a public IPv6 literal, so the rule is not "refuse all IPv6"', async () => {
+    await expect(validateUploadUrl('https://[2606:4700:4700::1111]/k', 'test'))
+      .resolves.toBe('https://[2606:4700:4700::1111]/k');
+  });
+});
+
+// The PUT must leave the pod the same way the browser's traffic does. Nothing
+// else constrains worker egress: the chart has no NetworkPolicy selecting the
+// worker component, so a PUT on Node's default dispatcher would be the one path
+// out that no host allowlist applies to.
+describe('egressDispatcher — the PUT goes through the browser egress proxy', () => {
+  const saved = process.env.EGRESS_PROXY_URL;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.EGRESS_PROXY_URL;
+    else process.env.EGRESS_PROXY_URL = saved;
+    jest.resetModules();
+  });
+
+  function freshEgressDispatcher() {
+    // The agent is cached per URL, so each case needs a fresh module registry.
+    jest.resetModules();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('./presigned-upload').egressDispatcher;
+  }
+
+  it('returns no dispatcher when no proxy is configured, so local dev goes direct', () => {
+    delete process.env.EGRESS_PROXY_URL;
+    expect(freshEgressDispatcher()()).toBeUndefined();
+  });
+
+  it('returns a dispatcher when a proxy is configured', () => {
+    process.env.EGRESS_PROXY_URL = 'http://egress-proxy:3128';
+    expect(freshEgressDispatcher()()).toBeDefined();
+  });
+
+  it('reuses one agent across calls rather than leaking a connection pool per upload', () => {
+    process.env.EGRESS_PROXY_URL = 'http://egress-proxy:3128';
+    const egress = freshEgressDispatcher();
+    expect(egress()).toBe(egress());
+  });
+
+  it('refuses an unparseable proxy URL instead of silently going direct', () => {
+    // Failing open here would put the PUT back outside the allowlist, which is the
+    // exact hole this routing closes — so it must throw, not fall back.
+    process.env.EGRESS_PROXY_URL = 'not a url';
+    expect(() => freshEgressDispatcher()()).toThrow(/not a valid URL/);
+  });
+});

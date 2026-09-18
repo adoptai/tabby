@@ -3,6 +3,8 @@ import { lookup as dnsLookupCb } from 'dns';
 import { promisify } from 'util';
 import { isIP } from 'net';
 import { Readable, Transform } from 'stream';
+import ipaddr from 'ipaddr.js';
+import { ProxyAgent, type Dispatcher } from 'undici';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
 
 const dnsLookup = promisify(dnsLookupCb);
@@ -30,30 +32,37 @@ export interface PresignedUploadResult {
 /**
  * Is this address one the worker must never be aimed at?
  *
- * Mirrors the platform's own via:tabby target guard. Cloud metadata lives on a
- * link-local address, and internal services on private ranges — both are
- * reachable from the pod, and `upload_url` is caller-supplied.
+ * Range classification is delegated to `ipaddr.js` rather than spelled out here.
+ * The hand-rolled version this replaces unwrapped IPv4-mapped IPv6 with a regex
+ * that only matched the dotted form, but Node normalises `[::ffff:127.0.0.1]`
+ * to the hex form `::ffff:7f00:1` in `URL.hostname` — so the unwrap never fired
+ * and `::ffff:a9fe:a9fe` (169.254.169.254, the metadata endpoint) was ALLOWED.
+ * On a dual-stack pod that connect reaches the IPv4 target.
+ *
+ * The rule is an allowlist, not a blocklist: anything `ipaddr.js` does not
+ * classify as ordinary public `unicast` is refused. That covers the transitional
+ * IPv6 encodings which each embed an IPv4 address and are each their own range —
+ * `ipv4Mapped`, `rfc6052` (the 64:ff9b::/96 NAT64 prefix), `rfc6145`, `6to4`,
+ * `teredo` — without needing a case for every one. A blocklist of "bad" ranges
+ * is the shape that let the first two bypasses through.
  */
-function isBlockedAddress(ip: string): boolean {
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
-  if (v4) {
-    const [a, b] = v4.slice(1).map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 ||
-      (a === 169 && b === 254) ||            // link-local, incl. 169.254.169.254 metadata
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 100 && b >= 64 && b <= 127) ||  // CGNAT
-      a >= 224                               // multicast + reserved
-    );
+export function isBlockedAddress(ip: string): boolean {
+  let addr: ipaddr.IPv4 | ipaddr.IPv6;
+  try {
+    addr = ipaddr.parse(ip);
+  } catch {
+    // Not a parseable literal. Callers only pass values isIP() accepted, so this
+    // is unreachable in practice; refusing is the safe answer if it ever is not.
+    return true;
   }
-  const v6 = ip.toLowerCase().split('%')[0];
-  if (v6 === '::' || v6 === '::1') return true;
-  if (/^f[cd]/.test(v6)) return true;        // unique-local
-  if (/^fe[89ab]/.test(v6)) return true;     // link-local
-  // IPv4-mapped (::ffff:a.b.c.d) — unwrap and re-check rather than trusting the prefix.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  return mapped ? isBlockedAddress(mapped[1]) : false;
+  // Check the embedded IPv4 too, not just the wrapper's own range: a mapped
+  // address is blocked either way, but this keeps the decision about the address
+  // traffic actually reaches.
+  if (addr.kind() === 'ipv6') {
+    const v6 = addr as ipaddr.IPv6;
+    if (v6.isIPv4MappedAddress() && (v6.toIPv4Address().range() !== 'unicast')) return true;
+  }
+  return addr.range() !== 'unicast';
 }
 
 /**
@@ -69,9 +78,15 @@ function isBlockedAddress(ip: string): boolean {
  * Accepted residual: this resolves once and the PUT resolves again when it
  * connects, so a record with a low enough TTL could answer safe here and inward
  * there (DNS rebinding). Closing it needs the connection pinned to the address
- * that was checked, which Node's fetch does not expose. The NetworkPolicy on the
- * worker pod is the boundary that does not depend on resolver timing; this is
- * defence in depth in front of it, not a replacement for it.
+ * that was checked, which Node's fetch does not expose.
+ *
+ * An earlier version of this comment named a worker NetworkPolicy as the boundary
+ * that does not depend on resolver timing. There is no such policy — the chart
+ * defines them for api, controller, postgres, redis and nats only. What actually
+ * bounds this is the egress proxy the PUT now goes out through (see
+ * egressDispatcher), which decides by hostname against the session allowlist and
+ * so is not fooled by a second resolution. This check stays in front of it as
+ * defence in depth, and as the only guard when no proxy is configured.
  */
 export async function validateUploadUrl(uploadUrl: unknown, cmd: string): Promise<string> {
   if (typeof uploadUrl !== 'string' || !uploadUrl) {
@@ -89,6 +104,19 @@ export async function validateUploadUrl(uploadUrl: unknown, cmd: string): Promis
   const host = parsed.hostname.replace(/^\[|\]$/g, '');
   if (!host) {
     throw new Error(`${cmd}: upload_url has no host`);
+  }
+
+  // An IP literal has nothing to resolve: check it and stop. Handing a literal to
+  // the resolver only invites it to answer something other than what will be
+  // connected to.
+  if (isIP(host)) {
+    if (isBlockedAddress(host)) {
+      throw new Error(
+        `${cmd}: upload_url host "${host}" is a blocked address ` +
+          '(private/loopback/link-local/reserved)',
+      );
+    }
+    return uploadUrl;
   }
 
   const candidates = new Set<string>([host]);
@@ -110,6 +138,53 @@ export async function validateUploadUrl(uploadUrl: unknown, cmd: string): Promis
     }
   }
   return uploadUrl;
+}
+
+/**
+ * The dispatcher the PUT goes out on, so it leaves the pod the same way the
+ * browser's traffic does.
+ *
+ * The worker launches Chromium behind `EGRESS_PROXY_URL` (main.ts) and that proxy
+ * enforces the per-session host allowlist. Node's global `fetch` ignores it, so a
+ * PUT issued here would be the one path out of the pod that no allowlist applies
+ * to. There is no NetworkPolicy selecting the worker component to fall back on —
+ * `charts/browser-hitl/templates/network-policies.yaml` covers api, controller,
+ * postgres, redis and nats only — so the egress proxy IS the boundary, and this
+ * routes through it rather than around it.
+ *
+ * Consequence worth knowing when a PUT fails with a proxy refusal rather than a
+ * store error: the bucket's host must be in the session's allowlist (or the
+ * default one). A presigned URL is not self-authorising as far as egress is
+ * concerned.
+ *
+ * Unset EGRESS_PROXY_URL (local dev, and any deployment not fronted by the proxy)
+ * means direct egress, exactly as before.
+ */
+let cachedProxyAgent: { url: string; agent: ProxyAgent } | undefined;
+export function egressDispatcher(): Dispatcher | undefined {
+  const egressProxyUrl = (process.env.EGRESS_PROXY_URL || '').trim();
+  if (!egressProxyUrl) return undefined;
+  if (cachedProxyAgent?.url === egressProxyUrl) return cachedProxyAgent.agent;
+  let parsed: URL;
+  try {
+    parsed = new URL(egressProxyUrl);
+  } catch {
+    // main.ts tolerates an unparseable value by handing it to Chromium as-is. Here
+    // there is no such fallback, and silently going direct would defeat the point
+    // of routing through the proxy at all.
+    throw new Error(`EGRESS_PROXY_URL is not a valid URL: ${egressProxyUrl}`);
+  }
+  // Credentials belong in the CONNECT's Proxy-Authorization header, not in the
+  // origin URL — the proxy identifies the session by it.
+  const token =
+    parsed.username || parsed.password
+      ? `Basic ${Buffer.from(
+          `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`,
+        ).toString('base64')}`
+      : undefined;
+  const agent = new ProxyAgent({ uri: `${parsed.protocol}//${parsed.host}`, token });
+  cachedProxyAgent = { url: egressProxyUrl, agent };
+  return agent;
 }
 
 /**
@@ -174,7 +249,10 @@ export async function uploadToPresignedUrl(
       // Node streams a request body only when told the body may still be
       // arriving after the headers; without this, fetch rejects a stream body.
       duplex: 'half',
-    } as RequestInit & { duplex: 'half' });
+      // Out through the browser's egress proxy when there is one, so this PUT is
+      // subject to the same host allowlist as everything else the pod sends.
+      dispatcher: egressDispatcher(),
+    } as RequestInit & { duplex: 'half'; dispatcher?: Dispatcher });
   } catch (err) {
     if (!Buffer.isBuffer(source)) source.destroy();
     throw new Error(

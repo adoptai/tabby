@@ -59,7 +59,10 @@ export const EXECUTE_LIMITS = {
    * The sink removes the base64 and JSON costs but not the buffering one:
    * Playwright's APIResponse exposes `body()` and nothing streaming, so the
    * whole response is resident in the worker before it is PUT. This bounds that
-   * against the pod's 2560Mi — which it shares with Chromium — and, unlike
+   * against the worker pod's memory limit — which it shares with Chromium, and
+   * which is deployment-set (WORKER_MEM_LIMIT, 3Gi by default, over a 2560Mi chart
+   * default), so this ceiling is deliberately well under the smallest of them
+   * rather than derived from any one — and, unlike
    * MAX_RESPONSE_BODY_BYTES, it FAILS rather than truncating, because a
    * truncated upload is a stored file that nobody discovers is broken until
    * they open it. Downloads driven through /execute/browser `put_download`

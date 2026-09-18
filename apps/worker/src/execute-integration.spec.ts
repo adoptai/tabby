@@ -506,6 +506,44 @@ describe('/execute/fetch upload_url sink', () => {
     expect(seen.url).toBeUndefined();
   });
 
+  it('refuses an oversized SKIPPED body on content-length, before reading it', async () => {
+    // The skip path returns a diagnostic, but it was reading the whole body to
+    // produce one — so a huge error page had the same unbounded-read shape the
+    // success path had already fixed. At most maxResponseBytes is ever shown, so
+    // materialising more buys nothing.
+    const body = jest.fn();
+    contextFetch.mockResolvedValue({
+      status: jest.fn().mockReturnValue(500),
+      headers: jest.fn().mockReturnValue({
+        'content-type': 'text/html',
+        'content-length': String(EXECUTE_LIMITS.MAX_SINK_BODY_BYTES + 1),
+      }),
+      body,
+    });
+    const seen = stubStore();
+
+    const res = await call({ url: 'https://x.test/doc', upload_url: 'https://s3.test/k' });
+
+    expect(res.status).toBe(413);
+    expect(body).not.toHaveBeenCalled(); // never materialised
+    expect(seen.url).toBeUndefined();
+  });
+
+  it('still returns a normally-sized skipped body', async () => {
+    // The bound must not swallow the diagnostic it exists to protect.
+    contextFetch.mockResolvedValue(upstream({
+      status: 500,
+      headers: { 'content-type': 'text/html', 'content-length': '9' },
+      body: Buffer.from('oops here'),
+    }));
+    stubStore();
+
+    const res = await call({ url: 'https://x.test/doc', upload_url: 'https://s3.test/k' });
+
+    expect(res.body.status).toBe(500);
+    expect(res.body.body).toContain('oops here');
+  });
+
   it('fails loudly over the sink limit rather than storing a short object', async () => {
     const huge = Buffer.alloc(16, 1);
     Object.defineProperty(huge, 'length', { value: EXECUTE_LIMITS.MAX_SINK_BODY_BYTES + 1 });
