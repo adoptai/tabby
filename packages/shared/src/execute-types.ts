@@ -4,6 +4,36 @@ export interface ExecuteFetchRequest {
   headers?: Record<string, string>;
   body?: string | null;
   timeout_ms?: number;
+  /**
+   * Presigned PUT URL. When set, a downloaded file is streamed to it and the
+   * response carries `uploaded` metadata instead of the bytes — the only way a
+   * body over MAX_RESPONSE_BODY_BYTES can leave the worker, since the inline
+   * route base64s it (+33%) into a JSON response that is parsed and
+   * re-serialised by the API on the way through.
+   */
+  upload_url?: string;
+  /** Extra headers for the PUT (e.g. a required x-amz-* signed header). */
+  upload_headers?: Record<string, string>;
+  /**
+   * Upload even when the response is not marked `content-disposition:
+   * attachment`. Off by default so an auth wall cannot be stored as if it were
+   * the file: a session-expired portal answers a document URL with 200 and an
+   * HTML login page, which would otherwise be uploaded and handed on as a
+   * perfectly valid-looking download.
+   */
+  upload_always?: boolean;
+}
+
+/** Outcome of an `upload_url` sink — present only when one was requested. */
+export interface ExecuteUploadResult {
+  uploaded: boolean;
+  size_bytes?: number;
+  sha256?: string;
+  upload_status?: number;
+  content_type?: string;
+  filename?: string;
+  /** Why nothing was uploaded, when `uploaded` is false. */
+  skipped_reason?: string;
 }
 
 export interface ExecuteFetchResponse {
@@ -12,6 +42,7 @@ export interface ExecuteFetchResponse {
   body: string;
   encoding?: 'utf-8' | 'base64';
   truncated?: boolean;
+  uploaded?: ExecuteUploadResult;
 }
 
 export const EXECUTE_LIMITS = {
@@ -21,6 +52,33 @@ export const EXECUTE_LIMITS = {
   DEFAULT_TIMEOUT_MS: 30_000,
   ALLOWED_SCHEMES: ['https:', 'http:'] as readonly string[],
   MAX_RESPONSE_BODY_BYTES: 5_242_880, // 5MB
+
+  /**
+   * Largest body the `upload_url` sink will accept.
+   *
+   * The sink removes the base64 and JSON costs but not the buffering one:
+   * Playwright's APIResponse exposes `body()` and nothing streaming, so the
+   * whole response is resident in the worker before it is PUT. This bounds that
+   * against the worker pod's memory limit — which it shares with Chromium, and
+   * which is deployment-set (WORKER_MEM_LIMIT, 3Gi by default, over a 2560Mi chart
+   * default), so this ceiling is deliberately well under the smallest of them
+   * rather than derived from any one — and, unlike
+   * MAX_RESPONSE_BODY_BYTES, it FAILS rather than truncating, because a
+   * truncated upload is a stored file that nobody discovers is broken until
+   * they open it. Downloads driven through /execute/browser `put_download`
+   * stream from disk and have no such ceiling.
+   */
+  MAX_SINK_BODY_BYTES: 268_435_456, // 256MB
+
+  /**
+   * Timeout ceiling for a request that streams to `upload_url`.
+   *
+   * MAX_TIMEOUT_MS sizes an API call, and 60s is generous for one. A sink
+   * request is a bulk transfer instead: a 200MB export needs ~27Mbps sustained
+   * to finish inside a minute, so the ordinary ceiling would abort large
+   * downloads on slow links while reporting only a timeout.
+   */
+  MAX_SINK_TIMEOUT_MS: 300_000, // 5 minutes
 
   // --- HAR capture budgets -------------------------------------------------
   // Separate from the /execute/fetch limit above, which caps ONE response
@@ -61,6 +119,14 @@ export const BROWSER_COMMANDS = [
   'wait_for_selector', 'scroll_page',
   'har_start', 'har_stop', 'har_status',
   'list_downloads', 'get_download',
+  // Streams a captured download to a caller-supplied presigned PUT URL instead
+  // of inlining it as base64, which is the only way a file larger than
+  // MAX_RESPONSE_BODY_BYTES can leave the worker at all.
+  'put_download',
+  // Triggers a download from a known URL. Separate from `navigate` because
+  // Chromium aborts the navigation for an attachment response, so `navigate`
+  // reports a failure for a download that in fact succeeded.
+  'download_url',
 ] as const;
 
 export type BrowserCommandName = typeof BROWSER_COMMANDS[number];
