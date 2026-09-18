@@ -29,7 +29,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: minio
-          image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
+          image: {{ include "browser-hitl.image" (dict "global" .Values.global "image" .Values.minio.image) }}
           imagePullPolicy: {{ .Values.minio.image.pullPolicy }}
           args:
             - server
