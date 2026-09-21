@@ -187,6 +187,14 @@ export function egressDispatcher(): Dispatcher | undefined {
   return agent;
 }
 
+/** Caller headers minus the two this function computes, matched case-insensitively. */
+function withoutComputedHeaders(extraHeaders?: Record<string, string>): Record<string, string> {
+  const computed = new Set(['content-type', 'content-length']);
+  return Object.fromEntries(
+    Object.entries(extraHeaders || {}).filter(([k]) => !computed.has(k.toLowerCase())),
+  );
+}
+
 /**
  * Send `source` to `uploadUrl`, hashing as the bytes go past.
  *
@@ -230,11 +238,16 @@ export async function uploadToPresignedUrl(
     resp = await fetch(uploadUrl, {
       method: 'PUT',
       headers: {
-        // Caller headers first so the computed ones win. A caller-supplied
-        // Content-Length that disagrees with the body is how a short object gets
-        // stored under a full-looking size, and Content-Type is what the store
-        // hands back to whoever downloads it.
-        ...(extraHeaders || {}),
+        // Drop the caller's own Content-Type/Content-Length before the spread,
+        // case-insensitively: object spread is case-SENSITIVE but HTTP header
+        // names are not, so a lowercase `content-type` survives alongside the
+        // computed `Content-Type` and Headers APPENDS the pair rather than
+        // replacing it — the store would receive "text/plain, application/pdf"
+        // and a lowercase `content-length` makes fetch throw outright. A
+        // caller-supplied Content-Length that disagrees with the body is how a
+        // short object gets stored under a full-looking size, and Content-Type
+        // is what the store hands back to whoever downloads it.
+        ...withoutComputedHeaders(extraHeaders),
         'Content-Type': contentType || 'application/octet-stream',
         'Content-Length': String(sizeBytes),
       },
@@ -255,8 +268,12 @@ export async function uploadToPresignedUrl(
     } as RequestInit & { duplex: 'half'; dispatcher?: Dispatcher });
   } catch (err) {
     if (!Buffer.isBuffer(source)) source.destroy();
+    // undici reports the real reason on `cause` and leaves `message` as the
+    // useless "fetch failed"; without it a rejected header or a refused proxy
+    // hop is indistinguishable from the store being down.
+    const cause = err instanceof Error && err.cause ? ` (${String((err.cause as Error).message ?? err.cause)})` : '';
     throw new Error(
-      `${cmd}: upload of ${sizeBytes} bytes failed: ${err instanceof Error ? err.message : String(err)}`,
+      `${cmd}: upload of ${sizeBytes} bytes failed: ${err instanceof Error ? err.message : String(err)}${cause}`,
     );
   }
 

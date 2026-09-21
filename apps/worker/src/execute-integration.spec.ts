@@ -593,10 +593,15 @@ describe('/execute/fetch sink — review follow-ups', () => {
   const realFetch = global.fetch;
 
   function stubStore(status = 200) {
-    const seen: { url?: string; headers?: any; redirect?: string } = {};
+    const seen: { url?: string; headers?: any; sent?: Headers; redirect?: string } = {};
     global.fetch = (async (url: any, init: any) => {
       seen.url = String(url);
       seen.headers = init.headers;
+      // What the store actually receives. Asserting on init.headers only proves
+      // the object literal overwrote a same-cased key; `new Headers` is the step
+      // fetch itself performs, and it APPENDS case-variant duplicates rather
+      // than replacing them.
+      seen.sent = new Headers(init.headers);
       seen.redirect = init.redirect;
       if (init.body && typeof init.body[Symbol.asyncIterator] === 'function') {
         for await (const _c of init.body) { /* drain */ }
@@ -710,11 +715,13 @@ describe('/execute/fetch sink — review follow-ups', () => {
     await call({
       url: 'https://x.test/doc',
       upload_url: 'https://s3.test/k',
-      upload_headers: { 'Content-Length': '1', 'Content-Type': 'text/plain', 'x-amz-acl': 'private' },
+      // Lowercase on purpose: header names are case-insensitive, so this is the
+      // spelling that slips past a case-sensitive object spread.
+      upload_headers: { 'content-length': '1', 'content-type': 'text/plain', 'x-amz-acl': 'private' },
     });
-    expect(seen.headers['Content-Length']).toBe('25');       // real size wins
-    expect(seen.headers['Content-Type']).toBe('application/pdf');
-    expect(seen.headers['x-amz-acl']).toBe('private');       // unrelated ones still pass
+    expect(seen.sent!.get('content-length')).toBe('25');     // real size wins
+    expect(seen.sent!.get('content-type')).toBe('application/pdf');
+    expect(seen.sent!.get('x-amz-acl')).toBe('private');     // unrelated ones still pass
   });
 
   it('base64s a skipped binary instead of mangling it with a UTF-8 decode', async () => {
