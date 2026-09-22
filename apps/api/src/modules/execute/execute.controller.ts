@@ -8,7 +8,7 @@ import { ExecuteService } from './execute.service';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
 import { AuditService } from '../audit/audit.service';
 
-class ExecuteFetchDto {
+export class ExecuteFetchDto {
   @ApiProperty({ example: 'hubspot-standard' })
   @IsString()
   profile_id: string;
@@ -53,6 +53,30 @@ class ExecuteFetchDto {
   @IsOptional()
   @IsBoolean()
   refresh_credentials?: boolean;
+
+  @ApiProperty({
+    required: false,
+    description: 'Presigned PUT URL. When set, the downloaded file is streamed straight to it and the response carries `uploaded` metadata instead of the bytes — the only way a body over MAX_RESPONSE_BODY_BYTES can leave the worker, since the inline route base64s it into the JSON response. The worker and service already honour this; without it here the ValidationPipe (forbidNonWhitelisted) would reject the field.',
+  })
+  @IsOptional()
+  @IsString()
+  upload_url?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Extra headers for the presigned PUT (e.g. a required signed x-amz-* header).',
+  })
+  @IsOptional()
+  @IsObject()
+  upload_headers?: Record<string, string>;
+
+  @ApiProperty({
+    required: false,
+    description: 'Upload even when the response is not `content-disposition: attachment`. Off by default so a session-expired portal answering a document URL with an HTML login page is not stored as if it were the file.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  upload_always?: boolean;
 }
 
 class ExecuteBrowserDto {
@@ -129,6 +153,9 @@ export class ExecuteController {
         headers: dto.headers,
         body: dto.body,
         timeout_ms: dto.timeout_ms,
+        upload_url: dto.upload_url,
+        upload_headers: dto.upload_headers,
+        upload_always: dto.upload_always,
       },
       role: req.user.role,
       allowedProfiles: req.user.allowed_profiles,
