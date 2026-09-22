@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';
+import { EXECUTE_LIMITS } from '@browser-hitl/shared';
 import { ExecuteFetchDto } from './execute.controller';
 
 /**
@@ -49,5 +50,43 @@ describe('ExecuteFetchDto — presigned upload fields', () => {
     await expect(
       pipe.transform({ profile_id: 'p', url: 'https://x.test', upload_url: 42 }, meta),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // The executor sends the sink budget (MAX_SINK_TIMEOUT_MS) on a fetch-to-sink call.
+  // With the DTO capped at MAX_TIMEOUT_MS that body was a 400 before the handler ran,
+  // so the sink was unreachable end to end even though the service and worker both
+  // honour the larger ceiling.
+  it('accepts a sink payload that asks for the sink timeout ceiling', async () => {
+    const out = await pipe.transform(
+      {
+        profile_id: 'p',
+        url: 'https://x.test/doc',
+        upload_url: 'https://s3.example/key?sig=1',
+        timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS,
+      },
+      meta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
+  });
+
+  it('still rejects a timeout above the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS + 1 },
+        meta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // A plain fetch may now pass the pipe with a sink-sized timeout; the service
+  // clamps it back to MAX_TIMEOUT_MS (execute.service.spec covers that), so the
+  // DTO widening changes nothing for an ordinary API call.
+  it('passes a plain fetch with a large timeout through to the service clamp', async () => {
+    const out = await pipe.transform(
+      { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS },
+      meta,
+    );
+    expect(out.upload_url).toBeUndefined();
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
   });
 });

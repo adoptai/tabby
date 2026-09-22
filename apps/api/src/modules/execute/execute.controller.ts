@@ -35,7 +35,11 @@ export class ExecuteFetchDto {
   @IsOptional()
   @IsInt()
   @Min(1000)
-  @Max(EXECUTE_LIMITS.MAX_TIMEOUT_MS)
+  // The sink ceiling, not the API one: a fetch-to-sink caller asks for up to
+  // MAX_SINK_TIMEOUT_MS and the service clamps a plain fetch back to MAX_TIMEOUT_MS.
+  // Capping here at the smaller value rejected every sink request with a 400
+  // before the handler ran.
+  @Max(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS)
   timeout_ms?: number;
 
   @ApiProperty({
