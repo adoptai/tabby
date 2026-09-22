@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
-import { ExecuteFetchDto } from './execute.controller';
+import { ExecuteBrowserDto, ExecuteFetchDto } from './execute.controller';
 
 /**
  * The API mounts a global ValidationPipe with whitelist + forbidNonWhitelisted
@@ -88,5 +88,34 @@ describe('ExecuteFetchDto — presigned upload fields', () => {
     );
     expect(out.upload_url).toBeUndefined();
     expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
+  });
+});
+
+// put_download is the browser route's sink: execute.service gives that command
+// MAX_SINK_TIMEOUT_MS, so the DTO has to let a caller ask for it — the same
+// 400-before-the-handler this PR fixes on /execute/fetch.
+describe('ExecuteBrowserDto — sink timeout ceiling', () => {
+  const bmeta = { type: 'body' as const, metatype: ExecuteBrowserDto, data: '' };
+
+  it('accepts a put_download asking for the sink timeout ceiling', async () => {
+    const out = await pipe.transform(
+      {
+        profile_id: 'p',
+        command: 'put_download',
+        params: { upload_url: 'https://s3.example/key?sig=1' },
+        timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS,
+      },
+      bmeta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
+  });
+
+  it('still rejects a timeout above the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', command: 'navigate', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS + 1 },
+        bmeta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });

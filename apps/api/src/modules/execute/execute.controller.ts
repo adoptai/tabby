@@ -83,7 +83,7 @@ export class ExecuteFetchDto {
   upload_always?: boolean;
 }
 
-class ExecuteBrowserDto {
+export class ExecuteBrowserDto {
   @ApiProperty({ example: 'hubspot-standard' })
   @IsString()
   profile_id: string;
@@ -101,7 +101,10 @@ class ExecuteBrowserDto {
   @IsOptional()
   @IsInt()
   @Min(1000)
-  @Max(EXECUTE_LIMITS.MAX_TIMEOUT_MS)
+  // Same reason as ExecuteFetchDto: put_download streams a captured file to an
+  // object store and the service gives that command MAX_SINK_TIMEOUT_MS, which a
+  // caller could not ask for while this capped at the API ceiling.
+  @Max(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS)
   timeout_ms?: number;
 }
 
