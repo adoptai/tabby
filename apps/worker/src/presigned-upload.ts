@@ -249,7 +249,16 @@ export async function uploadToPresignedUrl(
         // is what the store hands back to whoever downloads it.
         ...withoutComputedHeaders(extraHeaders),
         'Content-Type': contentType || 'application/octet-stream',
-        'Content-Length': String(sizeBytes),
+        // Only for the stream body. fetch derives Content-Length from a Buffer
+        // itself, so setting it here too leaves the header list holding
+        // "571, 571" — which undici rejects as an INVALID content-length (its
+        // check is all-digits, and the comma fails it) rather than as a
+        // duplicate, and the PUT never leaves the pod. A stream has no
+        // derivable length and a presigned PUT is signed for one, so that path
+        // must still send it. Verified against a real dispatcher: the Buffer
+        // body arrives with Content-Length: <sizeBytes> either way, and the
+        // stream body arrives with none unless it is set here.
+        ...(Buffer.isBuffer(source) ? {} : { 'Content-Length': String(sizeBytes) }),
       },
       body,
       // Do NOT follow redirects. validateUploadUrl checked the addresses THIS host
