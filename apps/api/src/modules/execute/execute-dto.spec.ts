@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';
-import { ExecuteFetchDto } from './execute.controller';
+import { EXECUTE_LIMITS } from '@browser-hitl/shared';
+import { ExecuteBrowserDto, ExecuteFetchDto } from './execute.controller';
 
 /**
  * The API mounts a global ValidationPipe with whitelist + forbidNonWhitelisted
@@ -49,5 +50,100 @@ describe('ExecuteFetchDto — presigned upload fields', () => {
     await expect(
       pipe.transform({ profile_id: 'p', url: 'https://x.test', upload_url: 42 }, meta),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // The executor sends the sink budget (MAX_SINK_TIMEOUT_MS) on a fetch-to-sink call.
+  // With the DTO capped at MAX_TIMEOUT_MS that body was a 400 before the handler ran,
+  // so the sink was unreachable end to end even though the service and worker both
+  // honour the larger ceiling.
+  it('accepts a sink payload that asks for the sink timeout ceiling', async () => {
+    const out = await pipe.transform(
+      {
+        profile_id: 'p',
+        url: 'https://x.test/doc',
+        upload_url: 'https://s3.example/key?sig=1',
+        timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS,
+      },
+      meta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
+  });
+
+  it('still rejects a timeout above the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS + 1 },
+        meta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // The ceiling is per-mode, so widening it for the sink does not widen it for an
+  // ordinary call: a plain fetch asking for the sink budget is still an immediate 400,
+  // exactly as before this change, rather than a silent clamp the caller would only
+  // discover as a timeout.
+  it('still rejects a plain fetch asking for the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS },
+        meta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts a plain fetch at the API ceiling', async () => {
+    const out = await pipe.transform(
+      { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_TIMEOUT_MS },
+      meta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_TIMEOUT_MS);
+  });
+});
+
+// put_download is the browser route's sink: execute.service gives that command
+// MAX_SINK_TIMEOUT_MS, so the DTO has to let a caller ask for it — the same
+// 400-before-the-handler this PR fixes on /execute/fetch.
+describe('ExecuteBrowserDto — sink timeout ceiling', () => {
+  const bmeta = { type: 'body' as const, metatype: ExecuteBrowserDto, data: '' };
+
+  it('accepts a put_download asking for the sink timeout ceiling', async () => {
+    const out = await pipe.transform(
+      {
+        profile_id: 'p',
+        command: 'put_download',
+        params: { upload_url: 'https://s3.example/key?sig=1' },
+        timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS,
+      },
+      bmeta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
+  });
+
+  it('still rejects a timeout above the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', command: 'put_download', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS + 1 },
+        bmeta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // The symmetric case to the fetch block: only put_download gets the larger budget,
+  // so an ordinary command asking for it is still refused outright.
+  it('rejects a non-put_download command asking for the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', command: 'navigate', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS },
+        bmeta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts a non-put_download command at the API ceiling', async () => {
+    const out = await pipe.transform(
+      { profile_id: 'p', command: 'navigate', timeout_ms: EXECUTE_LIMITS.MAX_TIMEOUT_MS },
+      bmeta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_TIMEOUT_MS);
   });
 });
