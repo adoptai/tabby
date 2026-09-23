@@ -78,16 +78,25 @@ describe('ExecuteFetchDto — presigned upload fields', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  // A plain fetch may now pass the pipe with a sink-sized timeout; the service
-  // clamps it back to MAX_TIMEOUT_MS (execute.service.spec covers that), so the
-  // DTO widening changes nothing for an ordinary API call.
-  it('passes a plain fetch with a large timeout through to the service clamp', async () => {
+  // The ceiling is per-mode, so widening it for the sink does not widen it for an
+  // ordinary call: a plain fetch asking for the sink budget is still an immediate 400,
+  // exactly as before this change, rather than a silent clamp the caller would only
+  // discover as a timeout.
+  it('still rejects a plain fetch asking for the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS },
+        meta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts a plain fetch at the API ceiling', async () => {
     const out = await pipe.transform(
-      { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS },
+      { profile_id: 'p', url: 'https://x.test', timeout_ms: EXECUTE_LIMITS.MAX_TIMEOUT_MS },
       meta,
     );
-    expect(out.upload_url).toBeUndefined();
-    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS);
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_TIMEOUT_MS);
   });
 });
 
@@ -113,9 +122,28 @@ describe('ExecuteBrowserDto — sink timeout ceiling', () => {
   it('still rejects a timeout above the sink ceiling', async () => {
     await expect(
       pipe.transform(
-        { profile_id: 'p', command: 'navigate', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS + 1 },
+        { profile_id: 'p', command: 'put_download', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS + 1 },
         bmeta,
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // The symmetric case to the fetch block: only put_download gets the larger budget,
+  // so an ordinary command asking for it is still refused outright.
+  it('rejects a non-put_download command asking for the sink ceiling', async () => {
+    await expect(
+      pipe.transform(
+        { profile_id: 'p', command: 'navigate', timeout_ms: EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS },
+        bmeta,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts a non-put_download command at the API ceiling', async () => {
+    const out = await pipe.transform(
+      { profile_id: 'p', command: 'navigate', timeout_ms: EXECUTE_LIMITS.MAX_TIMEOUT_MS },
+      bmeta,
+    );
+    expect(out.timeout_ms).toBe(EXECUTE_LIMITS.MAX_TIMEOUT_MS);
   });
 });

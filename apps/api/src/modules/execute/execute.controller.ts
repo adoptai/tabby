@@ -2,11 +2,50 @@ import {
   Controller, Post, Body, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsInt, Min, Max, IsObject, IsBoolean } from 'class-validator';
+import {
+  IsString, IsOptional, IsInt, Min, IsObject, IsBoolean,
+  registerDecorator, ValidationArguments, ValidationOptions,
+} from 'class-validator';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { ExecuteService } from './execute.service';
 import { EXECUTE_LIMITS } from '@browser-hitl/shared';
 import { AuditService } from '../audit/audit.service';
+
+
+/**
+ * `timeout_ms`'s ceiling depends on what the request is: an ordinary call is sized by
+ * MAX_TIMEOUT_MS, while a sink request is the worker streaming a whole export into an
+ * object store and gets MAX_SINK_TIMEOUT_MS. `@Max` is static and `@ValidateIf` gates
+ * every validator on the property, so neither can express "a different bound per mode"
+ * on its own.
+ *
+ * Validating the real ceiling here keeps a plain request's over-large timeout an
+ * immediate, actionable 400 rather than a silent clamp the caller only discovers as a
+ * timeout — while still letting a sink request ask for the budget the service grants it.
+ */
+function MaxTimeoutForMode(
+  isSink: (o: any) => boolean,
+  validationOptions?: ValidationOptions,
+) {
+  const ceilingFor = (o: any) =>
+    isSink(o) ? EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS : EXECUTE_LIMITS.MAX_TIMEOUT_MS;
+
+  return function (object: object, propertyName: string) {
+    registerDecorator({
+      name: 'maxTimeoutForMode',
+      target: object.constructor,
+      propertyName,
+      options: validationOptions,
+      validator: {
+        // A non-number is @IsInt's to report, not ours.
+        validate: (value: unknown, args: ValidationArguments) =>
+          typeof value !== 'number' || value <= ceilingFor(args.object),
+        defaultMessage: (args: ValidationArguments) =>
+          `timeout_ms must not be greater than ${ceilingFor(args.object)}`,
+      },
+    });
+  };
+}
 
 export class ExecuteFetchDto {
   @ApiProperty({ example: 'hubspot-standard' })
@@ -35,11 +74,9 @@ export class ExecuteFetchDto {
   @IsOptional()
   @IsInt()
   @Min(1000)
-  // The sink ceiling, not the API one: a fetch-to-sink caller asks for up to
-  // MAX_SINK_TIMEOUT_MS and the service clamps a plain fetch back to MAX_TIMEOUT_MS.
-  // Capping here at the smaller value rejected every sink request with a 400
-  // before the handler ran.
-  @Max(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS)
+  // Capping this at MAX_TIMEOUT_MS rejected every fetch-to-sink request with a 400
+  // before the handler ran, which is why the sink was unreachable through the API.
+  @MaxTimeoutForMode((o) => !!o.upload_url)
   timeout_ms?: number;
 
   @ApiProperty({
@@ -101,10 +138,10 @@ export class ExecuteBrowserDto {
   @IsOptional()
   @IsInt()
   @Min(1000)
-  // Same reason as ExecuteFetchDto: put_download streams a captured file to an
-  // object store and the service gives that command MAX_SINK_TIMEOUT_MS, which a
-  // caller could not ask for while this capped at the API ceiling.
-  @Max(EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS)
+  // Same reason as ExecuteFetchDto: put_download streams a captured file to an object
+  // store and the service gives that one command MAX_SINK_TIMEOUT_MS. Every other
+  // command keeps the API ceiling.
+  @MaxTimeoutForMode((o) => o.command === 'put_download')
   timeout_ms?: number;
 }
 
