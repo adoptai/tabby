@@ -158,3 +158,85 @@ describe('egressDispatcher — the PUT goes through the browser egress proxy', (
     expect(() => freshEgressDispatcher()()).toThrow(/not a valid URL/);
   });
 });
+
+// The PUT that actually leaves the pod, against a real server through a real
+// dispatcher. Every other test here replaces global.fetch, which is why the bug
+// below survived: setting Content-Length on a Buffer body looks right in
+// `init.headers` and only fails once undici assembles the request. fetch derives
+// the length from a Buffer itself, so the header list ended up holding "571,
+// 571" — rejected as an INVALID content-length (the check is all-digits) rather
+// than as a duplicate, and the PUT never went out. Masked until now by the DTO
+// timeout cap, which rejected these requests before the worker ran at all.
+describe('uploadToPresignedUrl — the request undici actually assembles', () => {
+  const http = require('http');
+  const net = require('net');
+  const { Readable } = require('stream');
+
+  let origin: any;
+  let proxy: any;
+  let seen: { contentLength?: string; contentType?: string; bytes: number };
+  let url: string;
+  const realProxyEnv = process.env.EGRESS_PROXY_URL;
+
+  beforeAll(async () => {
+    origin = http.createServer((req: any, res: any) => {
+      seen = { contentLength: req.headers['content-length'], contentType: req.headers['content-type'], bytes: 0 };
+      req.on('data', (c: any) => { seen.bytes += c.length; });
+      req.on('end', () => { res.writeHead(200, { etag: '"abc"' }); res.end(); });
+    });
+    await new Promise<void>((r) => origin.listen(0, '127.0.0.1', r));
+
+    // A CONNECT-capable forward proxy, so egressDispatcher returns a real
+    // ProxyAgent. Without a dispatcher the duplicate is tolerated on some Node
+    // versions and the regression would only reproduce on others.
+    proxy = http.createServer((req: any, res: any) => {
+      const u = new URL(req.url);
+      const p = http.request(
+        { host: u.hostname, port: u.port, path: u.pathname, method: req.method, headers: req.headers },
+        (pr: any) => { res.writeHead(pr.statusCode, pr.headers); pr.pipe(res); },
+      );
+      req.pipe(p);
+    });
+    proxy.on('connect', (req: any, sock: any, head: any) => {
+      const [h, p] = req.url.split(':');
+      const s = net.connect(p, h, () => {
+        sock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        s.write(head); s.pipe(sock); sock.pipe(s);
+      });
+      s.on('error', () => sock.destroy());
+    });
+    await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', r));
+
+    process.env.EGRESS_PROXY_URL = `http://127.0.0.1:${proxy.address().port}`;
+    url = `http://127.0.0.1:${origin.address().port}/bucket/key.xlsx`;
+  });
+
+  afterAll(async () => {
+    if (realProxyEnv === undefined) delete process.env.EGRESS_PROXY_URL;
+    else process.env.EGRESS_PROXY_URL = realProxyEnv;
+    await new Promise<void>((r) => origin.close(() => r()));
+    await new Promise<void>((r) => proxy.close(() => r()));
+  });
+
+  it('sends a Buffer body with the right Content-Length instead of being refused', async () => {
+    const buf = Buffer.alloc(571, 7);
+    const result = await uploadToPresignedUrl(url, buf, buf.length, 'application/json', '/execute/fetch');
+
+    expect(result.uploaded ?? true).toBeTruthy();
+    // The header the store signs against still arrives — fetch derives it from
+    // the body — so dropping it from the init is safe, not a loosening.
+    expect(seen.contentLength).toBe('571');
+    expect(seen.contentType).toBe('application/json');
+    expect(seen.bytes).toBe(571);
+  });
+
+  it('still declares Content-Length for a stream body, which fetch cannot derive', async () => {
+    const buf = Buffer.alloc(571, 7);
+    await uploadToPresignedUrl(url, Readable.from([buf]), buf.length, 'application/pdf', 'put_download');
+
+    // Without the explicit header this arrives chunked with no length at all,
+    // which a presigned PUT signed for a specific length rejects.
+    expect(seen.contentLength).toBe('571');
+    expect(seen.bytes).toBe(571);
+  });
+});

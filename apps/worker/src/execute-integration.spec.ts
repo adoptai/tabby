@@ -702,7 +702,7 @@ describe('/execute/fetch sink — review follow-ups', () => {
     expect(JSON.stringify(res.body)).not.toContain('SECRET-INTERNAL-BODY');
   });
 
-  it('does not let caller upload_headers override the computed Content-Length', async () => {
+  it('does not let caller upload_headers dictate the Content-Length', async () => {
     contextFetch.mockResolvedValue({
       status: () => 200,
       headers: () => ({
@@ -719,7 +719,12 @@ describe('/execute/fetch sink — review follow-ups', () => {
       // spelling that slips past a case-sensitive object spread.
       upload_headers: { 'content-length': '1', 'content-type': 'text/plain', 'x-amz-acl': 'private' },
     });
-    expect(seen.sent!.get('content-length')).toBe('25');     // real size wins
+    // The caller's '1' is dropped rather than overridden: on the Buffer path the
+    // length is left for fetch to derive from the body, because declaring it here
+    // as well is what undici rejects as an invalid content-length. What matters is
+    // that the caller cannot influence it — the wire value is asserted against a
+    // real dispatcher in presigned-upload.spec.ts, which this mock cannot observe.
+    expect(seen.sent!.get('content-length')).toBeNull();
     expect(seen.sent!.get('content-type')).toBe('application/pdf');
     expect(seen.sent!.get('x-amz-acl')).toBe('private');     // unrelated ones still pass
   });
