@@ -389,6 +389,9 @@ importers:
       ioredis:
         specifier: ^5.4.2
         version: 5.9.3
+      ipaddr.js:
+        specifier: ^2.3.0
+        version: 2.3.0
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
@@ -407,6 +410,9 @@ importers:
       playwright:
         specifier: 1.58.2
         version: 1.58.2
+      undici:
+        specifier: ^7.16.0
+        version: 7.29.1
       ws:
         specifier: ^8.21.0
         version: 8.21.3
@@ -5173,6 +5179,10 @@ packages:
 
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
+
+  undici@7.29.1:
+    resolution: {integrity: sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q==}
+    engines: {node: '>=20.18.1'}
 
   unescape-js@1.1.4:
     resolution: {integrity: sha512-42SD8NOQEhdYntEiUQdYq/1V/YHwr1HLwlHuTJB5InVVdOSbgI6xu8jK5q65yIzuFCfczzyDF/7hbGzVbyCw0g==}
@@ -11046,6 +11056,8 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici-types@7.16.0: {}
+
+  undici@7.29.1: {}
 
   unescape-js@1.1.4:
     dependencies:

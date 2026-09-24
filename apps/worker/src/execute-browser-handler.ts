@@ -7,11 +7,23 @@ import {
   type ExecuteBrowserResponse,
 } from '@browser-hitl/shared';
 import { startHarCapture, stopHarCapture, getHarStatus, cleanupHarListeners } from './har-capture';
-import { listDownloads, getDownload } from './download-capture';
+import { listDownloads, getDownload, putDownload } from './download-capture';
 import { beginAgentCommand, endAgentCommand, isIdleResettingCommand } from './agent-activity';
 import { pageSummaryScript } from './page-summary.injected';
 
 export { cleanupHarListeners };
+
+/**
+ * How long `download_url` keeps waiting after the page has RENDERED.
+ *
+ * Chromium aborts the navigation when a response goes to the download manager, so
+ * a navigation that completed normally means the response was not an attachment
+ * and no download event is coming from it. Only a script-started download can
+ * still arrive, and that happens on page-load timescales — not on the command
+ * timeout, which is sized for the download itself and leaves the caller watching
+ * an apparent hang.
+ */
+const DOWNLOAD_AFTER_RENDER_GRACE_MS = 5_000;
 
 export interface BrowserHandlerOptions {
   /** Refuse `navigate` — see BrowserPolicy.block_navigate. */
@@ -62,7 +74,11 @@ export function registerBrowserHandler(
       const params = body.params || {};
       const timeoutMs = Math.min(
         Math.max(body.timeout_ms || EXECUTE_LIMITS.DEFAULT_TIMEOUT_MS, 1000),
-        EXECUTE_LIMITS.MAX_TIMEOUT_MS,
+        // put_download is a bulk transfer to an object store, not a page
+        // interaction (see MAX_SINK_TIMEOUT_MS).
+        body.command === 'put_download'
+          ? EXECUTE_LIMITS.MAX_SINK_TIMEOUT_MS
+          : EXECUTE_LIMITS.MAX_TIMEOUT_MS,
       );
 
       // Tell the keepalive loop an agent is driving the page, so it does not
@@ -526,6 +542,72 @@ export async function dispatchCommand(
     case 'get_download': {
       const id = typeof params.id === 'string' && params.id ? params.id : undefined;
       return getDownload(page, id);
+    }
+
+    case 'download_url': {
+      // `navigate` cannot fetch an attachment. Chromium hands a
+      // `content-disposition: attachment` response to the download manager and
+      // ABORTS the navigation, so `page.goto` rejects with net::ERR_ABORTED even
+      // though the file downloaded perfectly — which reads as a failed step and
+      // leaves the caller with no way to trigger a download it has a URL for.
+      // Swallow exactly that rejection and report what the download event says.
+      const url = requireParam(params, 'url', 'string');
+      const parsed = new URL(url);
+      if (!EXECUTE_LIMITS.ALLOWED_SCHEMES.includes(parsed.protocol)) {
+        throw new Error(`Scheme "${parsed.protocol}" not allowed`);
+      }
+      const settled = page.waitForEvent('download', { timeout: timeoutMs }).catch(() => null);
+      let aborted = false;
+      try {
+        await page.goto(url, { timeout: timeoutMs });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes('ERR_ABORTED')) throw err;
+        aborted = true;
+      }
+      // A navigation that RENDERED is the not-an-attachment case: Chromium aborts
+      // the navigation when it hands a response to the download manager, so a page
+      // that loaded normally means no download is coming from the response itself.
+      // Waiting the full timeout for an event that cannot arrive reads as a hang.
+      // Still allow a short grace, because a page is permitted to start a download
+      // from script after it loads — that is a real pattern, just not this timeout's
+      // job to wait minutes for.
+      const grace = Math.min(timeoutMs, DOWNLOAD_AFTER_RENDER_GRACE_MS);
+      let download: Awaited<typeof settled> = null;
+      if (aborted) {
+        download = await settled;
+      } else {
+        const graceExpired = Symbol('grace');
+        const timer = new Promise<typeof graceExpired>((resolve) => {
+          setTimeout(() => resolve(graceExpired), grace).unref?.();
+        });
+        const raced = await Promise.race([settled, timer]);
+        // A download that arrives inside the grace window is a real one and is
+        // returned; only the timer losing means nothing started.
+        download = raced === graceExpired ? null : raced;
+      }
+      if (!download) {
+        throw new Error(
+          `download_url: ${
+            aborted
+              ? `no download started for ${url} within ${timeoutMs}ms`
+              : `${url} rendered as a page instead of starting a download (waited ${grace}ms after load for a script-started one)`
+          }. The URL may have returned a page rather than an attachment, or the app ` +
+            'has browser_policy.downloads disabled (check list_downloads).',
+        );
+      }
+      // The file is still being written here; list_downloads reports when it
+      // completes and put_download/get_download address it by id.
+      return { started: true, suggested_filename: download.suggestedFilename(), url: download.url() };
+    }
+
+    case 'put_download': {
+      const id = typeof params.id === 'string' && params.id ? params.id : undefined;
+      return putDownload(page, {
+        id,
+        upload_url: typeof params.upload_url === 'string' ? params.upload_url : '',
+        headers: typeof params.headers === 'object' && params.headers ? params.headers : undefined,
+      });
     }
 
     default:

@@ -16,11 +16,13 @@
     "jsonwebtoken": "^9.0.3",
     "helmet": "^8.1.0",
     "ioredis": "^5.4.2",
+    "ipaddr.js": "^2.3.0",
     "minio": "^8.0.4",
     "nats": "^2.28.3",
     "newrelic": "^12.0.0",
     "pg": "^8.13.1",
     "playwright": "1.58.2",
+    "undici": "^7.16.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
