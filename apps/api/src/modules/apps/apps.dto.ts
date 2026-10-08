@@ -36,6 +36,14 @@ export class ListAppsQueryDto {
   @IsOptional()
   @IsString()
   fields?: string;
+
+  @ApiProperty({
+    description: 'Admin only: list one tenant\'s apps instead of every tenant\'s. Ignored for other roles, which always see their own tenant.',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  tenant_id?: string;
 }
 
 export class CreateAppDto {
