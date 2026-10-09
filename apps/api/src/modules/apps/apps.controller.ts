@@ -43,11 +43,12 @@ export class AppsController {
     @Query() query: ListAppsQueryDto,
     @Req() req: any,
   ) {
-    // Admin with no tenant_id filter sees all apps across tenants
-    const queryTenantId = (query as any).tenant_id;
+    // Admin with no tenant_id filter sees all apps across tenants. The DTO has
+    // to declare tenant_id: the ValidationPipe is forbidNonWhitelisted, so until
+    // it did, passing one was a 400 and this branch could never take it.
     let tenantId: string | undefined;
     if (req.user.role === 'Admin') {
-      tenantId = queryTenantId; // may be undefined (all tenants) or a specific tenant
+      tenantId = query.tenant_id || undefined; // undefined: all tenants
     } else {
       tenantId = req.user.tenant_id;
     }
