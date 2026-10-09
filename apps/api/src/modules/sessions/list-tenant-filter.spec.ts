@@ -80,6 +80,11 @@ describe('AppsController.findAll', () => {
     expect(service.findAll).toHaveBeenCalledWith('org-1', 50, 0, undefined);
   });
 
+  it('lists every tenant for an Admin that does not', async () => {
+    await list('Admin');
+    expect(service.findAll).toHaveBeenCalledWith(undefined, 50, 0, undefined);
+  });
+
   it('pins every other role to its own tenant, whatever it asks for', async () => {
     await list('Editor', 'org-1');
     expect(service.findAll).toHaveBeenCalledWith('own-tenant', 50, 0, undefined);
