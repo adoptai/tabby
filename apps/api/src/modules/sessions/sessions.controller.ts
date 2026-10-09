@@ -2,7 +2,7 @@ import {
   Controller, Post, Get, Body, Param, Query, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiProperty } from '@nestjs/swagger';
-import { IsInt, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -14,6 +14,16 @@ class ScaleSessionsDto {
   @Min(0)
   @Type(() => Number)
   desired_sessions: number;
+}
+
+export class ListSessionsQueryDto extends PaginationQueryDto {
+  @ApiProperty({
+    description: 'Admin only: list one tenant\'s sessions instead of every tenant\'s. Ignored for other roles, which always see their own tenant.',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  tenant_id?: string;
 }
 
 @ApiTags('Sessions')
@@ -51,15 +61,16 @@ export class SessionsController {
 
   @Get('sessions')
   @Roles('Admin', 'Editor', 'Operator', 'Viewer')
-  @ApiOperation({ summary: 'List sessions', description: 'Returns paginated list of sessions for the authenticated tenant. Admin sees all sessions across tenants.' })
+  @ApiOperation({ summary: 'List sessions', description: 'Returns paginated list of sessions for the authenticated tenant. Admin sees all sessions across tenants, or one tenant\'s with tenant_id.' })
   @ApiResponse({ status: 200, description: 'Paginated session list', schema: { example: { data: [{ id: 'cccccccc-...', state: 'HEALTHY', health_result_type: 'PASS', pod_name: 'worker-cccccccc-...' }], total: 1, limit: 50, offset: 0 } } })
   async findAll(
-    @Query() query: PaginationQueryDto,
+    @Query() query: ListSessionsQueryDto,
     @Req() req: any,
   ) {
-    // Admin sees all sessions across tenants; Editor sees all in own tenant;
-    // Operators and Viewers see only their own sessions
-    const tenantId = req.user.role === 'Admin' ? undefined : req.user.tenant_id;
+    // Admin sees all sessions across tenants, or one tenant's when it passes
+    // tenant_id; Editor sees all in own tenant; Operators and Viewers see only
+    // their own sessions
+    const tenantId = req.user.role === 'Admin' ? query.tenant_id || undefined : req.user.tenant_id;
     const ownerFilter = ['Admin', 'Editor'].includes(req.user.role) ? null : req.user.owner_user_id;
     return this.sessionsService.findAll(tenantId, query.limit, query.offset, ownerFilter);
   }
