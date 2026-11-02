@@ -1,6 +1,6 @@
 # noVNC Sidecar Dockerfile per spec section 15.5
 # Runs alongside the worker container in the same pod (shared network namespace)
-FROM python:3.11-slim@sha256:b1b81d67b8df73bf6067191790c233ef9e598b863fc1ccf447956138ca466d99
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     novnc websockify && \
