@@ -33,6 +33,18 @@ export function profileBaseName(profileId: string): string {
   return at > 0 ? profileId.slice(0, at) : profileId;
 }
 
+/**
+ * Agent-role profile ACL: the list names the profile itself or, for a
+ * per-account `<pattern>@<account>` id, its base pattern. Used by every
+ * endpoint on the harness path (credentials, execute, session-status), so a
+ * token scoped to `escstatement` can drive `escstatement@loc007`. Fan-out is
+ * bounded elsewhere: a per-account profile is only ever provisioned by
+ * POST /credentials/request carrying the account's own login_credentials.
+ */
+export function agentProfileAllowed(allowedProfiles: readonly string[], profileId: string): boolean {
+  return allowedProfiles.includes(profileId) || allowedProfiles.includes(profileBaseName(profileId));
+}
+
 // Layout: iv(12) + tag(16) + ciphertext, base64url — same as oauth-provider.service.ts.
 export function encryptLoginCredentials(creds: LoginCredentials, keyHex: string): string {
   const key = Buffer.from(keyHex, 'hex');

@@ -9,6 +9,7 @@ import {
   CredentialVolatility,
   ProfileVersionState,
   RedisFailureTier,
+  agentProfileAllowed,
   decryptLoginCredentials,
   encryptLoginCredentials,
   isHarnessCredentialRef,
@@ -122,11 +123,7 @@ export class CredentialsService {
       role, allowedProfiles = [], unrestrictedProfiles, ownerUserId, loginCredentials = null,
     } = params;
 
-    // The base-name fallback exists only for harness-supplied accounts: an
-    // `<app>@<account>` request without login_credentials is checked verbatim,
-    // so an agent allowed on `icici` cannot fan out `icici@1`, `icici@2`, ...
-    const baseAllowed = Boolean(loginCredentials) && allowedProfiles.includes(profileBaseName(profileId));
-    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId) && !baseAllowed) {
+    if (role === 'Agent' && !unrestrictedProfiles && !agentProfileAllowed(allowedProfiles, profileId)) {
       throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
     }
 
@@ -374,6 +371,22 @@ export class CredentialsService {
           `Profile "${profileId}" not provisioned: template "${base.name}" is not credential_ref harness:`,
         );
       }
+    }
+
+    // A `harness:` app cannot start without its pair: the worker pod's Secret
+    // is minted from it. /execute/* and /agent/session-status also reach this
+    // path, without login_credentials, and must not provision a session that
+    // would only fail. They get "no profile", and the harness then provisions
+    // through POST /credentials/request with the pair.
+    if (
+      template
+      && isHarnessCredentialRef((template.login_config as { credential_ref?: unknown } | null)?.credential_ref)
+      && !loginCredentials
+    ) {
+      this.logger.log(
+        `Profile "${profileId}" not provisioned: template "${template.name}" is harness: and this request carries no login_credentials`,
+      );
+      return null;
     }
 
     if (!template) {

@@ -1,4 +1,5 @@
 import {
+  agentProfileAllowed,
   decryptLoginCredentials,
   encryptLoginCredentials,
   harnessCredentialSecretName,
@@ -26,6 +27,14 @@ describe('login-credentials', () => {
     expect(profileBaseName('escstatement@LOC007')).toBe('escstatement');
     expect(profileBaseName('escstatement')).toBe('escstatement');
     expect(profileBaseName('@odd')).toBe('@odd');
+  });
+
+  it('allows an agent on the base pattern or the exact id', () => {
+    expect(agentProfileAllowed(['escstatement'], 'escstatement@loc007')).toBe(true);
+    expect(agentProfileAllowed(['escstatement'], 'escstatement')).toBe(true);
+    expect(agentProfileAllowed(['escstatement@loc007'], 'escstatement@loc007')).toBe(true);
+    expect(agentProfileAllowed(['escstatement@loc007'], 'escstatement')).toBe(false);
+    expect(agentProfileAllowed(['other'], 'escstatement@loc007')).toBe(false);
   });
 
   it('names the per-session secret from the session id', () => {
