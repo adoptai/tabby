@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import * as Sentry from '@sentry/node';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThan, Not, In, Repository, DataSource } from 'typeorm';
-import { SessionState, StreamingMode, RECORDING_POOL } from '@browser-hitl/shared';
+import { SessionState, StreamingMode, RECORDING_POOL, isHarnessCredentialRef } from '@browser-hitl/shared';
 import { ApplicationEntity } from './entities/application.entity';
 import { SessionEntity } from './entities/session.entity';
 import { SessionBatonEntity } from './entities/session-baton.entity';
@@ -414,6 +414,10 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
     const streamingMode = this.podManager.resolveStreamingMode(app);
     let podName: string | null = null;
     try {
+      // `harness:` apps: the pod mounts a per-session Secret, so mint it first.
+      if (isHarnessCredentialRef((app.login_config as { credential_ref?: unknown } | null)?.credential_ref)) {
+        await this.podManager.ensureHarnessCredentialSecret(savedSession, app);
+      }
       // Create browser worker pod (idempotent: checks for existing pod first)
       podName = await this.podManager.createWorkerPod(savedSession, app);
       await this.sessionRepo.update(savedSession.id, { pod_name: podName });
@@ -469,6 +473,11 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
             await this.podManager.deleteNoVncService(savedSession.id);
           }
           await this.podManager.deleteWorkerService(savedSession.id);
+          // The credential Secret is minted before the pod; with no pod to
+          // carry it away it has to go explicitly.
+          if (isHarnessCredentialRef((app.login_config as { credential_ref?: unknown } | null)?.credential_ref)) {
+            await this.podManager.deleteHarnessCredentialSecret(savedSession.id);
+          }
         }
         await this.podManager.deleteNetworkPolicy(savedSession.id);
       } catch (cleanupError) {
@@ -686,6 +695,7 @@ export class ReconcileService implements OnModuleInit, OnModuleDestroy {
       await this.podManager.deleteCdpService(session.id, session.pod_name);
       await this.podManager.deleteWorkerService(session.id, session.pod_name || undefined);
       await this.podManager.deleteNetworkPolicy(session.id);
+      await this.podManager.deleteHarnessCredentialSecret(session.id);
     }
 
     // Sweep orphan worker pods with missing/terminated session ownership.

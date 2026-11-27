@@ -63,6 +63,10 @@ export class ApplicationEntity {
   @Column({ type: 'boolean', default: false })
   execute_enabled: boolean;
 
+  /** Encrypted portal username/password for `credential_ref: harness:` apps; null otherwise. */
+  @Column({ type: 'text', nullable: true })
+  login_credentials_enc: string | null;
+
   /** App-level default: route this app's session egress through the residential proxy. Session may override; precedence session ?? app ?? false. */
   @Column({ type: 'boolean', default: false })
   residential_proxy_enabled: boolean;

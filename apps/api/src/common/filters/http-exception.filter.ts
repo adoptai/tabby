@@ -48,7 +48,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         scope.setTag('http.method', request.method);
         scope.setTag('http.url', request.url);
         scope.setTag('http.status_code', String(status));
-        scope.setExtra('body', request.body);
+        scope.setExtra('body', redactRequestBody(request.body));
         Sentry.captureException(exception instanceof Error ? exception : new Error(message));
       });
       this.logger.error(`${request.method} ${request.url} → ${status}: ${message}`, exception instanceof Error ? exception.stack : undefined);
@@ -58,4 +58,18 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       error: { code, message, ...(details ? { details } : {}) },
     });
   }
+}
+
+/** Keys whose values must never reach Sentry (portal passwords on POST /credentials/request). */
+const REDACTED_BODY_KEYS = new Set(['login_credentials', 'password']);
+
+function redactRequestBody(body: unknown): unknown {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return body;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    out[key] = REDACTED_BODY_KEYS.has(key) ? '[redacted]' : value;
+  }
+  return out;
 }

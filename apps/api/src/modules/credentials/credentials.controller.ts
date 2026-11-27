@@ -2,10 +2,23 @@ import {
   Controller, Post, Body, Req, UseGuards, HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, IsInt, IsNotEmpty, Min, Max, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard, RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CredentialsService } from './credentials.service';
+
+class LoginCredentialsDto {
+  @ApiProperty({ example: 'provider-12345' })
+  @IsString()
+  @IsNotEmpty()
+  username: string;
+
+  @ApiProperty({ example: '********' })
+  @IsString()
+  @IsNotEmpty()
+  password: string;
+}
 
 class RequestCredentialsDto {
   @ApiProperty({ example: 'hubspot-standard' })
@@ -37,6 +50,16 @@ class RequestCredentialsDto {
   @Min(0)
   @Max(30)
   wait_seconds?: number;
+
+  @ApiProperty({
+    required: false,
+    type: LoginCredentialsDto,
+    description: 'Portal username/password for an app whose login_config.credential_ref is `harness:`. Stored encrypted on the app, typed once by the login script when a session starts, never returned. Ignored for other credential_ref schemes.',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LoginCredentialsDto)
+  login_credentials?: LoginCredentialsDto;
 }
 
 @ApiTags('Credentials')
@@ -66,6 +89,7 @@ export class CredentialsController {
       allowedProfiles: req.user.allowed_profiles,
       unrestrictedProfiles: req.user.unrestricted_profiles,
       ownerUserId: req.user.owner_user_id ?? null,
+      loginCredentials: dto.login_credentials ?? null,
     });
   }
 }

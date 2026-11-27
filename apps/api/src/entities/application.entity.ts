@@ -80,6 +80,14 @@ export class ApplicationEntity {
   execute_enabled: boolean;
 
   /**
+   * Encrypted portal username/password for `credential_ref: harness:` apps
+   * (see packages/shared login-credentials.ts). Null for every other scheme.
+   * `select: false`: never part of an app read; only the controller loads it.
+   */
+  @Column({ type: 'text', nullable: true, select: false })
+  login_credentials_enc: string | null;
+
+  /**
    * App-level default for routing this app's browser session egress through the
    * residential proxy (Oxylabs, chained upstream of the egress proxy). A session
    * may override via sessions.residential_proxy_enabled; precedence is

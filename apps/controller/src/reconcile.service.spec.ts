@@ -22,6 +22,7 @@ function buildService(overrides: Record<string, any> = {}) {
     deleteCdpService: jest.fn().mockResolvedValue(undefined),
     deleteWorkerService: jest.fn().mockResolvedValue(undefined),
     deleteNetworkPolicy: jest.fn().mockResolvedValue(undefined),
+    deleteHarnessCredentialSecret: jest.fn().mockResolvedValue(undefined),
     syncEgressAllowlist: jest.fn().mockResolvedValue(undefined),
     listWorkerPods: jest.fn().mockResolvedValue([]),
     podExists: jest.fn().mockResolvedValue(true),
