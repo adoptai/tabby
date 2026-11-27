@@ -159,6 +159,7 @@ Steps support `retry_backoff: "exponential"`, `retry_delay_ms`, `retry_max_delay
 ### Credential Reference Types
 - `k8s:secret/{name}` — Worker reads `username`/`password` from K8s Secret, injects as `${USERNAME}`/`${PASSWORD}` in DSL
 - `manual:` — No stored credentials. Human provides everything via VNC during HITL. Worker skips credential injection entirely.
+- `harness:` — The caller of `POST /credentials/request` sends `login_credentials: {username, password}` (the Adopt harness resolves them from the org vault). API stores the pair AES-256-GCM encrypted in `applications.login_credentials_enc`; controller mints a per-session K8s Secret `harness-creds-<session-id>` from it before the worker pod and deletes it with the pod; worker reads it like a `k8s:secret/` mount. A profile id `<pattern>@<account>` falls back to the template whose `profile_name_pattern` is `<pattern>`, so one template serves many accounts of one portal (one app + session per account). See `packages/shared/src/login-credentials.ts`.
 
 ### Custom Extractions (export_policy)
 `export_policy.custom_extractions` array supports site-specific token extraction:

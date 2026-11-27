@@ -54,3 +54,6 @@ export * from './sentry';
 
 // NATS connection helper
 export * from './nats-connect';
+
+// Harness-supplied login credentials (credential_ref `harness:`)
+export * from './login-credentials';

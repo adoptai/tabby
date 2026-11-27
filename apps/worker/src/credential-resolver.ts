@@ -1,5 +1,6 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { harnessCredentialSecretName } from '@browser-hitl/shared';
 
 export interface ResolvedCredentials {
   username: string;
@@ -11,13 +12,23 @@ export interface ResolvedCredentials {
  * Formats:
  *   k8s:secret/{secret-name} — read from mounted K8s secret files
  *   manual:                  — no pre-provisioned creds; DSL must use request_human_input steps to collect and fill credentials
+ *   harness:                 — the controller mounted a per-session Secret minted from the pair the harness sent
  */
 export async function resolveCredentials(credentialRef: string): Promise<ResolvedCredentials> {
   if (credentialRef.startsWith('manual:')) {
     return { username: '', password: '' };
   }
 
-  const secretName = credentialRef.replace('k8s:secret/', '').trim();
+  let secretName: string;
+  if (credentialRef.startsWith('harness:')) {
+    const sessionId = (process.env.SESSION_ID || '').trim();
+    if (!sessionId) {
+      throw new Error('harness: credential_ref requires SESSION_ID');
+    }
+    secretName = harnessCredentialSecretName(sessionId);
+  } else {
+    secretName = credentialRef.replace('k8s:secret/', '').trim();
+  }
   if (!secretName || !/^[a-zA-Z0-9_-]+$/.test(secretName)) {
     throw new Error(`Invalid credential_ref: ${credentialRef}`);
   }

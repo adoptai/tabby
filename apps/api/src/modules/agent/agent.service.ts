@@ -9,7 +9,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { SessionState, requireEnv, REDIS_KEYS } from '@browser-hitl/shared';
+import { SessionState, requireEnv, REDIS_KEYS, agentProfileAllowed } from '@browser-hitl/shared';
 import { Repository, Not, In } from 'typeorm';
 import Redis from 'ioredis';
 import { createHash } from 'crypto';
@@ -81,7 +81,7 @@ export class AgentService implements OnModuleDestroy {
     ownerUserId?: string | null,
     unrestrictedProfiles?: boolean,
   ): Promise<Record<string, unknown>> {
-    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !agentProfileAllowed(allowedProfiles, profileId)) {
       throw new ForbiddenException(`Agent is not authorized for profile "${profileId}"`);
     }
 

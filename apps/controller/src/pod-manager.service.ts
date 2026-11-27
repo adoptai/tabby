@@ -3,7 +3,10 @@ import { SessionEntity } from './entities/session.entity';
 import { ApplicationEntity } from './entities/application.entity';
 import * as k8s from '@kubernetes/client-node';
 import { createHmac } from 'node:crypto';
-import { CDP_PORTS, PORTS, StreamingMode } from '@browser-hitl/shared';
+import {
+  CDP_PORTS, PORTS, StreamingMode,
+  decryptLoginCredentials, harnessCredentialSecretName, isHarnessCredentialRef,
+} from '@browser-hitl/shared';
 
 /**
  * Pod Manager Service
@@ -191,6 +194,74 @@ export class PodManagerService {
       this.logger.log(`Worker pod ${podName} deleted`);
     } catch (error) {
       this.logger.error(`Failed to delete pod ${podName}: ${error}`);
+    }
+    await this.deleteHarnessCredentialSecrets(podName);
+  }
+
+  /**
+   * For a `harness:` app, mint the per-session Secret the worker pod mounts
+   * (same layout as `k8s:secret/`: `username` + `password` keys) from the pair
+   * the API stored on the app. Must run before createWorkerPod; the pod's volume
+   * is non-optional. No-op for other credential_ref schemes.
+   */
+  async ensureHarnessCredentialSecret(session: SessionEntity, app: ApplicationEntity): Promise<void> {
+    const ref = (app.login_config as { credential_ref?: unknown } | null | undefined)?.credential_ref;
+    if (!isHarnessCredentialRef(ref)) {
+      return;
+    }
+    if (!app.login_credentials_enc) {
+      throw new Error(
+        `App ${app.id} uses credential_ref harness: but no login_credentials were supplied on POST /credentials/request`,
+      );
+    }
+    const keyHex = (process.env.TENANT_ENCRYPTION_KEY || '').trim();
+    if (!keyHex) {
+      throw new Error('TENANT_ENCRYPTION_KEY must be configured for harness: credentials');
+    }
+    const creds = decryptLoginCredentials(app.login_credentials_enc, keyHex);
+    const secretName = harnessCredentialSecretName(session.id);
+    const secretSpec = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: {
+        name: secretName,
+        namespace: this.namespace,
+        labels: {
+          app: 'browser-worker',
+          'session-id': session.id,
+          'app-id': session.app_id,
+          'pod-name': this.buildPodName(session.id),
+        },
+      },
+      type: 'Opaque',
+      stringData: { username: creds.username, password: creds.password },
+    };
+    await this.deleteSecret(secretName);
+    await this.createSecret(secretSpec);
+    this.logger.log(`Created credential secret ${secretName} for session ${session.id}`);
+  }
+
+  /** Delete the per-session credential Secret (no-op when the app is not `harness:`). */
+  async deleteHarnessCredentialSecret(sessionId: string): Promise<void> {
+    const secretName = harnessCredentialSecretName(sessionId);
+    try {
+      await this.deleteSecret(secretName);
+    } catch (error) {
+      this.logger.error(`Failed to delete credential secret ${secretName}: ${error}`);
+    }
+  }
+
+  private async deleteHarnessCredentialSecrets(podName: string): Promise<void> {
+    const api: any = this.coreApi as any;
+    // Object-param form only: in the positional signature labelSelector is not
+    // the 6th argument, and a misplaced selector would delete every Secret.
+    try {
+      await api.deleteCollectionNamespacedSecret({
+        namespace: this.namespace,
+        labelSelector: `app=browser-worker,pod-name=${podName}`,
+      });
+    } catch (error) {
+      this.logger.error(`Failed to delete credential secrets for pod ${podName}: ${error}`);
     }
   }
 
@@ -487,7 +558,7 @@ export class PodManagerService {
    */
   private buildPodSpec(podName: string, session: SessionEntity, app: ApplicationEntity) {
     const streamingMode = this.resolveStreamingMode(app);
-    const credentialSecretName = this.resolveCredentialSecretName(app);
+    const credentialSecretName = this.resolveCredentialSecretName(app, session.id);
     const credentialMountRoot = '/var/run/secrets/browser-hitl';
     const scopedEgressProxyUrl = this.buildSessionScopedProxyUrl(session.id);
     const volumes: Array<Record<string, unknown>> = [{ name: 'tmp', emptyDir: {} }];
@@ -671,9 +742,12 @@ export class PodManagerService {
     };
   }
 
-  private resolveCredentialSecretName(app: ApplicationEntity): string | null {
+  private resolveCredentialSecretName(app: ApplicationEntity, sessionId: string): string | null {
     const loginConfig = app.login_config as { credential_ref?: unknown } | null | undefined;
     const rawRef = typeof loginConfig?.credential_ref === 'string' ? loginConfig.credential_ref : '';
+    if (isHarnessCredentialRef(rawRef)) {
+      return harnessCredentialSecretName(sessionId);
+    }
     const prefix = 'k8s:secret/';
     if (!rawRef.startsWith(prefix)) {
       return null;
@@ -935,6 +1009,33 @@ export class PodManagerService {
       }
       try {
         await api.deleteNamespacedPod({ name: podName, namespace: this.namespace });
+      } catch (error2: any) {
+        if (!this.isNotFoundError(error2)) {
+          throw error2;
+        }
+      }
+    }
+  }
+
+  private async createSecret(secretSpec: unknown): Promise<void> {
+    const api: any = this.coreApi as any;
+    try {
+      await api.createNamespacedSecret(this.namespace, secretSpec);
+    } catch {
+      await api.createNamespacedSecret({ namespace: this.namespace, body: secretSpec });
+    }
+  }
+
+  private async deleteSecret(secretName: string): Promise<void> {
+    const api: any = this.coreApi as any;
+    try {
+      await api.deleteNamespacedSecret(secretName, this.namespace);
+    } catch (error: any) {
+      if (this.isNotFoundError(error)) {
+        return;
+      }
+      try {
+        await api.deleteNamespacedSecret({ name: secretName, namespace: this.namespace });
       } catch (error2: any) {
         if (!this.isNotFoundError(error2)) {
           throw error2;

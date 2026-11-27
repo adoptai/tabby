@@ -9,8 +9,14 @@ import {
   CredentialVolatility,
   ProfileVersionState,
   RedisFailureTier,
+  agentProfileAllowed,
+  decryptLoginCredentials,
+  encryptLoginCredentials,
+  isHarnessCredentialRef,
+  profileBaseName,
 } from '@browser-hitl/shared';
 import type {
+  LoginCredentials,
   CredentialResponseEnvelope,
   CredentialSet,
   CookieCredential,
@@ -109,20 +115,27 @@ export class CredentialsService {
     allowedProfiles?: string[];
     unrestrictedProfiles?: boolean;
     ownerUserId?: string | null;
+    loginCredentials?: LoginCredentials | null;
   }): Promise<CredentialResponseEnvelope> {
     const {
       tenantId, profileId, credentialSetId,
       forceRefresh = false, includeVolatile = true, waitSeconds = 0, requestId,
-      role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
+      role, allowedProfiles = [], unrestrictedProfiles, ownerUserId, loginCredentials = null,
     } = params;
 
-    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !agentProfileAllowed(allowedProfiles, profileId)) {
       throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
     }
 
     // 1. Resolve ACTIVE (or CANARY fallback) profile, scoped by owner if federated
-    const profile = await this.resolveActiveProfile(tenantId, profileId, ownerUserId);
+    const profile = await this.resolveActiveProfile(tenantId, profileId, ownerUserId, loginCredentials);
     const isCanary = profile.version_state === ProfileVersionState.CANARY;
+
+    // A `harness:` app gets its portal password from this request. Store it before
+    // the idle re-scale below so the next worker pod can be minted from it.
+    if (loginCredentials && profile.app_id) {
+      await this.storeLoginCredentials(profile.app_id, loginCredentials);
+    }
 
     // 2. Find healthy session via profile's app_id, scoped by owner if federated
     let session: SessionEntity;
@@ -265,7 +278,12 @@ export class CredentialsService {
   // Profile Resolution
   // ---------------------------------------------------------------
 
-  async resolveActiveProfile(tenantId: string, profileId: string, ownerUserId?: string | null): Promise<ServiceProfileEntity> {
+  async resolveActiveProfile(
+    tenantId: string,
+    profileId: string,
+    ownerUserId?: string | null,
+    loginCredentials?: LoginCredentials | null,
+  ): Promise<ServiceProfileEntity> {
     // Build where clause — add owner_user_id filter for federated users
     const where: Record<string, any> = {
       tenant_id: tenantId,
@@ -292,7 +310,7 @@ export class CredentialsService {
       // Auto-provision from template if federated user has no profile yet
       if (ownerUserId) {
         try {
-          const provisioned = await this.autoProvisionFromTemplate(tenantId, profileId, ownerUserId);
+          const provisioned = await this.autoProvisionFromTemplate(tenantId, profileId, ownerUserId, loginCredentials);
           if (provisioned) {
             return provisioned;
           }
@@ -330,10 +348,46 @@ export class CredentialsService {
     tenantId: string,
     profileId: string,
     ownerUserId: string,
+    loginCredentials?: LoginCredentials | null,
   ): Promise<ServiceProfileEntity | null> {
-    const template = await this.templateRepo.findOne({
+    let template = await this.templateRepo.findOne({
       where: { tenant_id: tenantId, profile_name_pattern: profileId },
     });
+
+    // `<portal>@<account>` falls back to the portal's template, so one template
+    // serves every account of a portal (each account gets its own app + session).
+    // Only a `harness:` template takes the fallback: its accounts differ by the
+    // supplied pair, whereas a k8s:secret/ or manual: template would just clone
+    // the same sign-in once per suffix.
+    const baseName = profileBaseName(profileId);
+    if (!template && baseName !== profileId) {
+      const base = await this.templateRepo.findOne({
+        where: { tenant_id: tenantId, profile_name_pattern: baseName },
+      });
+      if (base && isHarnessCredentialRef((base.login_config as { credential_ref?: unknown } | null)?.credential_ref)) {
+        template = base;
+      } else if (base) {
+        this.logger.warn(
+          `Profile "${profileId}" not provisioned: template "${base.name}" is not credential_ref harness:`,
+        );
+      }
+    }
+
+    // A `harness:` app cannot start without its pair: the worker pod's Secret
+    // is minted from it. /execute/* and /agent/session-status also reach this
+    // path, without login_credentials, and must not provision a session that
+    // would only fail. They get "no profile", and the harness then provisions
+    // through POST /credentials/request with the pair.
+    if (
+      template
+      && isHarnessCredentialRef((template.login_config as { credential_ref?: unknown } | null)?.credential_ref)
+      && !loginCredentials
+    ) {
+      this.logger.log(
+        `Profile "${profileId}" not provisioned: template "${template.name}" is harness: and this request carries no login_credentials`,
+      );
+      return null;
+    }
 
     if (!template) {
       this.logger.warn(`No app template found for profile_name_pattern="${profileId}" in tenant ${tenantId}`);
@@ -402,6 +456,12 @@ export class CredentialsService {
       version_state: ProfileVersionState.ACTIVE,
     });
 
+    // The controller mints the worker's credential Secret from this at pod creation,
+    // so it has to land before the scale-up below.
+    if (loginCredentials) {
+      await this.storeLoginCredentials(app_id, loginCredentials);
+    }
+
     // 3. Scale to 1 session via SessionsService (controller creates pod + baton + service + network policy)
     await this.sessionsService.scale(app_id, 1, tenantId, actorId);
 
@@ -411,6 +471,39 @@ export class CredentialsService {
     );
 
     return savedProfile;
+  }
+
+  /**
+   * Persist the harness-supplied portal password for a `harness:` app, encrypted
+   * under TENANT_ENCRYPTION_KEY. Apps on any other credential_ref ignore it.
+   */
+  private async storeLoginCredentials(appId: string, creds: LoginCredentials): Promise<void> {
+    const app = await this.appRepo.findOne({ where: { id: appId } });
+    if (!app) {
+      return;
+    }
+    if (!isHarnessCredentialRef((app.login_config as { credential_ref?: unknown } | null)?.credential_ref)) {
+      this.logger.debug(`login_credentials ignored for app ${appId}: credential_ref is not harness:`);
+      return;
+    }
+    const keyHex = requireEnv('TENANT_ENCRYPTION_KEY', { testDefault: '0'.repeat(64) });
+    // The column is `select: false`; load it explicitly so an unchanged pair is not rewritten.
+    const current = await this.appRepo
+      .createQueryBuilder('a')
+      .select('a.login_credentials_enc', 'enc')
+      .where('a.id = :id', { id: appId })
+      .getRawOne<{ enc: string | null }>();
+    if (current?.enc) {
+      try {
+        const stored = decryptLoginCredentials(current.enc, keyHex);
+        if (stored.username === creds.username && stored.password === creds.password) {
+          return;
+        }
+      } catch {
+        // Undecryptable (key rotated): overwrite below.
+      }
+    }
+    await this.appRepo.update(appId, { login_credentials_enc: encryptLoginCredentials(creds, keyHex) });
   }
 
   // ---------------------------------------------------------------

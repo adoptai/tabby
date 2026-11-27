@@ -17,7 +17,7 @@ export interface OtpPrompt {
 
 export interface LoginConfig {
   login_url: string;
-  credential_ref: string;       // Format: k8s:secret/{secret-name} | manual: (human provides creds via HITL)
+  credential_ref: string;       // Format: k8s:secret/{secret-name} | manual: (human provides creds via HITL) | harness: (supplied with POST /credentials/request)
   screenshot_policy?: ScreenshotPolicy;
   steps: DslStep[];
   otp_prompt?: OtpPrompt;

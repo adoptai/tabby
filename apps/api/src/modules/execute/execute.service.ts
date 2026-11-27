@@ -8,7 +8,7 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { EXECUTE_LIMITS, PORTS, REDIS_KEYS, REDIS_TTL, BROWSER_COMMANDS } from '@browser-hitl/shared';
+import { EXECUTE_LIMITS, PORTS, REDIS_KEYS, REDIS_TTL, BROWSER_COMMANDS, agentProfileAllowed } from '@browser-hitl/shared';
 import type {
   ExecuteFetchRequest, ExecuteFetchResponse,
   ExecuteBrowserRequest, ExecuteBrowserResponse,
@@ -67,7 +67,7 @@ export class ExecuteService {
     } = params;
 
     // Agent profile authorization
-    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !agentProfileAllowed(allowedProfiles, profileId)) {
       throw new BadRequestException(`Agent not authorized for profile "${profileId}"`);
     }
 
@@ -255,7 +255,7 @@ export class ExecuteService {
       role, allowedProfiles = [], unrestrictedProfiles, ownerUserId,
     } = params;
 
-    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId)) {
+    if (role === 'Agent' && !unrestrictedProfiles && !agentProfileAllowed(allowedProfiles, profileId)) {
       throw new BadRequestException(`Agent not authorized for profile "${profileId}"`);
     }
 
