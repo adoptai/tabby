@@ -122,11 +122,11 @@ export class CredentialsService {
       role, allowedProfiles = [], unrestrictedProfiles, ownerUserId, loginCredentials = null,
     } = params;
 
-    if (
-      role === 'Agent' && !unrestrictedProfiles
-      && !allowedProfiles.includes(profileId)
-      && !allowedProfiles.includes(profileBaseName(profileId))
-    ) {
+    // The base-name fallback exists only for harness-supplied accounts: an
+    // `<app>@<account>` request without login_credentials is checked verbatim,
+    // so an agent allowed on `icici` cannot fan out `icici@1`, `icici@2`, ...
+    const baseAllowed = Boolean(loginCredentials) && allowedProfiles.includes(profileBaseName(profileId));
+    if (role === 'Agent' && !unrestrictedProfiles && !allowedProfiles.includes(profileId) && !baseAllowed) {
       throw new ForbiddenException(`Agent not authorized for profile "${profileId}"`);
     }
 
@@ -359,11 +359,21 @@ export class CredentialsService {
 
     // `<portal>@<account>` falls back to the portal's template, so one template
     // serves every account of a portal (each account gets its own app + session).
+    // Only a `harness:` template takes the fallback: its accounts differ by the
+    // supplied pair, whereas a k8s:secret/ or manual: template would just clone
+    // the same sign-in once per suffix.
     const baseName = profileBaseName(profileId);
     if (!template && baseName !== profileId) {
-      template = await this.templateRepo.findOne({
+      const base = await this.templateRepo.findOne({
         where: { tenant_id: tenantId, profile_name_pattern: baseName },
       });
+      if (base && isHarnessCredentialRef((base.login_config as { credential_ref?: unknown } | null)?.credential_ref)) {
+        template = base;
+      } else if (base) {
+        this.logger.warn(
+          `Profile "${profileId}" not provisioned: template "${base.name}" is not credential_ref harness:`,
+        );
+      }
     }
 
     if (!template) {
